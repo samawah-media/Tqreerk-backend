@@ -1,0 +1,19 @@
+# Build
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+*.user
+
+# Visual Studio
+.vs/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# .NET
+project.lock.json
+project.fragment.lock.json
+artifacts/
