@@ -1,0 +1,31 @@
+using Taqreerk.Domain.Common;
+using Taqreerk.Domain.Enums;
+
+namespace Taqreerk.Domain.Entities;
+
+public class Organization : SoftDeletableEntity
+{
+    public string NameAr { get; set; } = string.Empty;
+    public string NameEn { get; set; } = string.Empty;
+    public string Slug { get; set; } = string.Empty;
+    public OrganizationType Type { get; set; }
+    public string? SectorScope { get; set; }
+    public Guid? CountryId { get; set; }
+    public string? City { get; set; }
+    public string? Phone { get; set; }
+    public string? WebsiteUrl { get; set; }
+    public string? LogoUrl { get; set; }
+    public string? Description { get; set; }
+    public bool IsPartner { get; set; }
+    public bool IsVerified { get; set; }
+    public OrganizationStatus Status { get; set; } = OrganizationStatus.PendingReview;
+
+    public Country? Country { get; set; }
+    public OrganizationProfile? Profile { get; set; }
+    public ICollection<OrganizationMember> Members { get; set; } = [];
+    public ICollection<Report> Reports { get; set; } = [];
+    public ICollection<OrganizationFile> Files { get; set; } = [];
+    public ICollection<AiJob> AiJobs { get; set; } = [];
+    public ICollection<AuditLog> AuditLogs { get; set; } = [];
+    public ICollection<Subscription> Subscriptions { get; set; } = [];
+}

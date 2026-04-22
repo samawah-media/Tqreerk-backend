@@ -1,0 +1,96 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Taqreerk.Application.DTOs.Auth;
+using Taqreerk.Application.Interfaces;
+
+namespace Taqreerk.API.Controllers;
+
+[ApiController]
+[Route("api/auth")]
+[Produces("application/json")]
+public class AuthController : ControllerBase
+{
+    private const string RefreshTokenCookie = "refresh_token";
+    private readonly IAuthService _auth;
+
+    public AuthController(IAuthService auth) => _auth = auth;
+
+    /// <summary>Register a new individual user account.</summary>
+    [HttpPost("register/individual")]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> RegisterIndividual([FromBody] RegisterIndividualRequest req, CancellationToken ct)
+    {
+        var result = await _auth.RegisterIndividualAsync(req, ct);
+        AppendRefreshCookie(result.RefreshToken);
+        return Ok(result.Response);
+    }
+
+    /// <summary>Register a new organization account.</summary>
+    [HttpPost("register/organization")]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> RegisterOrganization([FromBody] RegisterOrganizationRequest req, CancellationToken ct)
+    {
+        var result = await _auth.RegisterOrganizationAsync(req, ct);
+        AppendRefreshCookie(result.RefreshToken);
+        return Ok(result.Response);
+    }
+
+    /// <summary>Authenticate with email and password. Returns access token; sets refresh token as HttpOnly cookie.</summary>
+    [HttpPost("login")]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Login([FromBody] LoginRequest req, CancellationToken ct)
+    {
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var device = Request.Headers.UserAgent.ToString();
+
+        var result = await _auth.LoginAsync(req, ip, device, ct);
+        AppendRefreshCookie(result.RefreshToken);
+        return Ok(result.Response);
+    }
+
+    /// <summary>Exchange a refresh token (from cookie or body) for a new token pair.</summary>
+    [HttpPost("refresh")]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Refresh([FromBody] RefreshTokenRequest? body, CancellationToken ct)
+    {
+        var token = Request.Cookies[RefreshTokenCookie] ?? body?.RefreshToken;
+
+        if (string.IsNullOrWhiteSpace(token))
+            return Unauthorized(new { title = "Refresh token is required." });
+
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var result = await _auth.RefreshAsync(token, ip, ct);
+        AppendRefreshCookie(result.RefreshToken);
+        return Ok(result.Response);
+    }
+
+    /// <summary>Revoke the current refresh token and clear the cookie.</summary>
+    [HttpPost("logout")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> Logout(CancellationToken ct)
+    {
+        var token = Request.Cookies[RefreshTokenCookie];
+        if (!string.IsNullOrWhiteSpace(token))
+            await _auth.RevokeTokenAsync(token, ct);
+
+        Response.Cookies.Delete(RefreshTokenCookie);
+        return NoContent();
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    private void AppendRefreshCookie(string refreshToken) =>
+        Response.Cookies.Append(RefreshTokenCookie, refreshToken, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = true,
+            SameSite = SameSiteMode.Strict,
+            Expires = DateTimeOffset.UtcNow.AddDays(7),
+            Path = "/api/auth",
+        });
+}
