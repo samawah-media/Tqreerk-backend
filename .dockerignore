@@ -1,0 +1,11 @@
+**/.git
+**/.vs
+**/.claude
+**/bin
+**/obj
+**/out
+**/.github
+**/Logs
+**/*.user
+PLAN.md
+REQUIREMENTS.md

@@ -1,0 +1,6 @@
+@Tqreerk_backend_HostAddress = http://localhost:5139
+
+GET {{Tqreerk_backend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
