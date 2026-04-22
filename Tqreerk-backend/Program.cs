@@ -26,11 +26,22 @@ builder.Services.AddCors(options =>
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 var app = builder.Build();
 
-// Apply pending EF migrations on startup (safe — EF skips already-applied ones)
+// Apply pending EF migrations on startup
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
-    db.Database.Migrate();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<TaqreerkDbContext>>();
+    try
+    {
+        db.Database.Migrate();
+        logger.LogInformation("Database migrations applied successfully.");
+    }
+    catch (Exception ex)
+    {
+        // Log and continue — app still starts so Cloud Run health check passes.
+        // Fix the DB connection and redeploy to apply migrations.
+        logger.LogError(ex, "Failed to apply database migrations on startup.");
+    }
 }
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
