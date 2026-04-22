@@ -41,8 +41,8 @@
 - [x] Full-text search: `tsvector` GIN index on `reports.search_vector`
 - [x] JSONB columns: permissions, AI output, chart data, metadata
 - [x] UUID PKs, `now()` defaults, soft-delete filters
-- [x] Migration applied to `taqreerk_staging` (Cloud SQL) — auto-applied on container startup
-- [x] Migration applied to `taqreerk_production` (Cloud SQL) — auto-applied on container startup
+- [x] Migration applied to `taqreerk_staging` (Cloud SQL) — confirmed working in Cloud Run logs
+- [ ] Migration applied to `taqreerk_production` (Cloud SQL) — needs production deploy
 - [ ] Seed: roles (`admin`, `editor`, `partner`, `researcher`, `subscriber`)
 - [ ] Seed: sectors (economy, education, technology, investment, health, energy, environment)
 - [ ] Seed: Arab countries with ISO codes

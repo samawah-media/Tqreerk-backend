@@ -69,8 +69,8 @@ Tqreerk-backend/
 - [x] JSONB columns for flexible data (permissions, AI output, chart data, etc.)
 - [x] UUID primary keys with `gen_random_uuid()`
 - [x] Soft delete query filters applied globally
-- [x] Migration applied to `taqreerk_staging` database — auto-applied on container startup
-- [x] Migration applied to `taqreerk_production` database — auto-applied on container startup
+- [x] Migration applied to `taqreerk_staging` database — auto-applied on container startup ✅ confirmed in logs
+- [ ] Migration applied to `taqreerk_production` database — needs production deploy
 - [ ] Seed data: roles (admin, editor, partner, researcher, subscriber)
 - [ ] Seed data: common sectors (economy, education, technology, investment, etc.)
 - [ ] Seed data: Arab countries

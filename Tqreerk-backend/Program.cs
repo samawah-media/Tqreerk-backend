@@ -52,7 +52,12 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Taqreerk API v1"));
 }
 
-// Registered before HTTPS redirect so Cloud Run's plain-HTTP probes reach it
+app.UseHttpsRedirection();
+app.UseCors("DefaultCors");
+app.UseAuthentication();
+app.UseAuthorization();
+
+// Endpoints must be registered after UseAuthorization()
 app.MapGet("/healthz", async (TaqreerkDbContext db) =>
 {
     try
@@ -72,12 +77,8 @@ app.MapGet("/healthz", async (TaqreerkDbContext db) =>
     {
         return Results.Json(new { status = "unhealthy", error = ex.Message }, statusCode: 503);
     }
-});
+}).AllowAnonymous();
 
-app.UseHttpsRedirection();
-app.UseCors("DefaultCors");
-app.UseAuthentication();
-app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
