@@ -80,7 +80,7 @@ jobs:
 
       - name: Verify deployment & migration
         run: |
-          URL="${{ steps.deploy.outputs.url }}/healthz"
+          URL="${{ steps.deploy.outputs.url }}/healthz/"
           echo "Polling $URL ..."
           for i in $(seq 1 10); do
             RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
