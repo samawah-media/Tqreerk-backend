@@ -255,11 +255,11 @@ Tqreerk-backend/
 
 | Secret | Purpose |
 |---|---|
-| `GCP_PROJECT_ID` | GCP project ID (`sadeed-production`) |
-| `GCP_REGION` | GCP region (e.g. `me-west1`) |
+| `GCP_PROJECT_ID` | GCP project ID (`taqrrerk`) |
+| `GCP_REGION` | GCP region (`me-central1`) |
 | `GCP_SA_KEY` | GCP service account JSON key for auth |
 | `ARTIFACT_REGISTRY_REPO` | Artifact Registry repo name |
-| `GCP_CLOUDSQL_CONNECTION_NAME` | Cloud SQL instance — format: `PROJECT:REGION:INSTANCE` (instance ID: `taqrrerk`) |
+| `GCP_CLOUDSQL_CONNECTION_NAME` | `taqrrerk:me-central1:taqrrerkdb` |
 | `DATABASE_URL_STAGING` | Npgsql connection string → `taqreerk_staging` DB |
 | `DATABASE_URL_PRODUCTION` | Npgsql connection string → `taqreerk_production` DB |
 | `JWT_SECRET` | JWT signing key (min 32 chars) |

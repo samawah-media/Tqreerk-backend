@@ -76,3 +76,19 @@ jobs:
 
       - name: Show production URL
         run: echo "Production deployed → ${{ steps.deploy.outputs.url }}"
+
+      - name: Verify deployment & migration
+        run: |
+          URL="${{ steps.deploy.outputs.url }}/healthz"
+          echo "Polling $URL ..."
+          for i in $(seq 1 10); do
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
+            echo "Attempt $i → HTTP $RESPONSE: $(cat /tmp/health.json)"
+            if [ "$RESPONSE" = "200" ]; then
+              echo "✅ Deployment healthy — migrations applied."
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "❌ Health check failed after 10 attempts."
+          exit 1
