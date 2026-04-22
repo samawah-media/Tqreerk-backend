@@ -57,10 +57,12 @@ Tqreerk-backend/
 - [x] Soft-delete pattern (SoftDeletableEntity base class)
 - [x] Audit timestamps (BaseEntity, AuditableEntity)
 - [x] GitHub Actions CI/CD pipeline — ci.yml + deploy-staging.yml + deploy-production.yml
-- [x] Staging environment verified on Google Cloud Run (`taqreerk-backend-staging`)
+- [x] Staging environment verified on Google Cloud Run (`taqreerk-backend-staging`) — `/healthz/` confirmed ✅
 - [x] Production Cloud Run service deployed (`taqreerk-backend-prod`)
 - [x] Dockerfile + .dockerignore for containerized deploys
 - [x] Auto-migrate EF Core on container startup (`db.Database.Migrate()` in Program.cs)
+- [x] `/healthz` endpoint — DB status + pending migrations check
+- [x] Swagger UI enabled in Development + Staging (disabled in Production)
 
 ### Database Schema
 - [x] All 27 entities designed and configured

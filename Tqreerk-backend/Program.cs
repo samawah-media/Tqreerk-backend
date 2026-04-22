@@ -46,7 +46,7 @@ using (var scope = app.Services.CreateScope())
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
-if (app.Environment.IsDevelopment())
+if (!app.Environment.IsProduction())
 {
     app.UseSwagger();
     app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Taqreerk API v1"));
@@ -58,7 +58,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 // Endpoints must be registered after UseAuthorization()
-app.MapGet("/healthz", async (TaqreerkDbContext db) =>
+static async Task<IResult> HealthCheck(TaqreerkDbContext db)
 {
     try
     {
@@ -77,7 +77,10 @@ app.MapGet("/healthz", async (TaqreerkDbContext db) =>
     {
         return Results.Json(new { status = "unhealthy", error = ex.Message }, statusCode: 503);
     }
-}).AllowAnonymous();
+}
+
+app.MapGet("/healthz", HealthCheck).AllowAnonymous();
+app.MapGet("/healthz/", HealthCheck).AllowAnonymous();
 
 app.MapControllers();
 
