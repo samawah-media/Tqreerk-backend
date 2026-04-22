@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "staging", "production"]
+  pull_request:
+    branches: ["main", "staging", "production"]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore Tqreerk-backend.sln
+
+      - name: Build
+        run: dotnet build Tqreerk-backend.sln --no-restore -c Release
+
+      - name: Test
+        run: dotnet test Tqreerk-backend.sln --no-build -c Release --logger "trx;LogFileName=test-results.trx" || true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: "**/test-results.trx"
+          if-no-files-found: ignore
