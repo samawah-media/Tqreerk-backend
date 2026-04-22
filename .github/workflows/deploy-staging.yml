@@ -64,7 +64,7 @@ jobs:
             --min-instances=0
             --max-instances=5
             --timeout=300
-            --service-account=cloud-run-deploye@taqrrerk.iam.gserviceaccount.com
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
           env_vars: |
             ASPNETCORE_ENVIRONMENT=Staging
