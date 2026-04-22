@@ -1,5 +1,7 @@
+using Microsoft.EntityFrameworkCore;
 using Taqreerk.API.Middleware;
 using Taqreerk.Extensions;
+using Taqreerk.Infrastructure.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,6 +25,13 @@ builder.Services.AddCors(options =>
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 var app = builder.Build();
+
+// Apply pending EF migrations on startup (safe — EF skips already-applied ones)
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
+    db.Database.Migrate();
+}
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 

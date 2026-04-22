@@ -4,7 +4,7 @@
 
 Taqreerk (تقريرك) is an Arabic-first SaaS platform for aggregating, searching, and AI-analyzing Arabic reports. The client is شركة سماوة. The backend is `Taqreerk.back` — ASP.NET Core 8, PostgreSQL (Cloud SQL on GCP), Clean Architecture, deployed on Google Cloud Run.
 
-**Current state (as of 2026-04-22):** Phase 1 is ~60% done. The domain model (all 27 entities), auth system, database schema, and clean architecture skeleton are in place. Most controllers/services/features are still unbuilt.
+**Current state (as of 2026-04-22):** Phase 1 is ~80% done. The domain model (all 27 entities), auth system, database schema, clean architecture skeleton, Dockerfile, and full CI/CD pipeline (3 GitHub Actions workflows) are in place. Both staging and production Cloud Run services are live. Auto-migration runs on every deploy. Remaining Phase 1 work: email/OTP auth flows, user profile endpoints, seed data.
 
 **Purpose of this file:** Track every deliverable from the PRD and project brief. Mark `[x]` when done so any agent picking up the project knows exactly what's left.
 
@@ -14,6 +14,12 @@ Taqreerk (تقريرك) is an Arabic-first SaaS platform for aggregating, search
 
 ```
 Tqreerk-backend/
+├── .github/workflows/
+│   ├── ci.yml                  ← Build & test on push/PR to main/staging/production ✅
+│   ├── deploy-staging.yml      ← Build → push image → deploy to Cloud Run staging ✅
+│   └── deploy-production.yml   ← Build → push image → deploy to Cloud Run production ✅
+├── Dockerfile                  ← Multi-stage build (SDK 8 → ASP.NET runtime 8) ✅
+├── .dockerignore               ✅
 └── Tqreerk-backend/
     ├── API/Controllers/        ← HTTP layer (only AuthController exists so far)
     ├── API/Middleware/         ← ExceptionHandlingMiddleware ✅
@@ -29,7 +35,7 @@ Tqreerk-backend/
 ```
 
 **Key files:**
-- [Program.cs](Tqreerk-backend/Program.cs)
+- [Program.cs](Tqreerk-backend/Program.cs) — auto-migrates DB on startup ✅
 - [ServiceExtensions.cs](Tqreerk-backend/Extensions/ServiceExtensions.cs)
 - [AuthController.cs](Tqreerk-backend/API/Controllers/AuthController.cs)
 - [AuthService.cs](Tqreerk-backend/Application/Services/AuthService.cs)
@@ -50,8 +56,11 @@ Tqreerk-backend/
 - [x] Global exception handling middleware
 - [x] Soft-delete pattern (SoftDeletableEntity base class)
 - [x] Audit timestamps (BaseEntity, AuditableEntity)
-- [ ] GitHub Actions CI/CD pipeline (lint, type-check, test, build, deploy)
-- [ ] Staging environment verified on Google Cloud Run
+- [x] GitHub Actions CI/CD pipeline — ci.yml + deploy-staging.yml + deploy-production.yml
+- [x] Staging environment verified on Google Cloud Run (`taqreerk-backend-staging`)
+- [x] Production Cloud Run service deployed (`taqreerk-backend-prod`)
+- [x] Dockerfile + .dockerignore for containerized deploys
+- [x] Auto-migrate EF Core on container startup (`db.Database.Migrate()` in Program.cs)
 
 ### Database Schema
 - [x] All 27 entities designed and configured
@@ -60,8 +69,8 @@ Tqreerk-backend/
 - [x] JSONB columns for flexible data (permissions, AI output, chart data, etc.)
 - [x] UUID primary keys with `gen_random_uuid()`
 - [x] Soft delete query filters applied globally
-- [ ] Migration applied to `taqreerk_staging` database
-- [ ] Migration applied to `taqreerk_production` database
+- [x] Migration applied to `taqreerk_staging` database — auto-applied on container startup
+- [x] Migration applied to `taqreerk_production` database — auto-applied on container startup
 - [ ] Seed data: roles (admin, editor, partner, researcher, subscriber)
 - [ ] Seed data: common sectors (economy, education, technology, investment, etc.)
 - [ ] Seed data: Arab countries
@@ -242,11 +251,23 @@ Tqreerk-backend/
 
 ## Environment Variables Reference
 
+**GitHub Actions Secrets (already set in repo):**
+
+| Secret | Purpose |
+|---|---|
+| `GCP_PROJECT_ID` | GCP project ID (`sadeed-production`) |
+| `GCP_REGION` | GCP region (e.g. `me-west1`) |
+| `GCP_SA_KEY` | GCP service account JSON key for auth |
+| `ARTIFACT_REGISTRY_REPO` | Artifact Registry repo name |
+| `GCP_CLOUDSQL_CONNECTION_NAME` | Cloud SQL instance — format: `PROJECT:REGION:INSTANCE` (instance ID: `taqrrerk`) |
+| `DATABASE_URL_STAGING` | Npgsql connection string → `taqreerk_staging` DB |
+| `DATABASE_URL_PRODUCTION` | Npgsql connection string → `taqreerk_production` DB |
+| `JWT_SECRET` | JWT signing key (min 32 chars) |
+
+**Still needed (set when features are built):**
+
 | Variable | Where Used |
 |---|---|
-| `DATABASE_URL_PRODUCTION` | EF Core connection string |
-| `DATABASE_URL_STAGING` | EF Core connection string (staging) |
-| `JWT_SECRET` | JWT signing key (min 32 chars) |
 | `REFRESH_TOKEN_SECRET` | Refresh token signing |
 | `MISER_SECRET_KEY` | Miser payment API key |
 | `MISER_WEBHOOK_SECRET` | Miser webhook HMAC verification |
@@ -254,8 +275,7 @@ Tqreerk-backend/
 | `UNIFONIC_SENDER_ID` | SMS sender ID |
 | `GEMINI_API_KEY` | Google Gemini 3 Flash |
 | `SENTRY_DSN` | Error monitoring |
-| `GCP_PROJECT_ID` | GCP project (`sadeed-production`) |
-| `CLOUD_STORAGE_BUCKET` | Report file uploads |
+| `CLOUD_STORAGE_BUCKET` | Report file uploads (GCS) |
 
 ---
 

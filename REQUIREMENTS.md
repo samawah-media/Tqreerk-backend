@@ -3,7 +3,7 @@
 > **Platform:** Taqreerk (تقريرك) — Arabic SaaS report aggregation platform  
 > **Owner:** شركة سماوة | **Builder:** ProCode Solutions  
 > **Stack:** ASP.NET Core 8 · PostgreSQL · Google Cloud Run · Clean Architecture  
-> **Last updated:** 2026-04-22
+> **Last updated:** 2026-04-22 (session 2)
 
 ---
 
@@ -16,7 +16,7 @@
 
 ---
 
-## Phase 1 — Foundation ✅ Partial
+## Phase 1 — Foundation (~80% done)
 
 ### Infrastructure
 
@@ -28,8 +28,11 @@
 - [x] Global exception handling middleware (`ExceptionHandlingMiddleware`)
 - [x] Soft-delete base class (`SoftDeletableEntity`) with global query filters
 - [x] Audit timestamps base class (`BaseEntity`, `AuditableEntity`)
-- [x] GitHub Actions CI/CD — lint, build, test, deploy to Cloud Run
-- [ ] Staging Cloud Run service verified and accessible
+- [x] GitHub Actions CI/CD — lint, build, test, deploy to Cloud Run (ci.yml + deploy-staging.yml + deploy-production.yml)
+- [x] Dockerfile + .dockerignore for containerized Cloud Run deploys
+- [x] Auto-migrate EF Core on container startup (`db.Database.Migrate()` in Program.cs)
+- [x] Staging Cloud Run service verified and accessible (`taqreerk-backend-staging`)
+- [x] Production Cloud Run service deployed (`taqreerk-backend-prod`)
 
 ### Database
 
@@ -38,8 +41,8 @@
 - [x] Full-text search: `tsvector` GIN index on `reports.search_vector`
 - [x] JSONB columns: permissions, AI output, chart data, metadata
 - [x] UUID PKs, `now()` defaults, soft-delete filters
-- [ ] Migration applied to `taqreerk_staging` (Cloud SQL)
-- [ ] Migration applied to `taqreerk_production` (Cloud SQL)
+- [x] Migration applied to `taqreerk_staging` (Cloud SQL) — auto-applied on container startup
+- [x] Migration applied to `taqreerk_production` (Cloud SQL) — auto-applied on container startup
 - [ ] Seed: roles (`admin`, `editor`, `partner`, `researcher`, `subscriber`)
 - [ ] Seed: sectors (economy, education, technology, investment, health, energy, environment)
 - [ ] Seed: Arab countries with ISO codes
