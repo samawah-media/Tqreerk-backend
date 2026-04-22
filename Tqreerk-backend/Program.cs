@@ -52,12 +52,13 @@ if (!app.Environment.IsProduction())
     app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Taqreerk API v1"));
 }
 
+app.UseHttpsRedirection();
 app.UseCors("DefaultCors");
 app.UseAuthentication();
 app.UseAuthorization();
 
 // Endpoints must be registered after UseAuthorization()
-app.MapGet("/healthz", async (TaqreerkDbContext db) =>
+app.MapGet("/healthz/", async (TaqreerkDbContext db) =>
 {
     try
     {
