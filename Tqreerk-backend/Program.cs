@@ -5,6 +5,11 @@ using Taqreerk.Infrastructure.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── Sentry ────────────────────────────────────────────────────────────────────
+// Reads Sentry:* from configuration (appsettings / env vars: Sentry__Dsn, etc.).
+// No-op when Dsn is empty, so local dev without a DSN stays silent.
+builder.WebHost.UseSentry();
+
 // ── Services ──────────────────────────────────────────────────────────────────
 builder.Services.AddDatabase(builder.Configuration);
 builder.Services.AddJwtAuthentication(builder.Configuration);
@@ -24,25 +29,10 @@ builder.Services.AddCors(options =>
 );
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
+// Migrations are applied by the CI/CD pipeline before each deploy (see
+// .github/workflows/deploy-*.yml). If /healthz reports pendingMigrations,
+// that means the migration job did not run — investigate the pipeline.
 var app = builder.Build();
-
-// Apply pending EF migrations on startup
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
-    var logger = scope.ServiceProvider.GetRequiredService<ILogger<TaqreerkDbContext>>();
-    try
-    {
-        db.Database.Migrate();
-        logger.LogInformation("Database migrations applied successfully.");
-    }
-    catch (Exception ex)
-    {
-        // Log and continue — app still starts so Cloud Run health check passes.
-        // Fix the DB connection and redeploy to apply migrations.
-        logger.LogError(ex, "Failed to apply database migrations on startup.");
-    }
-}
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 

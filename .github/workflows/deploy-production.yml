@@ -33,6 +33,52 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
+      - name: Install EF Core tools
+        run: dotnet tool install --global dotnet-ef
+
+      - name: Generate migration bundle
+        run: |
+          dotnet ef migrations bundle \
+            --project Tqreerk-backend/Tqreerk-backend.csproj \
+            --configuration Release \
+            --output ./efbundle \
+            --self-contained \
+            --target-runtime linux-x64 \
+            --force
+
+      - name: Install Cloud SQL Auth Proxy
+        run: |
+          curl -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.11.4/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+
+      - name: Start Cloud SQL Auth Proxy
+        run: |
+          ./cloud-sql-proxy --port 5432 "${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}" &
+          echo $! > proxy.pid
+          for i in $(seq 1 30); do
+            if (echo >/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+              echo "Cloud SQL Auth Proxy is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Cloud SQL Auth Proxy failed to start."
+          exit 1
+
+      - name: Apply EF migrations
+        run: |
+          LOCAL_CONN=$(echo "${{ secrets.DATABASE_URL_PRODUCTION }}" \
+            | sed -e 's/Host=[^;]*/Host=127.0.0.1/' \
+                  -e 's/SSL Mode=[^;]*/SSL Mode=Disable/')
+          ./efbundle --connection "$LOCAL_CONN"
+
+      - name: Stop Cloud SQL Auth Proxy
+        if: always()
+        run: |
+          if [ -f proxy.pid ]; then
+            kill "$(cat proxy.pid)" 2>/dev/null || true
+          fi
+
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
@@ -74,6 +120,8 @@ jobs:
             JwtSettings__Audience=Taqreerk.Client
             JwtSettings__AccessTokenExpiryMinutes=15
             JwtSettings__RefreshTokenExpiryDays=7
+            Sentry__Dsn=${{ secrets.SENTRY_DSN }}
+            Sentry__Environment=Production
 
       - name: Show production URL
         run: echo "Production deployed → ${{ steps.deploy.outputs.url }}"

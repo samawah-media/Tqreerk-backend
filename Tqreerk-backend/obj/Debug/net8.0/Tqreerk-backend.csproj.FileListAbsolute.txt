@@ -116,3 +116,7 @@ C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\De
 C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\zh-Hans\Microsoft.CodeAnalysis.Workspaces.resources.dll
 C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\zh-Hant\Microsoft.CodeAnalysis.Workspaces.resources.dll
 C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\obj\Debug\net8.0\staticwebassets.upToDateCheck.txt
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Sentry.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Sentry.AspNetCore.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Sentry.Extensions.Logging.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\obj\Debug\net8.0\Sentry.Attributes.cs

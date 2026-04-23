@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Sentry;
 
 namespace Taqreerk.API.Middleware;
 
@@ -23,6 +24,14 @@ public class ExceptionHandlingMiddleware
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unhandled exception: {Message}", ex.Message);
+
+            // Report only unexpected errors to Sentry; expected 4xx cases below aren't bugs.
+            if (ex is not (InvalidOperationException or UnauthorizedAccessException
+                or KeyNotFoundException or ArgumentException))
+            {
+                SentrySdk.CaptureException(ex);
+            }
+
             await HandleAsync(context, ex);
         }
     }

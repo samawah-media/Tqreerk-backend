@@ -209,6 +209,18 @@
           }
         }
       }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "Tqreerk-backend"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
     }
   },
   "components": {
