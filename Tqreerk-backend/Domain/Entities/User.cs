@@ -20,6 +20,7 @@ public class User : SoftDeletableEntity
 
     public Country? Country { get; set; }
     public ICollection<RefreshToken> RefreshTokens { get; set; } = [];
+    public ICollection<UserRole> UserRoles { get; set; } = [];
     public ICollection<OrganizationMember> OrganizationMemberships { get; set; } = [];
     public ICollection<Report> UploadedReports { get; set; } = [];
     public ICollection<ReportRating> Ratings { get; set; } = [];

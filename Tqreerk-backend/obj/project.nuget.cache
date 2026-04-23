@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "YbGcloaUiHE=",
+  "dgSpecHash": "AVTPx7+l39Q=",
   "success": true,
-  "projectFilePath": "c:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
+  "projectFilePath": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\bcrypt.net-next\\4.0.3\\bcrypt.net-next.4.0.3.nupkg.sha512",
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\humanizer.core\\2.14.1\\humanizer.core.2.14.1.nupkg.sha512",

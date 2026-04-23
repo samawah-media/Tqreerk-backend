@@ -13,6 +13,7 @@ builder.WebHost.UseSentry();
 // ── Services ──────────────────────────────────────────────────────────────────
 builder.Services.AddDatabase(builder.Configuration);
 builder.Services.AddJwtAuthentication(builder.Configuration);
+builder.Services.AddPermissionAuthorization();
 builder.Services.AddApplicationServices();
 
 builder.Services.AddControllers();

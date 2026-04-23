@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Taqreerk.Domain.Entities;
+using Taqreerk.Infrastructure.Data.Seed;
 
 namespace Taqreerk.Infrastructure.Data.Configurations;
 
@@ -14,16 +15,12 @@ public class RoleConfiguration : IEntityTypeConfiguration<Role>
         builder.Property(r => r.Id).HasDefaultValueSql("gen_random_uuid()");
         builder.Property(r => r.Name).IsRequired().HasMaxLength(100);
         builder.Property(r => r.Description).HasMaxLength(500);
-        builder.Property(r => r.Permissions).HasColumnType("jsonb");
+        builder.Property(r => r.Scope).HasConversion<int>().HasDefaultValue(Taqreerk.Domain.Enums.RoleScope.Organization);
+        builder.Property(r => r.IsSystem).HasDefaultValue(false);
         builder.Property(r => r.CreatedAt).HasDefaultValueSql("now()");
 
         builder.HasIndex(r => r.Name).IsUnique();
 
-        // Seed default roles
-        builder.HasData(
-            new Role { Id = Guid.Parse("00000000-0000-0000-0000-000000000001"), Name = "admin", Description = "Organization administrator", CreatedAt = DateTime.UtcNow },
-            new Role { Id = Guid.Parse("00000000-0000-0000-0000-000000000002"), Name = "editor", Description = "Can upload and edit reports", CreatedAt = DateTime.UtcNow },
-            new Role { Id = Guid.Parse("00000000-0000-0000-0000-000000000003"), Name = "viewer", Description = "Read-only access", CreatedAt = DateTime.UtcNow }
-        );
+        builder.HasData(RbacSeedData.Roles);
     }
 }

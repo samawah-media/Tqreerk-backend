@@ -16,7 +16,10 @@ public class TokenService : ITokenService
 
     public TokenService(IOptions<JwtSettings> jwt) => _jwt = jwt.Value;
 
-    public string GenerateAccessToken(User user)
+    public string GenerateAccessToken(
+        User user,
+        IReadOnlyList<string> roleNames,
+        IReadOnlyList<string> permissionKeys)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.SecretKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
@@ -30,6 +33,12 @@ public class TokenService : ITokenService
             new("user_type", user.UserType),
             new("lang", user.PreferredLanguage),
         };
+
+        foreach (var role in roleNames)
+            claims.Add(new Claim(ClaimTypes.Role, role));
+
+        foreach (var perm in permissionKeys)
+            claims.Add(new Claim("permissions", perm));
 
         var token = new JwtSecurityToken(
             issuer: _jwt.Issuer,

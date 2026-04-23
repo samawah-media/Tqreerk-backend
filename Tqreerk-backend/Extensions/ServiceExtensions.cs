@@ -1,8 +1,10 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Taqreerk.API.Authorization;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Services;
 using Taqreerk.Application.Settings;
@@ -55,6 +57,15 @@ public static class ServiceExtensions
     {
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<IRbacService, RbacService>();
+        return services;
+    }
+
+    public static IServiceCollection AddPermissionAuthorization(this IServiceCollection services)
+    {
+        services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
+        services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
+        services.AddAuthorization();
         return services;
     }
 

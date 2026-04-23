@@ -15,12 +15,14 @@ public class AuthService : IAuthService
 {
     private readonly TaqreerkDbContext _db;
     private readonly ITokenService _tokens;
+    private readonly IRbacService _rbac;
     private readonly JwtSettings _jwt;
 
-    public AuthService(TaqreerkDbContext db, ITokenService tokens, IOptions<JwtSettings> jwt)
+    public AuthService(TaqreerkDbContext db, ITokenService tokens, IRbacService rbac, IOptions<JwtSettings> jwt)
     {
         _db = db;
         _tokens = tokens;
+        _rbac = rbac;
         _jwt = jwt.Value;
     }
 
@@ -181,7 +183,10 @@ public class AuthService : IAuthService
         });
         await _db.SaveChangesAsync(ct);
 
-        var accessToken = _tokens.GenerateAccessToken(user);
+        var roleNames = await _rbac.GetRoleNamesForUserAsync(user.Id, ct);
+        var permissionKeys = await _rbac.GetPermissionKeysForUserAsync(user.Id, ct);
+
+        var accessToken = _tokens.GenerateAccessToken(user, roleNames, permissionKeys);
         var expiresAt = DateTime.UtcNow.AddMinutes(_jwt.AccessTokenExpiryMinutes);
 
         var response = new AuthResponse(

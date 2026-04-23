@@ -1,6 +1,8 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Taqreerk.Application.DTOs.Auth;
+using Taqreerk.Application.DTOs.Rbac;
 using Taqreerk.Application.Interfaces;
 
 namespace Taqreerk.API.Controllers;
@@ -12,8 +14,13 @@ public class AuthController : ControllerBase
 {
     private const string RefreshTokenCookie = "refresh_token";
     private readonly IAuthService _auth;
+    private readonly IRbacService _rbac;
 
-    public AuthController(IAuthService auth) => _auth = auth;
+    public AuthController(IAuthService auth, IRbacService rbac)
+    {
+        _auth = auth;
+        _rbac = rbac;
+    }
 
     /// <summary>Register a new individual user account.</summary>
     [HttpPost("register/individual")]
@@ -80,6 +87,20 @@ public class AuthController : ControllerBase
 
         Response.Cookies.Delete(RefreshTokenCookie);
         return NoContent();
+    }
+
+    /// <summary>Returns pages, roles, and granted permission keys for the current user.</summary>
+    [HttpGet("me/permissions")]
+    [Authorize]
+    [ProducesResponseType(typeof(MePermissionsDto), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMyPermissions(CancellationToken ct)
+    {
+        var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(sub, out var userId))
+            return Unauthorized();
+
+        var result = await _rbac.GetEffectivePermissionsAsync(userId, ct);
+        return Ok(result);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

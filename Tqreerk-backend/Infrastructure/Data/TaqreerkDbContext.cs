@@ -51,6 +51,12 @@ public class TaqreerkDbContext : DbContext
     // Audit
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
+    // RBAC
+    public DbSet<Page> Pages => Set<Page>();
+    public DbSet<Permission> Permissions => Set<Permission>();
+    public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
+    public DbSet<UserRole> UserRoles => Set<UserRole>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
