@@ -53,11 +53,15 @@ public static class ServiceExtensions
         return services;
     }
 
-    public static IServiceCollection AddApplicationServices(this IServiceCollection services)
+    public static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration config)
     {
+        services.Configure<EmailSettings>(config.GetSection(EmailSettings.Section));
+
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IRbacService, RbacService>();
+        services.AddScoped<IUserService, UserService>();
+        services.AddSingleton<IEmailSender, LogEmailSender>();
         return services;
     }
 

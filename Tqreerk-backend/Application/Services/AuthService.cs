@@ -1,13 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Taqreerk.Application.DTOs.Auth;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Settings;
 using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
-using Microsoft.Extensions.Options;
 
 namespace Taqreerk.Application.Services;
 
@@ -16,14 +16,24 @@ public class AuthService : IAuthService
     private readonly TaqreerkDbContext _db;
     private readonly ITokenService _tokens;
     private readonly IRbacService _rbac;
+    private readonly IEmailSender _email;
     private readonly JwtSettings _jwt;
+    private readonly EmailSettings _emailSettings;
 
-    public AuthService(TaqreerkDbContext db, ITokenService tokens, IRbacService rbac, IOptions<JwtSettings> jwt)
+    public AuthService(
+        TaqreerkDbContext db,
+        ITokenService tokens,
+        IRbacService rbac,
+        IEmailSender email,
+        IOptions<JwtSettings> jwt,
+        IOptions<EmailSettings> emailSettings)
     {
         _db = db;
         _tokens = tokens;
         _rbac = rbac;
+        _email = email;
         _jwt = jwt.Value;
+        _emailSettings = emailSettings.Value;
     }
 
     public async Task<AuthResult> RegisterIndividualAsync(RegisterIndividualRequest req, CancellationToken ct = default)
@@ -167,7 +177,138 @@ public class AuthService : IAuthService
         await _db.SaveChangesAsync(ct);
     }
 
+    // ── Email verification ──────────────────────────────────────────────────
+
+    public async Task SendVerificationEmailAsync(string email, CancellationToken ct = default)
+    {
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email.ToLowerInvariant(), ct);
+
+        // Silent success on unknown address to avoid enumeration.
+        if (user is null || user.EmailVerified) return;
+
+        // Invalidate any outstanding tokens for this user.
+        var existing = await _db.EmailVerificationTokens
+            .Where(t => t.UserId == user.Id && t.UsedAt == null)
+            .ToListAsync(ct);
+        foreach (var t in existing) t.UsedAt = DateTime.UtcNow;
+
+        var rawToken = GenerateToken();
+        _db.EmailVerificationTokens.Add(new EmailVerificationToken
+        {
+            UserId = user.Id,
+            TokenHash = HashToken(rawToken),
+            ExpiresAt = DateTime.UtcNow.AddHours(_emailSettings.VerificationTokenHoursValid),
+        });
+
+        await _db.SaveChangesAsync(ct);
+
+        var link = $"{_emailSettings.AppBaseUrl.TrimEnd('/')}/verify-email?token={Uri.EscapeDataString(rawToken)}";
+        var body = $"<p>Hello {System.Net.WebUtility.HtmlEncode(user.FullName)},</p>" +
+                   $"<p>Click the link below to verify your email address. The link expires in {_emailSettings.VerificationTokenHoursValid} hours.</p>" +
+                   $"<p><a href=\"{link}\">{link}</a></p>";
+
+        await _email.SendEmailAsync(user.Email, "Verify your Taqreerk email", body, ct);
+    }
+
+    public async Task ConfirmEmailAsync(string token, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            throw new ArgumentException("Token is required.");
+
+        var hash = HashToken(token);
+        var record = await _db.EmailVerificationTokens
+            .Include(t => t.User)
+            .FirstOrDefaultAsync(t => t.TokenHash == hash, ct)
+            ?? throw new UnauthorizedAccessException("Invalid verification token.");
+
+        if (record.UsedAt is not null)
+            throw new UnauthorizedAccessException("Verification token has already been used.");
+
+        if (record.ExpiresAt < DateTime.UtcNow)
+            throw new UnauthorizedAccessException("Verification token has expired.");
+
+        record.UsedAt = DateTime.UtcNow;
+        record.User.EmailVerified = true;
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    // ── Password reset ──────────────────────────────────────────────────────
+
+    public async Task RequestPasswordResetAsync(string email, string? ipAddress, CancellationToken ct = default)
+    {
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email.ToLowerInvariant(), ct);
+
+        // Always succeed silently so callers cannot enumerate registered emails.
+        if (user is null) return;
+
+        var existing = await _db.PasswordResetTokens
+            .Where(t => t.UserId == user.Id && t.UsedAt == null)
+            .ToListAsync(ct);
+        foreach (var t in existing) t.UsedAt = DateTime.UtcNow;
+
+        var rawToken = GenerateToken();
+        _db.PasswordResetTokens.Add(new PasswordResetToken
+        {
+            UserId = user.Id,
+            TokenHash = HashToken(rawToken),
+            IpAddress = ipAddress,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(_emailSettings.PasswordResetTokenMinutesValid),
+        });
+
+        await _db.SaveChangesAsync(ct);
+
+        var link = $"{_emailSettings.AppBaseUrl.TrimEnd('/')}/reset-password?token={Uri.EscapeDataString(rawToken)}";
+        var body = $"<p>Hello {System.Net.WebUtility.HtmlEncode(user.FullName)},</p>" +
+                   $"<p>We received a request to reset your Taqreerk password. The link below expires in {_emailSettings.PasswordResetTokenMinutesValid} minutes.</p>" +
+                   $"<p><a href=\"{link}\">{link}</a></p>" +
+                   "<p>If you did not request a password reset, you can safely ignore this email.</p>";
+
+        await _email.SendEmailAsync(user.Email, "Reset your Taqreerk password", body, ct);
+    }
+
+    public async Task ResetPasswordAsync(string token, string newPassword, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            throw new ArgumentException("Token is required.");
+        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < 8)
+            throw new ArgumentException("Password must be at least 8 characters.");
+
+        var hash = HashToken(token);
+        var record = await _db.PasswordResetTokens
+            .Include(t => t.User)
+            .FirstOrDefaultAsync(t => t.TokenHash == hash, ct)
+            ?? throw new UnauthorizedAccessException("Invalid reset token.");
+
+        if (record.UsedAt is not null)
+            throw new UnauthorizedAccessException("Reset token has already been used.");
+
+        if (record.ExpiresAt < DateTime.UtcNow)
+            throw new UnauthorizedAccessException("Reset token has expired.");
+
+        record.UsedAt = DateTime.UtcNow;
+        record.User.PasswordHash = BCrypt.Net.BCrypt.HashPassword(newPassword);
+
+        // Revoke every active refresh token so existing sessions must re-authenticate.
+        var sessions = await _db.RefreshTokens
+            .Where(t => t.UserId == record.UserId && !t.IsRevoked)
+            .ToListAsync(ct);
+        foreach (var s in sessions) s.IsRevoked = true;
+
+        await _db.SaveChangesAsync(ct);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    private static string GenerateToken()
+    {
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(48);
+        // URL-safe base64 so the raw value drops into email links without encoding churn.
+        return Convert.ToBase64String(bytes)
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
+    }
 
     private async Task<AuthResult> IssueTokensAsync(User user, string? ipAddress, string? deviceInfo, CancellationToken ct)
     {

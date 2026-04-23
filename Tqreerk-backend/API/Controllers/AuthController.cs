@@ -89,6 +89,45 @@ public class AuthController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>Send (or resend) an email verification link to the given address.</summary>
+    [HttpPost("verify-email/send")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    public async Task<IActionResult> SendVerificationEmail([FromBody] SendVerificationEmailRequest req, CancellationToken ct)
+    {
+        await _auth.SendVerificationEmailAsync(req.Email, ct);
+        return Accepted();
+    }
+
+    /// <summary>Confirm an email address using the token from the verification email.</summary>
+    [HttpPost("verify-email/confirm")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> ConfirmEmail([FromBody] ConfirmEmailRequest req, CancellationToken ct)
+    {
+        await _auth.ConfirmEmailAsync(req.Token, ct);
+        return NoContent();
+    }
+
+    /// <summary>Initiate a password reset. Always returns 202 — existence of the email is never revealed.</summary>
+    [HttpPost("forgot-password")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest req, CancellationToken ct)
+    {
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        await _auth.RequestPasswordResetAsync(req.Email, ip, ct);
+        return Accepted();
+    }
+
+    /// <summary>Complete a password reset using the token from the email. Revokes all existing sessions.</summary>
+    [HttpPost("reset-password")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest req, CancellationToken ct)
+    {
+        await _auth.ResetPasswordAsync(req.Token, req.NewPassword, ct);
+        return NoContent();
+    }
+
     /// <summary>Returns pages, roles, and granted permission keys for the current user.</summary>
     [HttpGet("me/permissions")]
     [Authorize]

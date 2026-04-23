@@ -3,6 +3,18 @@
   "WorkspaceRootPath": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\",
   "Documents": [
     {
+      "AbsoluteMoniker": "D:0:0:{CEC0B04E-8BE6-4A13-9198-2007F144841F}|Tqreerk-backend\\Tqreerk-backend.csproj|c:\\users\\abdalrahman seria\\desktop\\prosol\\tqreerk-backend\\tqreerk-backend\\infrastructure\\data\\migrations\\20260423005458_addrbacsystem.designer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{CEC0B04E-8BE6-4A13-9198-2007F144841F}|Tqreerk-backend\\Tqreerk-backend.csproj|solutionrelative:tqreerk-backend\\infrastructure\\data\\migrations\\20260423005458_addrbacsystem.designer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{CEC0B04E-8BE6-4A13-9198-2007F144841F}|Tqreerk-backend\\Tqreerk-backend.csproj|c:\\users\\abdalrahman seria\\desktop\\prosol\\tqreerk-backend\\tqreerk-backend\\infrastructure\\data\\migrations\\20260423005458_addrbacsystem.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{CEC0B04E-8BE6-4A13-9198-2007F144841F}|Tqreerk-backend\\Tqreerk-backend.csproj|solutionrelative:tqreerk-backend\\infrastructure\\data\\migrations\\20260423005458_addrbacsystem.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{CEC0B04E-8BE6-4A13-9198-2007F144841F}|Tqreerk-backend\\Tqreerk-backend.csproj|c:\\users\\abdalrahman seria\\desktop\\prosol\\tqreerk-backend\\tqreerk-backend\\infrastructure\\data\\seed\\rbacseeddata.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{CEC0B04E-8BE6-4A13-9198-2007F144841F}|Tqreerk-backend\\Tqreerk-backend.csproj|solutionrelative:tqreerk-backend\\infrastructure\\data\\seed\\rbacseeddata.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
       "AbsoluteMoniker": "D:0:0:{CEC0B04E-8BE6-4A13-9198-2007F144841F}|Tqreerk-backend\\Tqreerk-backend.csproj|c:\\users\\abdalrahman seria\\desktop\\prosol\\tqreerk-backend\\tqreerk-backend\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}",
       "RelativeMoniker": "D:0:0:{CEC0B04E-8BE6-4A13-9198-2007F144841F}|Tqreerk-backend\\Tqreerk-backend.csproj|solutionrelative:tqreerk-backend\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}"
     }
@@ -23,12 +35,51 @@
             {
               "$type": "Document",
               "DocumentIndex": 0,
+              "Title": "20260423005458_AddRbacSystem.Designer.cs",
+              "DocumentMoniker": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Infrastructure\\Data\\Migrations\\20260423005458_AddRbacSystem.Designer.cs",
+              "RelativeDocumentMoniker": "Tqreerk-backend\\Infrastructure\\Data\\Migrations\\20260423005458_AddRbacSystem.Designer.cs",
+              "ToolTip": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Infrastructure\\Data\\Migrations\\20260423005458_AddRbacSystem.Designer.cs",
+              "RelativeToolTip": "Tqreerk-backend\\Infrastructure\\Data\\Migrations\\20260423005458_AddRbacSystem.Designer.cs",
+              "ViewState": "AgIAAFgAAAAAAAAAAAAQwGAAAAAuAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-23T00:57:27.968Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "20260423005458_AddRbacSystem.cs",
+              "DocumentMoniker": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Infrastructure\\Data\\Migrations\\20260423005458_AddRbacSystem.cs",
+              "RelativeDocumentMoniker": "Tqreerk-backend\\Infrastructure\\Data\\Migrations\\20260423005458_AddRbacSystem.cs",
+              "ToolTip": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Infrastructure\\Data\\Migrations\\20260423005458_AddRbacSystem.cs",
+              "RelativeToolTip": "Tqreerk-backend\\Infrastructure\\Data\\Migrations\\20260423005458_AddRbacSystem.cs",
+              "ViewState": "AgIAAGQAAAAAAAAAAAAQwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-23T00:57:19.635Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "RbacSeedData.cs",
+              "DocumentMoniker": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Infrastructure\\Data\\Seed\\RbacSeedData.cs",
+              "RelativeDocumentMoniker": "Tqreerk-backend\\Infrastructure\\Data\\Seed\\RbacSeedData.cs",
+              "ToolTip": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Infrastructure\\Data\\Seed\\RbacSeedData.cs",
+              "RelativeToolTip": "Tqreerk-backend\\Infrastructure\\Data\\Seed\\RbacSeedData.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-23T00:56:46.525Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
               "Title": "appsettings.json",
               "DocumentMoniker": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\appsettings.json",
               "RelativeDocumentMoniker": "Tqreerk-backend\\appsettings.json",
               "ToolTip": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\appsettings.json",
               "RelativeToolTip": "Tqreerk-backend\\appsettings.json",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAQAAAAoAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAgAAAAWAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
               "WhenOpened": "2026-04-21T22:42:05.401Z",
               "EditorCaption": ""
