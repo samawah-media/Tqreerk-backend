@@ -68,7 +68,7 @@ jobs:
           SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE }} \
             --region ${{ env.REGION }} \
             --format "value(status.url)")
-          URL="$SERVICE_URL/healthz"
+          URL="$SERVICE_URL/health"
           echo "Polling $URL ..."
           for i in $(seq 1 20); do
             RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
