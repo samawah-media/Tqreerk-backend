@@ -36,14 +36,3 @@ class TranslateResponse(BaseModel):
     report_id: UUID
     target_language: str
     translated_file_url: str   # exact GCS URI of the output PDF — store in ReportTranslation
-
-
-class TranslateRequest(BaseModel):
-    report_id: UUID
-    target_language: str   # "en" | "ar"
-
-
-class TranslateResponse(BaseModel):
-    report_id: UUID
-    target_language: str
-    translated_pages: int
