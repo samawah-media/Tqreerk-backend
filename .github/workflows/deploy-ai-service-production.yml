@@ -63,18 +63,18 @@ jobs:
             GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
             GCS_BUCKET=${{ secrets.CLOUD_STORAGE_BUCKET }}
 
-      - name: Show production URL
-        run: echo "AI Service Production deployed → ${{ steps.deploy.outputs.url }}"
-
       - name: Verify deployment
         run: |
-          URL="${{ steps.deploy.outputs.url }}/healthz"
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} \
+            --format "value(status.url)")
+          URL="$SERVICE_URL/healthz"
           echo "Polling $URL ..."
           for i in $(seq 1 20); do
             RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
             echo "Attempt $i → HTTP $RESPONSE: $(cat /tmp/health.json)"
             if [ "$RESPONSE" = "200" ]; then
-              echo "✅ AI service healthy."
+              echo "✅ AI service healthy at $SERVICE_URL"
               exit 0
             fi
             sleep 10
