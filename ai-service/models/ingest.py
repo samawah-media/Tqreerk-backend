@@ -26,13 +26,12 @@ class SummarizeResponse(BaseModel):
 
 class TranslateRequest(BaseModel):
     report_id: UUID
-    file_url: str              # gs://bucket/reports/{report_id}/original.pdf  — input
-    output_prefix: str         # gs://bucket/reports/{report_id}/translated/en/  — .NET controls this
-    target_language: str       # "en" | "ar"
-    source_language: str = "ar"
+    file_url: str       # gs://bucket/reports/{report_id}/original.pdf  — input
+    output_prefix: str  # gs://bucket/reports/{report_id}/translated/{lang}/  — .NET controls this
 
 
 class TranslateResponse(BaseModel):
     report_id: UUID
-    target_language: str
-    translated_file_url: str   # exact GCS URI of the output PDF — store in ReportTranslation
+    source_language: str    # detected source language e.g. "ar"
+    target_language: str    # what we translated to e.g. "en"
+    translated_file_url: str  # exact GCS URI of the output PDF — store in ReportTranslation
