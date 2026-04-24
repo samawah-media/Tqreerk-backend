@@ -15,11 +15,13 @@ public class AuthController : ControllerBase
     private const string RefreshTokenCookie = "refresh_token";
     private readonly IAuthService _auth;
     private readonly IRbacService _rbac;
+    private readonly IWebHostEnvironment _env;
 
-    public AuthController(IAuthService auth, IRbacService rbac)
+    public AuthController(IAuthService auth, IRbacService rbac, IWebHostEnvironment env)
     {
         _auth = auth;
         _rbac = rbac;
+        _env = env;
     }
 
     /// <summary>Register a new individual user account.</summary>
@@ -144,13 +146,19 @@ public class AuthController : ControllerBase
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    private void AppendRefreshCookie(string refreshToken) =>
+    private void AppendRefreshCookie(string refreshToken)
+    {
+        // In Development we are served over plain HTTP via the Vite proxy, so the cookie
+        // must be non-Secure and Lax (same-site through the proxy).
+        var isDev = _env.IsDevelopment();
+
         Response.Cookies.Append(RefreshTokenCookie, refreshToken, new CookieOptions
         {
             HttpOnly = true,
-            Secure = true,
-            SameSite = SameSiteMode.Strict,
+            Secure = !isDev,
+            SameSite = isDev ? SameSiteMode.Lax : SameSiteMode.Strict,
             Expires = DateTimeOffset.UtcNow.AddDays(7),
             Path = "/api/auth",
         });
+    }
 }
