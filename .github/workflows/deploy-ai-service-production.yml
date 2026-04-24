@@ -1,0 +1,83 @@
+name: Deploy AI Service — Production
+
+on:
+  push:
+    branches: ["production"]
+    paths: ["ai-service/**"]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ secrets.GCP_REGION }}
+  REPO: ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+  SERVICE: taqreerk-ai-service-prod
+  IMAGE: taqreerk-ai-service
+
+jobs:
+  build-and-deploy:
+    name: Build, Push & Deploy AI Service to Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
+            ./ai-service
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest
+
+      - name: Deploy to Cloud Run (Production)
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
+          flags: >-
+            --allow-unauthenticated
+            --port=8080
+            --memory=1Gi
+            --cpu=1
+            --min-instances=1
+            --max-instances=10
+            --timeout=300
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
+            --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
+          env_vars: |
+            DATABASE_URL=${{ secrets.DATABASE_URL_PRODUCTION }}
+            GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
+            GCS_BUCKET=${{ secrets.CLOUD_STORAGE_BUCKET }}
+
+      - name: Show production URL
+        run: echo "AI Service Production deployed → ${{ steps.deploy.outputs.url }}"
+
+      - name: Verify deployment
+        run: |
+          URL="${{ steps.deploy.outputs.url }}/healthz"
+          echo "Polling $URL ..."
+          for i in $(seq 1 20); do
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
+            echo "Attempt $i → HTTP $RESPONSE: $(cat /tmp/health.json)"
+            if [ "$RESPONSE" = "200" ]; then
+              echo "✅ AI service healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "❌ AI service health check failed after 20 attempts."
+          exit 1

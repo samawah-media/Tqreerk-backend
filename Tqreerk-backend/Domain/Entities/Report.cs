@@ -46,4 +46,6 @@ public class Report : SoftDeletableEntity
     public ICollection<ReportRecommendation> Recommendations { get; set; } = [];
     public ICollection<SavedReport> SavedByUsers { get; set; } = [];
     public ICollection<ReportView> Views { get; set; } = [];
+    public ICollection<ReportPage> Pages { get; set; } = [];
+    public ICollection<ChatSession> ChatSessions { get; set; } = [];
 }

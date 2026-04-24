@@ -132,6 +132,70 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("audit_logs", (string)null);
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ChatMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("SourcePages")
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SessionId");
+
+                    b.ToTable("chat_messages", (string)null);
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ChatSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "ReportId");
+
+                    b.ToTable("chat_sessions", (string)null);
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.Country", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1534,6 +1598,35 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("reports", (string)null);
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportPage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<int>("PageNumber")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReportId", "PageNumber").IsUnique();
+
+                    b.ToTable("report_pages", (string)null);
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportAiContent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2741,6 +2834,36 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Organization");
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ChatMessage", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.ChatSession", "Session")
+                        .WithMany("Messages")
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Session");
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ChatSession", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
+                        .WithMany("ChatSessions")
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Taqreerk.Domain.Entities.User", "User")
+                        .WithMany("ChatSessions")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Report");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.EmailVerificationToken", b =>
                 {
                     b.HasOne("Taqreerk.Domain.Entities.User", "User")
@@ -2935,6 +3058,17 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Sector");
 
                     b.Navigation("UploadedByUser");
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportPage", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
+                        .WithMany("Pages")
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Report");
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportAiContent", b =>
@@ -3241,9 +3375,13 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
                     b.Navigation("AiJobs");
 
+                    b.Navigation("ChatSessions");
+
                     b.Navigation("Infographics");
 
                     b.Navigation("Keywords");
+
+                    b.Navigation("Pages");
 
                     b.Navigation("Ratings");
 
@@ -3283,6 +3421,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                 {
                     b.Navigation("AiJobs");
 
+                    b.Navigation("ChatSessions");
+
                     b.Navigation("Comparisons");
 
                     b.Navigation("CreatedInfographics");
@@ -3308,6 +3448,11 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("UploadedReports");
 
                     b.Navigation("UserRoles");
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ChatSession", b =>
+                {
+                    b.Navigation("Messages");
                 });
 #pragma warning restore 612, 618
         }

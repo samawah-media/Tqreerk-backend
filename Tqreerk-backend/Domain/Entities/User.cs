@@ -33,4 +33,5 @@ public class User : SoftDeletableEntity
     public ICollection<ReportView> ReportViews { get; set; } = [];
     public ICollection<Subscription> Subscriptions { get; set; } = [];
     public ICollection<AiJob> AiJobs { get; set; } = [];
+    public ICollection<ChatSession> ChatSessions { get; set; } = [];
 }
