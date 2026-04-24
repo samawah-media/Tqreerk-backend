@@ -66,13 +66,15 @@ jobs:
       - name: Verify deployment
         run: |
           URL="${{ steps.deploy.outputs.url }}/healthz"
-          for i in $(seq 1 10); do
-            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+          echo "Polling $URL ..."
+          for i in $(seq 1 20); do
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
+            echo "Attempt $i → HTTP $RESPONSE: $(cat /tmp/health.json)"
             if [ "$RESPONSE" = "200" ]; then
               echo "✅ AI service healthy."
               exit 0
             fi
-            sleep 6
+            sleep 10
           done
-          echo "❌ AI service health check failed."
+          echo "❌ AI service health check failed after 20 attempts."
           exit 1
