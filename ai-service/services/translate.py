@@ -7,8 +7,15 @@ from google.cloud import translate_v3
 
 from core.config import settings
 
-_client = translate_v3.TranslationServiceClient()
-_parent = f"projects/{settings.gcp_project_id}/locations/{settings.translate_location}"
+_client = None
+_parent = None
+
+
+def _init():
+    global _client, _parent
+    if _client is None:
+        _client = translate_v3.TranslationServiceClient()
+        _parent = f"projects/{settings.gcp_project_id}/locations/{settings.translate_location}"
 
 
 def translate_pdf(
@@ -23,6 +30,7 @@ def translate_pdf(
       output_prefix = gs://bucket/reports/{id}/translated/en/
       result        = gs://bucket/reports/{id}/translated/en/original.pdf
     """
+    _init()
     response = _client.translate_document(
         request={
             "parent": _parent,

@@ -1,30 +1,35 @@
 """Thin wrapper around the Gemini Flash API.
 
 Authentication uses Application Default Credentials (ADC) — no API key needed.
-On Cloud Run the service account credentials are picked up automatically.
+Clients are initialized lazily on first use so import failures don't block startup.
 """
 import base64
+import json
+import re
 
-import google.generativeai as genai
 import google.auth
-import google.auth.transport.requests
+import google.generativeai as genai
 
-# Use ADC — picks up the Cloud Run service account automatically
-_credentials, _ = google.auth.default(
-    scopes=["https://www.googleapis.com/auth/cloud-platform"]
-)
-genai.configure(credentials=_credentials)
-
-_flash = genai.GenerativeModel("gemini-1.5-flash")
+_initialized = False
+_flash = None
 _embed_model = "models/text-embedding-004"
 
 
-def describe_page_image(png_bytes: bytes) -> str:
-    """Send a PDF page rendered as PNG to Gemini and get rich text back.
+def _init():
+    global _initialized, _flash
+    if _initialized:
+        return
+    credentials, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    genai.configure(credentials=credentials)
+    _flash = genai.GenerativeModel("gemini-1.5-flash")
+    _initialized = True
 
-    The prompt instructs the model to transcribe text verbatim AND describe
-    any charts/graphs/images in detail so they are searchable later.
-    """
+
+def describe_page_image(png_bytes: bytes) -> str:
+    """Send a PDF page rendered as PNG to Gemini and get rich text back."""
+    _init()
     image_part = {"mime_type": "image/png", "data": base64.b64encode(png_bytes).decode()}
     prompt = (
         "You are processing a page from an Arabic research report. "
@@ -41,6 +46,7 @@ def describe_page_image(png_bytes: bytes) -> str:
 
 def embed_text(text: str) -> list[float]:
     """Return a 768-dimensional embedding for the given text."""
+    _init()
     result = genai.embed_content(model=_embed_model, content=text)
     return result["embedding"]
 
@@ -51,10 +57,8 @@ def chat_with_context(
     context_chunks: list[str],
     source_pages: list[int],
 ) -> tuple[str, list[int]]:
-    """Answer a user question given retrieved page chunks.
-
-    Returns (answer_text, source_page_numbers).
-    """
+    """Answer a user question given retrieved page chunks."""
+    _init()
     context_text = "\n\n---\n\n".join(context_chunks)
     system_prompt = (
         "You are an AI assistant for the Taqreerk platform. "
@@ -64,7 +68,6 @@ def chat_with_context(
         f"REPORT CONTEXT:\n{context_text}"
     )
 
-    # Build Gemini conversation history format
     gemini_history = []
     for msg in history:
         role = "user" if msg["role"] == "user" else "model"
@@ -76,19 +79,9 @@ def chat_with_context(
     return response.text.strip(), source_pages
 
 
-def translate_text(text: str, target_language: str) -> str:
-    """Translate text to the target language using Gemini Flash."""
-    prompt = (
-        f"Translate the following text to {target_language}. "
-        "Return only the translated text, no explanations.\n\n"
-        f"{text}"
-    )
-    response = _flash.generate_content(prompt)
-    return response.text.strip()
-
-
 def summarize_report(pages_content: list[str]) -> dict:
     """Generate a structured summary + key findings for a full report."""
+    _init()
     combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
     prompt = (
         "You are analyzing an Arabic research report. Based on the full text below, produce:\n"
@@ -99,9 +92,7 @@ def summarize_report(pages_content: list[str]) -> dict:
         f"REPORT TEXT:\n{combined}"
     )
     response = _flash.generate_content(prompt)
-    import json, re
     text = response.text.strip()
-    # Strip markdown code fences if present
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     return json.loads(text)
