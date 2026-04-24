@@ -4,7 +4,7 @@
 
 Taqreerk (تقريرك) is an Arabic-first SaaS platform for aggregating, searching, and AI-analyzing Arabic reports. The client is شركة سماوة. The backend is `Taqreerk.back` — ASP.NET Core 8, PostgreSQL (Cloud SQL on GCP), Clean Architecture, deployed on Google Cloud Run.
 
-**Current state (as of 2026-04-22):** Phase 1 is ~80% done. The domain model (all 27 entities), auth system, database schema, clean architecture skeleton, Dockerfile, and full CI/CD pipeline (3 GitHub Actions workflows) are in place. Both staging and production Cloud Run services are live. Auto-migration runs on every deploy. Remaining Phase 1 work: email/OTP auth flows, user profile endpoints, seed data.
+**Current state (as of 2026-04-24):** Phase 1 is ~85% done. Python AI service is fully built and ready to deploy. AI entities (ChatSession, ChatMessage, ReportPage + pgvector) added with migration. .NET AI proxy endpoints and GCS upload are the next .NET tasks. Remaining Phase 1: email/OTP auth flows, user profile endpoints, seed data.
 
 **Purpose of this file:** Track every deliverable from the PRD and project brief. Mark `[x]` when done so any agent picking up the project knows exactly what's left.
 
@@ -15,23 +15,36 @@ Taqreerk (تقريرك) is an Arabic-first SaaS platform for aggregating, search
 ```
 Tqreerk-backend/
 ├── .github/workflows/
-│   ├── ci.yml                  ← Build & test on push/PR to main/staging/production ✅
-│   ├── deploy-staging.yml      ← Build → push image → deploy to Cloud Run staging ✅
-│   └── deploy-production.yml   ← Build → push image → deploy to Cloud Run production ✅
-├── Dockerfile                  ← Multi-stage build (SDK 8 → ASP.NET runtime 8) ✅
-├── .dockerignore               ✅
+│   ├── ci.yml                          ← Build & test on push/PR ✅
+│   ├── deploy-staging.yml              ← .NET → Cloud Run staging ✅
+│   ├── deploy-production.yml           ← .NET → Cloud Run production ✅
+│   └── deploy-ai-service-staging.yml   ← Python AI service → Cloud Run staging ✅
+├── Dockerfile                          ← .NET multi-stage build ✅
+├── .dockerignore                       ✅
+├── ai-service/                         ← Python FastAPI RAG + chat service ✅
+│   ├── main.py                         ← FastAPI app entry point ✅
+│   ├── Dockerfile                      ← python:3.12-slim ✅
+│   ├── requirements.txt                ✅
+│   ├── core/config.py                  ← Settings (DATABASE_URL, GEMINI_API_KEY) ✅
+│   ├── core/db.py                      ← async psycopg3 + pgvector ✅
+│   ├── services/gemini.py              ← Gemini Flash: describe, embed, chat, summarize, translate ✅
+│   ├── pipelines/ingest.py             ← PDF → PNG → Gemini → embedding → DB ✅
+│   ├── models/chat.py                  ← Pydantic schemas for chat ✅
+│   ├── models/ingest.py                ← Pydantic schemas for ingest/summarize/translate ✅
+│   ├── api/chat.py                     ← Chat session + message endpoints ✅
+│   └── api/reports.py                  ← Ingest, summarize, translate endpoints ✅
 └── Tqreerk-backend/
-    ├── API/Controllers/        ← HTTP layer (only AuthController exists so far)
-    ├── API/Middleware/         ← ExceptionHandlingMiddleware ✅
-    ├── Application/DTOs/       ← Request/Response objects
-    ├── Application/Interfaces/ ← Service contracts
-    ├── Application/Services/   ← Business logic (AuthService, TokenService done)
-    ├── Application/Settings/   ← JwtSettings ✅
-    ├── Domain/Entities/        ← 27 entities all done ✅
-    ├── Domain/Enums/           ← All enums done ✅
-    ├── Domain/Common/          ← BaseEntity, AuditableEntity, SoftDeletableEntity ✅
-    ├── Infrastructure/Data/    ← TaqreerkDbContext, 26 configurations, 1 migration ✅
-    └── Extensions/             ← ServiceExtensions ✅
+    ├── API/Controllers/                ← AuthController, RbacController, UsersController
+    ├── API/Middleware/                  ← ExceptionHandlingMiddleware ✅
+    ├── Application/DTOs/               ← Request/Response objects
+    ├── Application/Interfaces/         ← Service contracts
+    ├── Application/Services/           ← AuthService, TokenService, UserService, RbacService ✅
+    ├── Application/Settings/           ← JwtSettings ✅
+    ├── Domain/Entities/                ← 30 entities (27 + ChatSession, ChatMessage, ReportPage) ✅
+    ├── Domain/Enums/                   ← All enums done ✅
+    ├── Domain/Common/                  ← BaseEntity, AuditableEntity, SoftDeletableEntity ✅
+    ├── Infrastructure/Data/            ← TaqreerkDbContext, 29 configurations, 4 migrations ✅
+    └── Extensions/                     ← ServiceExtensions ✅
 ```
 
 **Key files:**
@@ -72,6 +85,9 @@ Tqreerk-backend/
 - [x] UUID primary keys with `gen_random_uuid()`
 - [x] Soft delete query filters applied globally
 - [x] Migration applied to `taqreerk_staging` database — auto-applied on container startup ✅ confirmed in logs
+- [x] `ChatSession`, `ChatMessage`, `ReportPage` entities + EF configs added ✅
+- [x] Migration `20260424000000_AddAiServiceTables` — pgvector extension + 3 new tables ✅
+- [x] pgvector `vector(768)` embedding column on `report_pages` (no global HNSW — filter by ReportId first) ✅
 - [ ] Migration applied to `taqreerk_production` database — needs production deploy
 - [ ] Seed data: roles (admin, editor, partner, researcher, subscriber)
 - [ ] Seed data: common sectors (economy, education, technology, investment, etc.)
@@ -169,16 +185,23 @@ Tqreerk-backend/
 - [ ] `GET /api/organization/me/reports` — org's report list with analytics
 - [ ] `POST /api/organization/me/promote-report` — request featured slot for a report
 
-### AI Pipeline (Google Gemini 3 Flash)
-- [ ] `IGeminiService` + `GeminiService` — wrapper for Gemini 3 Flash API calls
-- [ ] `IAiPipelineService` — orchestrates AI jobs
-- [ ] `POST /api/ai/reports/{id}/summarize` — trigger summary + key findings generation
-- [ ] `POST /api/ai/reports/{id}/translate` — trigger AI translation (AR↔EN)
+### AI Pipeline — Python ai-service (Gemini Flash + pgvector RAG)
+- [x] PDF ingestion pipeline: PyMuPDF → PNG per page → Gemini Flash description → text-embedding-004 → pgvector ✅
+- [x] `POST /api/ai/reports/ingest` — trigger PDF ingestion (Python) ✅
+- [x] `POST /api/ai/reports/summarize` — executive summary + key findings via Gemini (Python) ✅
+- [x] `POST /api/ai/reports/translate` — translate page content AR↔EN via Gemini (Python) ✅
+- [x] `POST /api/ai/chat/sessions` — create chat session per user per report (Python) ✅
+- [x] `POST /api/ai/chat/sessions/{id}/messages` — RAG Q&A with 5-turn memory window (Python) ✅
+- [x] `GET /api/ai/chat/sessions/{id}` — full session history (Python) ✅
+- [x] `GET /api/ai/chat/reports/{id}/sessions` — list all sessions for user+report (Python) ✅
+- [x] Chat memory: last 10 messages sent to Gemini; full history stored in DB always ✅
+- [x] GitHub Actions `deploy-ai-service-staging.yml` — deploys Python service to Cloud Run ✅
+- [ ] `IAiServiceClient` in .NET — HTTP client to call Python service (needed by .NET dev)
+- [ ] `POST /api/chat/*` proxy in .NET — validates JWT then forwards to Python (needed by .NET dev)
+- [ ] `IGcsService` + `GcsService` in .NET — upload PDF to Cloud Storage (needed by .NET dev)
+- [ ] `POST /api/reports` in .NET — calls GCS upload + triggers Python ingest (needed by .NET dev)
 - [ ] `POST /api/ai/reports/{id}/insights` — extract indicators and trends
 - [ ] `POST /api/ai/compare` — compare 2+ reports with similarity scoring
-- [ ] `GET /api/ai/jobs/{id}` — poll AI job status (queued/processing/done/failed)
-- [ ] Background job queue (Hangfire or IHostedService) for async AI processing
-- [ ] Token usage tracking per job
 
 ### Infographics
 - [ ] `POST /api/reports/{id}/infographics` — generate infographic (bar/pie/line/radar) from AI extracted data
@@ -206,7 +229,8 @@ Tqreerk-backend/
 - [ ] `PUT /api/admin/featured-content` — curate featured reports on homepage
 
 ### Error Monitoring
-- [ ] Sentry SDK integration (backend — `SENTRY_DSN` env var)
+- [x] Sentry SDK integrated in .NET (`Sentry.AspNetCore`, reads `Sentry__Dsn` env var) ✅
+- [ ] Sentry integrated in Python ai-service
 - [ ] Structured logging with Sentry breadcrumbs
 
 ### Testing
@@ -268,16 +292,18 @@ Tqreerk-backend/
 
 **Still needed (set when features are built):**
 
-| Variable | Where Used |
-|---|---|
-| `REFRESH_TOKEN_SECRET` | Refresh token signing |
-| `MISER_SECRET_KEY` | Miser payment API key |
-| `MISER_WEBHOOK_SECRET` | Miser webhook HMAC verification |
-| `UNIFONIC_API_KEY` | OTP/SMS login |
-| `UNIFONIC_SENDER_ID` | SMS sender ID |
-| `GEMINI_API_KEY` | Google Gemini 3 Flash |
-| `SENTRY_DSN` | Error monitoring |
-| `CLOUD_STORAGE_BUCKET` | Report file uploads (GCS) |
+| Variable | Service | Where Used |
+|---|---|---|
+| `REFRESH_TOKEN_SECRET` | .NET | Refresh token signing |
+| `MISER_SECRET_KEY` | .NET | Miser payment API key |
+| `MISER_WEBHOOK_SECRET` | .NET | Miser webhook HMAC verification |
+| `UNIFONIC_API_KEY` | .NET | OTP/SMS login |
+| `UNIFONIC_SENDER_ID` | .NET | SMS sender ID |
+| `GEMINI_API_KEY` | Python | Google Gemini Flash + text-embedding-004 |
+| `SENTRY_DSN` | Both | Error monitoring |
+| `CLOUD_STORAGE_BUCKET` | .NET | PDF uploads to GCS |
+| `AI_SERVICE_URL_STAGING` | .NET | Python Cloud Run URL (staging) |
+| `AI_SERVICE_URL_PRODUCTION` | .NET | Python Cloud Run URL (production) |
 
 ---
 
