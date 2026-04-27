@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""           # optional: AI Studio key — if set, used INSTEAD of Vertex AI
     internal_api_key: str = ""         # optional: shared secret for .NET → Python calls
 
+    # ── Model names (override per env without code changes) ──────────────────
+    gemini_vision_model: str  = "gemini-2.5-flash"        # PDF page → text + chart descriptions
+    gemini_chat_model: str    = "gemini-2.5-flash"        # RAG chat answers (fast, small context)
+    gemini_summary_model: str = "gemini-2.5-flash"        # full-report summarization (deeper analysis)
+    gemini_embed_model: str   = "text-embedding-004"      # 768-dim embeddings — must match DB vector(768)
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:
