@@ -19,6 +19,9 @@ public class Organization : SoftDeletableEntity
     public bool IsPartner { get; set; }
     public bool IsVerified { get; set; }
     public OrganizationStatus Status { get; set; } = OrganizationStatus.PendingReview;
+    /// User who originally registered the organization. Protected from removal
+    /// by other members so the org always has an "owner of record".
+    public Guid? CreatedByUserId { get; set; }
 
     public Country? Country { get; set; }
     public OrganizationProfile? Profile { get; set; }

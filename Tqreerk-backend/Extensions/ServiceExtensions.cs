@@ -8,7 +8,9 @@ using Taqreerk.API.Authorization;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Services;
 using Taqreerk.Application.Settings;
+using Taqreerk.Infrastructure.AI;
 using Taqreerk.Infrastructure.Data;
+using Taqreerk.Infrastructure.Storage;
 
 namespace Taqreerk.Extensions;
 
@@ -56,12 +58,55 @@ public static class ServiceExtensions
     public static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration config)
     {
         services.Configure<EmailSettings>(config.GetSection(EmailSettings.Section));
+        services.Configure<FileStorageSettings>(config.GetSection(FileStorageSettings.Section));
+        services.Configure<AiServiceSettings>(config.GetSection(AiServiceSettings.Section));
+
+        services.AddMemoryCache();
 
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IRbacService, RbacService>();
         services.AddScoped<IUserService, UserService>();
-        services.AddSingleton<IEmailSender, LogEmailSender>();
+        services.AddScoped<IOrganizationService, OrganizationService>();
+        services.AddScoped<IDashboardService, DashboardService>();
+        services.AddScoped<IReportService, ReportService>();
+        services.AddScoped<IReportAiService, ReportAiService>();
+
+        // Typed HttpClient for the external Python ai-service. Each call is a
+        // long-running RPC (ingest can take minutes); the per-call timeout is
+        // controlled via AiServiceSettings.TimeoutSeconds inside the client.
+        services.AddHttpClient<IAiServiceClient, AiServiceClient>();
+
+        // Background worker that drains the ai_jobs queue. Single instance —
+        // see ReportProcessingWorker.cs for scaling notes.
+        services.AddHostedService<ReportProcessingWorker>();
+
+        // File storage: pick GCS when explicitly configured, otherwise local disk.
+        // Same fall-through pattern as the email senders.
+        var storageProvider = (config[$"{FileStorageSettings.Section}:Provider"] ?? "local").ToLowerInvariant();
+        if (storageProvider == "gcs")
+        {
+            services.AddSingleton<IFileStorage, GcsFileStorage>();
+        }
+        else
+        {
+            services.AddSingleton<IFileStorage, LocalFileStorage>();
+        }
+
+        // Pick the email sender based on configuration:
+        //   - SmtpHost set      → real SMTP delivery (SmtpEmailSender)
+        //   - SmtpHost empty    → dry-run that logs the body to the console (LogEmailSender)
+        // This way devs without SMTP credentials still see codes in their terminal.
+        var smtpHost = config[$"{EmailSettings.Section}:SmtpHost"];
+        if (!string.IsNullOrWhiteSpace(smtpHost))
+        {
+            services.AddScoped<IEmailSender, SmtpEmailSender>();
+        }
+        else
+        {
+            services.AddSingleton<IEmailSender, LogEmailSender>();
+        }
+
         return services;
     }
 

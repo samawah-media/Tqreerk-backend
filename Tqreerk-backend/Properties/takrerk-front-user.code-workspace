@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"name": "takrerk-front-user",
+			"path": "../../../takrerak-frontend/apps/takrerk-front-user"
+		},
+		{
+			"name": "Tqreerk-backend",
+			"path": "../.."
+		}
+	]
+}

@@ -18,6 +18,7 @@ public class TaqreerkDbContext : DbContext
     public DbSet<OrganizationProfile> OrganizationProfiles => Set<OrganizationProfile>();
     public DbSet<OrganizationMember> OrganizationMembers => Set<OrganizationMember>();
     public DbSet<OrganizationFile> OrganizationFiles => Set<OrganizationFile>();
+    public DbSet<OrganizationInvitation> OrganizationInvitations => Set<OrganizationInvitation>();
 
     // Reference data
     public DbSet<Country> Countries => Set<Country>();

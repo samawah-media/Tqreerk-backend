@@ -241,3 +241,15 @@ C:\Users\sheha\OneDrive\Documents\Tqreerk-backend\Tqreerk-backend\obj\Debug\net8
 C:\Users\sheha\OneDrive\Documents\Tqreerk-backend\Tqreerk-backend\obj\Debug\net8.0\Tqreerk-backend.pdb
 C:\Users\sheha\OneDrive\Documents\Tqreerk-backend\Tqreerk-backend\obj\Debug\net8.0\Tqreerk-backend.genruntimeconfig.cache
 C:\Users\sheha\OneDrive\Documents\Tqreerk-backend\Tqreerk-backend\obj\Debug\net8.0\ref\Tqreerk-backend.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\obj\Debug\net8.0\staticwebassets.upToDateCheck.txt
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Google.Api.Gax.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Google.Api.Gax.Rest.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Google.Apis.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Google.Apis.Auth.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Google.Apis.Core.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Google.Apis.Storage.v1.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Google.Cloud.Storage.V1.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\Newtonsoft.Json.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\System.Management.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\runtimes\win\lib\net7.0\System.Management.dll
+C:\Users\Abdalrahman Seria\Desktop\proSol\Tqreerk-backend\Tqreerk-backend\bin\Debug\net8.0\taqrrerk-gcs-key.json

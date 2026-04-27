@@ -13,6 +13,13 @@ public interface IAuthService
     Task SendVerificationEmailAsync(string email, CancellationToken ct = default);
     Task ConfirmEmailAsync(string token, CancellationToken ct = default);
 
+    Task SendEmailOtpAsync(string email, CancellationToken ct = default);
+    Task<AuthResult> VerifyEmailOtpAsync(string email, string code, string? ipAddress, string? deviceInfo, CancellationToken ct = default);
+
     Task RequestPasswordResetAsync(string email, string? ipAddress, CancellationToken ct = default);
     Task ResetPasswordAsync(string token, string newPassword, CancellationToken ct = default);
+
+    Task<IReadOnlyList<SessionDto>> GetActiveSessionsAsync(Guid userId, string? currentRefreshToken, CancellationToken ct = default);
+    Task RevokeSessionAsync(Guid userId, Guid sessionId, CancellationToken ct = default);
+    Task RevokeAllSessionsAsync(Guid userId, CancellationToken ct = default);
 }

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Taqreerk.Domain.Entities;
+using Taqreerk.Infrastructure.Data.Seed;
 
 namespace Taqreerk.Infrastructure.Data.Configurations;
 
@@ -17,7 +18,11 @@ public class SectorConfiguration : IEntityTypeConfiguration<Sector>
         builder.Property(e => e.NameEn).IsRequired().HasMaxLength(200);
         builder.Property(e => e.Slug).IsRequired().HasMaxLength(200);
         builder.Property(e => e.Description).HasMaxLength(1000);
+        builder.Property(e => e.IsActive).HasDefaultValue(true);
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
 
         builder.HasIndex(e => e.Slug).IsUnique();
+
+        builder.HasData(ReferenceSeedData.Sectors);
     }
 }

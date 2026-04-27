@@ -7,5 +7,8 @@ public enum AiJobType
     Comparison,
     Infographic,
     KeywordExtraction,
-    InsightExtraction
+    InsightExtraction,
+    /// <summary>PDF ingestion via the ai-service /reports/ingest endpoint.
+    /// Extracts text + writes report_pages + builds embeddings.</summary>
+    Ingestion
 }

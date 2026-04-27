@@ -18,6 +18,12 @@ public class User : SoftDeletableEntity
     public UserStatus Status { get; set; } = UserStatus.PendingVerification;
     public string PreferredLanguage { get; set; } = "ar";
 
+    // Brute-force protection: incremented on bad-password login; cleared on success.
+    // When the count reaches the threshold, LockoutEndsAt is set forward; the next
+    // login attempt before that timestamp is rejected without checking the password.
+    public int FailedLoginAttempts { get; set; }
+    public DateTime? LockoutEndsAt { get; set; }
+
     public Country? Country { get; set; }
     public ICollection<RefreshToken> RefreshTokens { get; set; } = [];
     public ICollection<UserRole> UserRoles { get; set; } = [];
