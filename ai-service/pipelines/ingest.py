@@ -1,18 +1,18 @@
 """PDF ingestion pipeline.
 
 Flow:
-  1. Download the PDF from the given URL (or receive bytes directly).
+  1. Download the PDF from GCS (gs://) or HTTPS.
   2. Render each page as a 150-dpi PNG using PyMuPDF.
   3. Send each PNG to Gemini Flash → rich text description.
   4. Embed the description with text-embedding-004 → vector(768).
   5. Upsert into report_pages table.
 """
-import io
 from uuid import UUID
 
 import fitz  # PyMuPDF
 import numpy as np
 import httpx
+from google.cloud import storage
 
 from core.db import conn_ctx
 from services.gemini import describe_page_image, embed_text
@@ -21,13 +21,36 @@ from services.gemini import describe_page_image, embed_text
 DPI = 150
 MAT = fitz.Matrix(DPI / 72, DPI / 72)
 
+_gcs_client = None
+
+
+def _gcs():
+    global _gcs_client
+    if _gcs_client is None:
+        _gcs_client = storage.Client()
+    return _gcs_client
+
+
+def _download_from_gcs(gs_uri: str) -> bytes:
+    """Download bytes from a gs://bucket/path URI using ADC."""
+    assert gs_uri.startswith("gs://")
+    bucket_name, _, blob_path = gs_uri[5:].partition("/")
+    blob = _gcs().bucket(bucket_name).blob(blob_path)
+    return blob.download_as_bytes()
+
 
 async def ingest_report(report_id: UUID, file_url: str) -> int:
-    """Download a PDF and populate report_pages. Returns number of pages processed."""
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.get(file_url)
-        resp.raise_for_status()
-        pdf_bytes = resp.content
+    """Download a PDF (gs:// or https://) and populate report_pages.
+
+    Returns number of pages processed.
+    """
+    if file_url.startswith("gs://"):
+        pdf_bytes = _download_from_gcs(file_url)
+    else:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(file_url)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
 
     return await ingest_report_bytes(report_id, pdf_bytes)
 
