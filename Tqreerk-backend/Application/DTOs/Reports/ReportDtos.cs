@@ -16,6 +16,7 @@ public record ReportListItemDto(
     int DownloadsCount,
     decimal AvgRating,
     bool IsFeatured,
+    string? CoverImageUrl,
     Guid? SectorId,
     string? SectorNameAr,
     Guid? CountryId,

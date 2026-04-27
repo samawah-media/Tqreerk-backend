@@ -16,11 +16,16 @@ public class ReportsController : ControllerBase
 
     private readonly IReportService _reports;
     private readonly IReportAiService _ai;
+    private readonly ILogger<ReportsController> _logger;
 
-    public ReportsController(IReportService reports, IReportAiService ai)
+    public ReportsController(
+        IReportService reports,
+        IReportAiService ai,
+        ILogger<ReportsController> logger)
     {
         _reports = reports;
         _ai = ai;
+        _logger = logger;
     }
 
     /// <summary>List the caller's organization's reports (paginated).</summary>
@@ -58,6 +63,18 @@ public class ReportsController : ControllerBase
     public async Task<IActionResult> Create([FromForm] CreateReportForm form, CancellationToken ct)
     {
         if (!TryGetUserId(out var userId)) return Unauthorized();
+
+        // Log what the multipart binder actually picked up. If CoverImage stays
+        // null in this line while the frontend swears it sent the field, the
+        // model-binding key is wrong (e.g. `coverImage` vs `CoverImage`).
+        _logger.LogInformation(
+            "POST /api/reports — file={FileName} ({FileSize} bytes), coverImage={CoverName} ({CoverSize} bytes), title={Title}",
+            form.File?.FileName ?? "(none)",
+            form.File?.Length ?? 0,
+            form.CoverImage?.FileName ?? "(none)",
+            form.CoverImage?.Length ?? 0,
+            form.Title);
+
         if (form.File is null || form.File.Length == 0)
             return BadRequest(new { title = "File is required." });
 
@@ -80,11 +97,45 @@ public class ReportsController : ControllerBase
             CountryId: form.CountryId
         );
 
-        await using var stream = form.File.OpenReadStream();
-        var created = await _reports.CreateAsync(
-            userId, dto, stream, form.File.FileName, form.File.ContentType, ct);
+        // Buffer both files into seekable MemoryStreams before handing them to
+        // the service. The Google Cloud Storage SDK occasionally retries chunked
+        // uploads on transient failures and needs to rewind the stream to do
+        // so. The IFormFile-backed request stream isn't seekable and surfaces
+        // as "The inner stream position has changed unexpectedly" on retry.
+        // Buffering trades RAM (capped by the 50 MB request limit) for upload
+        // robustness — a fair deal for a low-frequency operation.
+        await using var reportBuffer = await BufferAsync(form.File, ct);
+        var reportFile = new UploadedFile(reportBuffer, form.File.FileName, form.File.ContentType);
 
-        return CreatedAtAction(nameof(Get), new { id = created.Id }, created);
+        UploadedFile? coverFile = null;
+        MemoryStream? coverBuffer = null;
+        try
+        {
+            if (form.CoverImage is not null && form.CoverImage.Length > 0)
+            {
+                coverBuffer = await BufferAsync(form.CoverImage, ct);
+                coverFile = new UploadedFile(coverBuffer, form.CoverImage.FileName, form.CoverImage.ContentType);
+            }
+
+            var created = await _reports.CreateAsync(userId, dto, reportFile, coverFile, ct);
+            return CreatedAtAction(nameof(Get), new { id = created.Id }, created);
+        }
+        finally
+        {
+            if (coverBuffer is not null) await coverBuffer.DisposeAsync();
+        }
+    }
+
+    /// Copy an IFormFile into a seekable MemoryStream positioned at 0. Required
+    /// because GCS retry logic seeks the source stream — which the multipart
+    /// request body doesn't support.
+    private static async Task<MemoryStream> BufferAsync(IFormFile file, CancellationToken ct)
+    {
+        var ms = new MemoryStream(checked((int)Math.Max(file.Length, 0)));
+        await using var src = file.OpenReadStream();
+        await src.CopyToAsync(ms, ct);
+        ms.Position = 0;
+        return ms;
     }
 
     /// <summary>Soft-delete a report. Caller must belong to the owning org.</summary>
@@ -131,6 +182,9 @@ public class ReportsController : ControllerBase
     public class CreateReportForm
     {
         public IFormFile? File { get; set; }
+        /// Optional thumbnail rendered on the report card / detail page. Image
+        /// formats only (PNG/JPEG/WEBP, up to 5 MB).
+        public IFormFile? CoverImage { get; set; }
         public string Title { get; set; } = string.Empty;
         public string? Description { get; set; }
         public string? ReportType { get; set; }

@@ -2,16 +2,22 @@ using Taqreerk.Application.DTOs.Reports;
 
 namespace Taqreerk.Application.Interfaces;
 
+/// Lightweight value object wrapping a multipart file upload. Keeps the
+/// service signatures small as we add optional companion files (cover image
+/// today, infographics tomorrow). All fields are required when the wrapper
+/// itself is non-null; pass null to omit the file entirely.
+public record UploadedFile(Stream Content, string OriginalFileName, string ContentType);
+
 public interface IReportService
 {
-    /// Create a new report owned by the caller's organization. The PDF is
-    /// uploaded to GCS; metadata is persisted; status starts at Draft.
+    /// Create a new report owned by the caller's organization. The main PDF is
+    /// required; an optional cover image (PNG/JPEG/WEBP) is stored alongside
+    /// it and surfaced as the card thumbnail.
     Task<ReportDetailDto> CreateAsync(
         Guid currentUserId,
         CreateReportRequest req,
-        Stream fileContent,
-        string originalFileName,
-        string contentType,
+        UploadedFile reportFile,
+        UploadedFile? coverImage,
         CancellationToken ct = default);
 
     /// List the caller's org's reports (paginated, optional text filter).

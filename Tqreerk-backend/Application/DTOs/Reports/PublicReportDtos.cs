@@ -1,0 +1,77 @@
+namespace Taqreerk.Application.DTOs.Reports;
+
+/// Public summary for the library / homepage carousels. Excludes uploader PII
+/// (no email, no IP, no internal status fields). Slug is the canonical
+/// identifier the public site uses in URLs — never the GUID.
+public record PublicReportListItemDto(
+    Guid Id,
+    string Slug,
+    string Title,
+    string? Description,
+    string? ReportType,
+    string OriginalLanguage,
+    int? PublicationYear,
+    int? PageCount,
+    int ViewsCount,
+    int DownloadsCount,
+    decimal AvgRating,
+    int RatingsCount,
+    bool IsFeatured,
+    string? CoverImageUrl,
+    Guid OrganizationId,
+    string OrganizationNameAr,
+    string OrganizationNameEn,
+    Guid? SectorId,
+    string? SectorNameAr,
+    Guid? CountryId,
+    string? CountryNameAr,
+    DateTime CreatedAt
+);
+
+/// Detail shape for /api/public/reports/{slug}. Same fields as the list item
+/// plus the signed file URL + AI summary/topics so the public report page can
+/// render the preview content. Translations are not included here — those are
+/// surfaced separately if/when we add a public translation viewer.
+public record PublicReportDetailDto(
+    Guid Id,
+    string Slug,
+    string Title,
+    string? Description,
+    string? ReportType,
+    string OriginalLanguage,
+    int? PublicationYear,
+    DateOnly? PublicationDate,
+    int? PageCount,
+    string? FileUrl,
+    string? CoverImageUrl,
+    int ViewsCount,
+    int DownloadsCount,
+    decimal AvgRating,
+    int RatingsCount,
+    bool IsFeatured,
+    Guid OrganizationId,
+    string OrganizationNameAr,
+    string OrganizationNameEn,
+    Guid? SectorId,
+    string? SectorNameAr,
+    Guid? CountryId,
+    string? CountryNameAr,
+    string? Summary,
+    IReadOnlyList<string> KeyFindings,
+    IReadOnlyList<string> Topics,
+    DateTime CreatedAt
+);
+
+/// Query parameters for the public list. All optional. Filter values use
+/// arrays so multiple sectors/countries can be selected at once.
+public record PublicReportListRequest(
+    string? Q = null,
+    Guid[]? Sectors = null,
+    Guid[]? Countries = null,
+    int? YearFrom = null,
+    int? YearTo = null,
+    string? Language = null,
+    string? Sort = null,
+    int Page = 1,
+    int PageSize = 12
+);

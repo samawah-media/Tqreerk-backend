@@ -70,6 +70,7 @@ public static class ServiceExtensions
         services.AddScoped<IOrganizationService, OrganizationService>();
         services.AddScoped<IDashboardService, DashboardService>();
         services.AddScoped<IReportService, ReportService>();
+        services.AddScoped<IPublicReportService, PublicReportService>();
         services.AddScoped<IReportAiService, ReportAiService>();
 
         // Typed HttpClient for the external Python ai-service. Each call is a
