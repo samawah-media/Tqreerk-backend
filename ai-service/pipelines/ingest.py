@@ -52,6 +52,7 @@ async def ingest_report_bytes(report_id: UUID, pdf_bytes: bytes) -> int:
             embedding = embed_text(content)
             embedding_vec = np.array(embedding, dtype=np.float32)
 
+
             await conn.execute(
                 """
                 INSERT INTO report_pages ("ReportId", "PageNumber", "Content", embedding, "CreatedAt")
