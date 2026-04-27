@@ -79,7 +79,7 @@ def describe_page_image(png_bytes: bytes) -> str:
         "(capture data, trends, labels, key takeaways). Empty list if none."
     )
     response = _client.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         contents=[prompt, image_part],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
