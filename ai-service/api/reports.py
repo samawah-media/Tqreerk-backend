@@ -77,18 +77,16 @@ async def translate(
     source_language = detect_language(row[0])
     target_language = "en" if source_language == "ar" else "ar"
 
-    # .NET sends a base prefix; Python appends the detected target-language subdir.
-    # Result: {output_prefix}{target_language}/original.pdf
-    base = body.output_prefix
-    if not base.startswith("gs://"):
+    # Use the output_prefix exactly as .NET sent it — no language subfolder appended.
+    output_prefix = body.output_prefix
+    if not output_prefix.startswith("gs://"):
         raise HTTPException(status_code=400, detail="output_prefix must start with gs://")
-    if not base.endswith("/"):
-        base += "/"
-    final_prefix = f"{base}{target_language}/"
+    if not output_prefix.endswith("/"):
+        output_prefix += "/"
 
     translated_url = translate_pdf(
         gcs_input_uri=body.file_url,
-        output_prefix=final_prefix,
+        output_prefix=output_prefix,
         source_language=source_language,
         target_language=target_language,
     )
