@@ -40,7 +40,7 @@ def translate_pdf(
       result        = gs://bucket/reports/{id}/translated/en/original.pdf
     """
     _init()
-    response = _client.translate_document(
+    _client.translate_document(
         request={
             "parent": _parent,
             "source_language_code": source_language,
@@ -54,4 +54,7 @@ def translate_pdf(
             },
         }
     )
-    return response.document_translation.translated_documents[0].gcs_output_uri
+    # The response from translate_document with a GCS destination does not echo
+    # back the output path, but Google writes to: output_prefix + source_filename
+    filename = gcs_input_uri.rsplit("/", 1)[-1]
+    return f"{output_prefix}{filename}"
