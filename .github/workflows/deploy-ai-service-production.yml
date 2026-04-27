@@ -62,6 +62,7 @@ jobs:
             DATABASE_URL=${{ secrets.DATABASE_URL_PRODUCTION }}
             GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
             GCS_BUCKET=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
 
       - name: Verify deployment
         run: |

@@ -1,33 +1,43 @@
-"""Thin wrapper around the Vertex AI Gemini Flash API.
+"""Gemini wrapper supporting both AI Studio (API key) and Vertex AI (ADC).
 
-Authentication: Application Default Credentials (ADC) — works natively on Cloud Run.
-Clients are initialized lazily on first use so import failures don't block startup.
+Auth selection:
+  - If GEMINI_API_KEY is set in the environment → use AI Studio with the key
+  - Otherwise → use Vertex AI with Application Default Credentials
+
+Both modes go through the unified `google-genai` SDK so the rest of the code
+is identical regardless of which auth path is active.
 """
 import json
 
-import vertexai
+from google import genai
+from google.genai import types
 from pydantic import BaseModel
-from vertexai.generative_models import GenerationConfig, GenerativeModel, Part
-from vertexai.language_models import TextEmbeddingModel
 
 from core.config import settings
 
 _initialized = False
-_flash: GenerativeModel | None = None
-_embed: TextEmbeddingModel | None = None
+_client: genai.Client | None = None
+_mode: str = ""  # "api_key" or "vertex" — set during _init for diagnostics
 
 
 def _init():
-    global _initialized, _flash, _embed
+    global _initialized, _client, _mode
     if _initialized:
         return
-    vertexai.init(project=settings.gcp_project_id, location=settings.vertex_location)
-    _flash = GenerativeModel("gemini-1.5-flash")
-    _embed = TextEmbeddingModel.from_pretrained("text-embedding-004")
+    if settings.gemini_api_key:
+        _client = genai.Client(api_key=settings.gemini_api_key)
+        _mode = "api_key"
+    else:
+        _client = genai.Client(
+            vertexai=True,
+            project=settings.gcp_project_id,
+            location=settings.vertex_location,
+        )
+        _mode = "vertex"
     _initialized = True
 
 
-# ── Structured output schemas (Vertex AI uses JSON-Schema dicts) ─────────────
+# ── Structured output schemas (JSON-Schema dicts) ────────────────────────────
 
 PAGE_DESCRIPTION_SCHEMA = {
     "type": "object",
@@ -60,7 +70,7 @@ class ReportSummary(BaseModel):
 def describe_page_image(png_bytes: bytes) -> str:
     """Send a PDF page rendered as PNG to Gemini; returns combined text for embedding."""
     _init()
-    image_part = Part.from_data(data=png_bytes, mime_type="image/png")
+    image_part = types.Part.from_bytes(data=png_bytes, mime_type="image/png")
     prompt = (
         "You are processing a page from a research report.\n"
         "Return a JSON object with two fields:\n"
@@ -68,9 +78,10 @@ def describe_page_image(png_bytes: bytes) -> str:
         "  visual_elements: list of detailed descriptions for every chart, graph, table, or image "
         "(capture data, trends, labels, key takeaways). Empty list if none."
     )
-    response = _flash.generate_content(
-        [prompt, image_part],
-        generation_config=GenerationConfig(
+    response = _client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=[prompt, image_part],
+        config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=PAGE_DESCRIPTION_SCHEMA,
         ),
@@ -83,8 +94,11 @@ def describe_page_image(png_bytes: bytes) -> str:
 def embed_text(text: str) -> list[float]:
     """Return a 768-dimensional embedding for the given text."""
     _init()
-    embeddings = _embed.get_embeddings([text])
-    return embeddings[0].values
+    response = _client.models.embed_content(
+        model="text-embedding-004",
+        contents=text,
+    )
+    return response.embeddings[0].values
 
 
 def chat_with_context(
@@ -112,7 +126,10 @@ def chat_with_context(
     full_message = f"{system_prompt}\n\nUSER QUESTION: {user_message}"
     contents.append({"role": "user", "parts": [{"text": full_message}]})
 
-    response = _flash.generate_content(contents)
+    response = _client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=contents,
+    )
     return response.text.strip(), source_pages
 
 
@@ -128,9 +145,10 @@ def summarize_report(pages_content: list[str]) -> ReportSummary:
         "Respond in the same language as the report text.\n\n"
         f"REPORT TEXT:\n{combined}"
     )
-    response = _flash.generate_content(
-        prompt,
-        generation_config=GenerationConfig(
+    response = _client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=REPORT_SUMMARY_SCHEMA,
         ),

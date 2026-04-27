@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     gcs_bucket: str                    # taqreerk-uploads (me-central1, Doha)
     translate_location: str = "global" # Google Translate API location
     vertex_location: str = "us-central1"  # Vertex AI region for Gemini (me-central1 has no Gemini yet)
+    gemini_api_key: str = ""           # optional: AI Studio key — if set, used INSTEAD of Vertex AI
     internal_api_key: str = ""         # optional: shared secret for .NET → Python calls
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
