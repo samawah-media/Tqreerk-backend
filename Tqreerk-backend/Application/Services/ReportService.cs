@@ -12,35 +12,49 @@ namespace Taqreerk.Application.Services;
 public class ReportService : IReportService
 {
     private const long MaxFileSizeBytes = 50 * 1024 * 1024; // 50 MB — matches Feature 6 plan
+    private const long MaxCoverImageBytes = 5 * 1024 * 1024; // 5 MB — typical thumbnail
     private const string ReportFolder = "reports";
+    private const string CoverFolder = "covers";
     private static readonly string[] AllowedContentTypes =
     [
         "application/pdf",
+    ];
+    private static readonly string[] AllowedCoverContentTypes =
+    [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
     ];
 
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
     private readonly IReportAiService _ai;
+    private readonly ILogger<ReportService> _logger;
 
-    public ReportService(TaqreerkDbContext db, IFileStorage files, IReportAiService ai)
+    public ReportService(
+        TaqreerkDbContext db,
+        IFileStorage files,
+        IReportAiService ai,
+        ILogger<ReportService> logger)
     {
         _db = db;
         _files = files;
         _ai = ai;
+        _logger = logger;
     }
 
     public async Task<ReportDetailDto> CreateAsync(
         Guid currentUserId,
         CreateReportRequest req,
-        Stream fileContent,
-        string originalFileName,
-        string contentType,
+        UploadedFile reportFile,
+        UploadedFile? coverImage,
         CancellationToken ct = default)
     {
-        if (!AllowedContentTypes.Contains(contentType, StringComparer.OrdinalIgnoreCase))
+        if (!AllowedContentTypes.Contains(reportFile.ContentType, StringComparer.OrdinalIgnoreCase))
             throw new ArgumentException("Only PDF files are accepted.");
 
-        if (fileContent.CanSeek && fileContent.Length > MaxFileSizeBytes)
+        if (reportFile.Content.CanSeek && reportFile.Content.Length > MaxFileSizeBytes)
             throw new ArgumentException("File exceeds the 50 MB size limit.");
 
         if (string.IsNullOrWhiteSpace(req.Title))
@@ -48,6 +62,14 @@ public class ReportService : IReportService
 
         if (req.PublicationDate.HasValue && req.PublicationDate.Value > DateOnly.FromDateTime(DateTime.UtcNow))
             throw new ArgumentException("Publication date cannot be in the future.");
+
+        if (coverImage is not null)
+        {
+            if (!AllowedCoverContentTypes.Contains(coverImage.ContentType, StringComparer.OrdinalIgnoreCase))
+                throw new ArgumentException("Cover image must be PNG, JPEG, or WEBP.");
+            if (coverImage.Content.CanSeek && coverImage.Content.Length > MaxCoverImageBytes)
+                throw new ArgumentException("Cover image exceeds the 5 MB size limit.");
+        }
 
         var orgId = await GetCallerOrgIdAsync(currentUserId, ct);
 
@@ -57,8 +79,42 @@ public class ReportService : IReportService
             throw new ArgumentException("Unknown country.");
 
         var slug = await GenerateUniqueSlugAsync(req.Title, ct);
-        var stored = await _files.UploadAsync(
-            fileContent, originalFileName, contentType, $"{ReportFolder}/{orgId}", ct);
+        var storedReport = await _files.UploadAsync(
+            reportFile.Content, reportFile.OriginalFileName, reportFile.ContentType,
+            $"{ReportFolder}/{orgId}", ct);
+
+        // Cover image is optional. Upload separately under covers/{orgId}/...
+        // so we can sign it on its own when surfacing thumbnails. We don't
+        // wrap the two uploads in a transaction — if the cover upload fails
+        // after the PDF is in place we still save the report and log the
+        // failure rather than ditch the whole upload.
+        string? coverKey = null;
+        if (coverImage is not null)
+        {
+            try
+            {
+                var storedCover = await _files.UploadAsync(
+                    coverImage.Content, coverImage.OriginalFileName, coverImage.ContentType,
+                    $"{CoverFolder}/{orgId}", ct);
+                coverKey = storedCover.ObjectKey;
+                _logger.LogInformation(
+                    "Cover image uploaded for org {OrgId}: {ObjectKey} ({Size} bytes, {ContentType})",
+                    orgId, storedCover.ObjectKey, storedCover.SizeBytes, storedCover.ContentType);
+            }
+            catch (Exception ex)
+            {
+                // Don't fail the whole report upload because of a cover-image
+                // glitch — the PDF is the load-bearing artefact. The user can
+                // re-upload a cover later via report edit (PR 7).
+                _logger.LogWarning(ex,
+                    "Cover image upload failed for org {OrgId} (filename={Name}, type={Type}); proceeding without cover.",
+                    orgId, coverImage.OriginalFileName, coverImage.ContentType);
+            }
+        }
+        else
+        {
+            _logger.LogInformation("No cover image provided for new report in org {OrgId}", orgId);
+        }
 
         var report = new Report
         {
@@ -73,7 +129,8 @@ public class ReportService : IReportService
             PublicationDate = req.PublicationDate,
             SectorId = req.SectorId,
             CountryId = req.CountryId,
-            FileUrl = stored.ObjectKey,
+            FileUrl = storedReport.ObjectKey,
+            CoverImageUrl = coverKey,
             Status = ReportStatus.Draft,
             SourceType = ReportSourceType.Organization,
         };
@@ -120,11 +177,39 @@ public class ReportService : IReportService
 
         var total = await q.CountAsync(ct);
 
-        var rows = await q
+        // Pull raw rows then sign cover URLs in a second pass — signing is
+        // async and can't run inside the EF projection.
+        var raw = await q
             .OrderByDescending(r => r.CreatedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(r => new ReportListItemDto(
+            .Select(r => new
+            {
+                r.Id,
+                r.Title,
+                r.Slug,
+                r.Status,
+                r.ReportType,
+                r.OriginalLanguage,
+                r.PublicationYear,
+                r.PageCount,
+                r.ViewsCount,
+                r.DownloadsCount,
+                r.AvgRating,
+                r.IsFeatured,
+                r.CoverImageUrl,
+                r.SectorId,
+                SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
+                r.CountryId,
+                CountryNameAr = r.Country != null ? r.Country.NameAr : null,
+                r.CreatedAt,
+            })
+            .ToListAsync(ct);
+
+        var rows = new List<ReportListItemDto>(raw.Count);
+        foreach (var r in raw)
+        {
+            rows.Add(new ReportListItemDto(
                 r.Id,
                 r.Title,
                 r.Slug,
@@ -137,15 +222,23 @@ public class ReportService : IReportService
                 r.DownloadsCount,
                 r.AvgRating,
                 r.IsFeatured,
+                await TrySignAsync(r.CoverImageUrl, ct),
                 r.SectorId,
-                r.Sector != null ? r.Sector.NameAr : null,
+                r.SectorNameAr,
                 r.CountryId,
-                r.Country != null ? r.Country.NameAr : null,
+                r.CountryNameAr,
                 r.CreatedAt
-            ))
-            .ToListAsync(ct);
+            ));
+        }
 
         return new PagedResult<ReportListItemDto>(rows, total, page, pageSize);
+    }
+
+    private async Task<string?> TrySignAsync(string? objectKey, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(objectKey)) return null;
+        try { return await _files.GetReadUrlAsync(objectKey, ct: ct); }
+        catch { return null; }
     }
 
     public async Task<ReportDetailDto> GetAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default)
@@ -230,14 +323,22 @@ public class ReportService : IReportService
 
         if (row is null) return null;
 
-        // Resolve a signed read URL for the PDF. Best-effort — if signing fails
-        // (e.g. the bucket isn't configured locally), return null and let the
-        // frontend show "file unavailable" rather than 500 the whole request.
+        // Resolve signed read URLs for both the PDF and the cover image.
+        // Best-effort — if signing fails (e.g. the bucket isn't configured
+        // locally) we return null so the frontend can fall back to its
+        // gradient placeholder rather than 500 the whole request.
         string? signedUrl = null;
         if (!string.IsNullOrWhiteSpace(row.FileUrl))
         {
             try { signedUrl = await _files.GetReadUrlAsync(row.FileUrl, ct: ct); }
             catch { signedUrl = null; }
+        }
+
+        string? coverUrl = null;
+        if (!string.IsNullOrWhiteSpace(row.CoverImageUrl))
+        {
+            try { coverUrl = await _files.GetReadUrlAsync(row.CoverImageUrl, ct: ct); }
+            catch { coverUrl = null; }
         }
 
         return new ReportDetailDto(
@@ -254,7 +355,7 @@ public class ReportService : IReportService
             row.PublicationDate,
             row.PageCount,
             signedUrl,
-            row.CoverImageUrl,
+            coverUrl,
             row.ViewsCount,
             row.DownloadsCount,
             row.AvgRating,
@@ -272,7 +373,12 @@ public class ReportService : IReportService
 
     /// Slug = transliterated/sanitized title + 6-char shortid. Conflict-loop
     /// (rare; Title-derived slugs already have entropy from the suffix) appends
-    /// a counter until uniqueness is achieved.
+    /// a fresh shortid until uniqueness is achieved.
+    ///
+    /// IgnoreQueryFilters bypasses the soft-delete query filter so we still
+    /// see deleted rows here. The DB-level UNIQUE index on `Slug` does not
+    /// include a `WHERE deleted_at IS NULL` predicate, so a re-used slug from
+    /// a soft-deleted row would still violate the constraint at INSERT time.
     private async Task<string> GenerateUniqueSlugAsync(string title, CancellationToken ct)
     {
         var baseSlug = ToSlug(title);
@@ -281,8 +387,10 @@ public class ReportService : IReportService
         for (var attempt = 0; attempt < 6; attempt++)
         {
             var candidate = $"{baseSlug}-{ShortId()}";
-            if (!await _db.Reports.AnyAsync(r => r.Slug == candidate, ct))
-                return candidate;
+            var taken = await _db.Reports
+                .IgnoreQueryFilters()
+                .AnyAsync(r => r.Slug == candidate, ct);
+            if (!taken) return candidate;
         }
         // Extremely unlikely; fall back to a pure GUID-based slug.
         return $"report-{Guid.NewGuid():N}".Substring(0, 24);
