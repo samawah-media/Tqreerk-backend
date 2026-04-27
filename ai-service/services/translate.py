@@ -52,6 +52,10 @@ def translate_pdf(
             "document_output_config": {
                 "gcs_destination": {"output_uri_prefix": output_prefix},
             },
+            # OCR helpers — improve translation quality on scanned / image-rendered PDFs
+            # (e.g. older Arabic government forms where text is rendered as paths, not chars).
+            "enable_rotation_correction": True,
+            "enable_shadow_removal_native_pdf": True,
         }
     )
     # The response from translate_document with a GCS destination does not echo
