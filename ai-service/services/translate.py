@@ -3,15 +3,16 @@
 Pipeline:
   1. Try Google Cloud Translation v3 Document Translation directly
      (with rotation_correction + shadow_removal flags).
-  2. Extract text from the translated PDF and detect its language.
-  3. If detected language == source language, the translation didn't take
-     (typical for path-rendered Arabic forms). Fallback: send the original PDF
-     to Gemini → receive translated text per page → render a new PDF and
-     upload it to GCS.
+  2. Find the new PDF Google created in the output prefix (filename pattern
+     varies — we list and pick the freshly created blob), extract text, and
+     detect its language.
+  3. If no PDF was created OR detected language == source language, the
+     translation didn't take (typical for path-rendered Arabic forms).
+     Fallback: send the original PDF to Gemini → receive translated text per
+     page → render a new PDF and upload it to GCS.
   4. Return the URI of whichever translated PDF the pipeline produced.
 """
-import os
-import tempfile
+import datetime
 
 import fitz  # PyMuPDF
 from google.cloud import storage, translate_v3
@@ -64,7 +65,27 @@ def _upload_pdf(uri: str, data: bytes) -> None:
     )
 
 
-# ── Output verification ─────────────────────────────────────────────────────
+# ── Output discovery + verification ─────────────────────────────────────────
+
+def _find_new_pdf_under(prefix_uri: str, after: datetime.datetime) -> str | None:
+    """Find a PDF blob under prefix_uri that was created after `after`.
+
+    Google's translate_document with a GCS destination doesn't return the
+    output URI; it generates a filename like
+    `<input-path>_<target_lang>_translations.pdf`. List + filter is the
+    reliable way to discover it.
+    """
+    bucket_name, prefix = _parse_gs(prefix_uri)
+    bucket = _storage_client.bucket(bucket_name)
+    candidates = [
+        b for b in bucket.list_blobs(prefix=prefix)
+        if b.name.lower().endswith(".pdf") and b.time_created and b.time_created > after
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda b: b.time_created, reverse=True)
+    return f"gs://{bucket_name}/{candidates[0].name}"
+
 
 def _extract_pdf_text(gcs_uri: str, max_chars: int = 2000) -> str:
     """Read enough text from a translated PDF to run language detection on."""
@@ -133,6 +154,7 @@ def translate_pdf(
     _init()
 
     # Step 1: direct Google Translate Document Translation
+    before = datetime.datetime.now(datetime.timezone.utc)
     _translate_client.translate_document(
         request={
             "parent": _parent,
@@ -149,14 +171,17 @@ def translate_pdf(
             "enable_shadow_removal_native_pdf": True,
         }
     )
-    google_uri = f"{output_prefix}{gcs_input_uri.rsplit('/', 1)[-1]}"
 
-    # Step 2: did the translation actually take?
-    sample = _extract_pdf_text(google_uri)
-    if sample.strip():
-        detected = detect_language(sample)
-        if detected != source_language:
-            return google_uri  # success — Google translated it
+    # Step 2: discover the file Google actually wrote (filename varies)
+    google_uri = _find_new_pdf_under(output_prefix, before)
 
-    # Step 3: fallback — Gemini reads the original PDF and renders a new one
+    # Step 3: if Google wrote a file, verify it actually got translated
+    if google_uri:
+        sample = _extract_pdf_text(google_uri)
+        if sample.strip():
+            detected = detect_language(sample)
+            if detected != source_language:
+                return google_uri  # success — Google translated it
+
+    # Step 4: fallback — Gemini reads the original PDF and renders a new one
     return _gemini_fallback(gcs_input_uri, output_prefix, target_language)
