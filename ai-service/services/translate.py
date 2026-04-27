@@ -1,11 +1,17 @@
 """PDF document translation using Google Cloud Translation API v3.
 
-Strategy: smart fallback (Option B).
-  1. Try translating the original PDF directly — fastest, preserves fonts.
-  2. If Google's output is essentially identical to input (no real translation
-     happened — typical for path-rendered Arabic government forms), preprocess
-     the PDF with OCRmyPDF (adds a real text layer via Tesseract) and retry.
-  3. Return the final translated GCS URI.
+Pipeline (always-on OCR preprocess):
+  1. Download PDF from GCS.
+  2. Run OCRmyPDF (Tesseract Arabic+English) — adds a real Unicode text layer.
+     This handles path-rendered Arabic government forms, scanned PDFs, and
+     guarantees Google Translate can read the text on every input.
+  3. Upload the OCR'd PDF to a sibling GCS path.
+  4. Send the OCR'd PDF to Google Translate Document Translation.
+  5. Return the translated GCS URI.
+
+Trade-off: ~30–60 sec extra per PDF for the OCR step, and the output PDF
+loses the original font styling (text is rendered via Tesseract's text layer).
+The win is reliability — every PDF translates successfully.
 """
 import os
 import tempfile
@@ -18,9 +24,6 @@ from core.config import settings
 _translate_client: translate_v3.TranslationServiceClient | None = None
 _storage_client: storage.Client | None = None
 _parent: str | None = None
-
-# If Google's output is within this much of the input size, assume nothing translated.
-SIZE_MATCH_TOLERANCE = 0.02  # 2 %
 
 
 def _init():
@@ -51,12 +54,6 @@ def _parse_gs(uri: str) -> tuple[str, str]:
     return bucket, path
 
 
-def _gcs_size(uri: str) -> int:
-    bucket_name, blob_path = _parse_gs(uri)
-    blob = _storage_client.bucket(bucket_name).get_blob(blob_path)
-    return blob.size if blob else 0
-
-
 def _download_pdf(uri: str) -> bytes:
     bucket_name, blob_path = _parse_gs(uri)
     return _storage_client.bucket(bucket_name).blob(blob_path).download_as_bytes()
@@ -69,7 +66,7 @@ def _upload_pdf(uri: str, data: bytes) -> None:
     )
 
 
-# ── OCR preprocessing (fallback path) ────────────────────────────────────────
+# ── OCR preprocessing ────────────────────────────────────────────────────────
 
 def _preprocess_with_ocr(input_gcs_uri: str) -> str:
     """Download → run OCRmyPDF (Arabic+English) → upload to a sibling path.
@@ -116,22 +113,28 @@ def _preprocess_with_ocr(input_gcs_uri: str) -> str:
     return ocr_uri
 
 
-# ── Core translation call ────────────────────────────────────────────────────
+# ── Public translate API ─────────────────────────────────────────────────────
 
-def _translate_document(
-    gcs_input_uri: str,
-    output_prefix: str,
+def translate_pdf(
+    gcs_input_uri: str,    # gs://bucket/reports/{report_id}/original.pdf
+    output_prefix: str,    # gs://bucket/reports/{report_id}/translated/en/
     source_language: str,
     target_language: str,
 ) -> str:
-    """Single Google Translate call. Returns deterministic output gs:// URI."""
+    """OCR-preprocess a PDF then translate it. Returns the GCS URI of the translated PDF."""
+    _init()
+
+    # Step 1: always preprocess with OCR — guarantees a usable text layer
+    ocr_uri = _preprocess_with_ocr(gcs_input_uri)
+
+    # Step 2: translate the OCR'd PDF
     _translate_client.translate_document(
         request={
             "parent": _parent,
             "source_language_code": source_language,
             "target_language_code": target_language,
             "document_input_config": {
-                "gcs_source": {"input_uri": gcs_input_uri},
+                "gcs_source": {"input_uri": ocr_uri},
                 "mime_type": "application/pdf",
             },
             "document_output_config": {
@@ -141,36 +144,7 @@ def _translate_document(
             "enable_shadow_removal_native_pdf": True,
         }
     )
-    filename = gcs_input_uri.rsplit("/", 1)[-1]
+
+    # Google writes to: output_prefix + filename-of-input
+    filename = ocr_uri.rsplit("/", 1)[-1]
     return f"{output_prefix}{filename}"
-
-
-def translate_pdf(
-    gcs_input_uri: str,    # gs://bucket/reports/{report_id}/original.pdf
-    output_prefix: str,    # gs://bucket/reports/{report_id}/translated/en/
-    source_language: str,
-    target_language: str,
-) -> str:
-    """Translate a PDF stored in GCS with smart OCR fallback.
-
-    Returns the exact GCS URI of the translated PDF.
-    """
-    _init()
-
-    # Step 1: try native translate (fast, preserves fonts when it works)
-    translated_uri = _translate_document(
-        gcs_input_uri, output_prefix, source_language, target_language
-    )
-
-    # Step 2: did anything actually translate? Compare GCS object sizes.
-    in_size = _gcs_size(gcs_input_uri)
-    out_size = _gcs_size(translated_uri)
-    if in_size and out_size and abs(out_size - in_size) / in_size < SIZE_MATCH_TOLERANCE:
-        # Output ≈ input → Google didn't translate (path-rendered text invisible to OCR).
-        # Fallback: pre-OCR the PDF, then translate the OCR'd version.
-        ocr_uri = _preprocess_with_ocr(gcs_input_uri)
-        translated_uri = _translate_document(
-            ocr_uri, output_prefix, source_language, target_language
-        )
-
-    return translated_uri

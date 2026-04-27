@@ -4,8 +4,9 @@ WORKDIR /app
 
 # System deps:
 #   - libmupdf-dev: PyMuPDF (PDF rendering for ingest)
-#   - tesseract-ocr + ara/eng packs + ghostscript/unpaper/qpdf/pngquant: OCRmyPDF
-#     used as a fallback for path-rendered Arabic PDFs that Google Translate can't read
+#   - tesseract-ocr + ara/eng + ghostscript/unpaper/qpdf/pngquant: OCRmyPDF
+#     adds a real text layer to every PDF before translation, ensuring
+#     path-rendered Arabic PDFs (government forms) translate reliably.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmupdf-dev \
     tesseract-ocr \
