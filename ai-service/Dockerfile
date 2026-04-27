@@ -2,20 +2,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps:
-#   - libmupdf-dev: PyMuPDF (PDF rendering for ingest)
-#   - tesseract-ocr + ara/eng + ghostscript/unpaper/qpdf/pngquant: OCRmyPDF
-#     adds a real text layer to every PDF before translation, ensuring
-#     path-rendered Arabic PDFs (government forms) translate reliably.
+# System deps for PyMuPDF
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmupdf-dev \
-    tesseract-ocr \
-    tesseract-ocr-ara \
-    tesseract-ocr-eng \
-    ghostscript \
-    unpaper \
-    qpdf \
-    pngquant \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
