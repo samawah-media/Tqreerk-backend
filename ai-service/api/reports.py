@@ -13,7 +13,7 @@ from models.ingest import (
 )
 from pipelines.ingest import ingest_report
 from services.gemini import summarize_report
-from services.translate import translate_pdf
+from services.translate import detect_language, translate_pdf
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -48,28 +48,53 @@ async def summarize(
     result = summarize_report(pages_content)
     return SummarizeResponse(
         report_id=body.report_id,
-        summary=result["summary"],
-        key_findings=result["key_findings"],
-        topics=result["topics"],
+        summary=result.summary,
+        key_findings=result.key_findings,
+        topics=result.topics,
     )
 
 
 @router.post("/translate", response_model=TranslateResponse)
-async def translate(body: TranslateRequest):
+async def translate(
+    body: TranslateRequest,
+    conn: AsyncConnection = Depends(get_conn),
+):
     """Translate the report PDF using Google Cloud Translation API v3 Document Translation.
 
-    Sends the original PDF from GCS, receives a translated PDF back in GCS
-    with the exact same layout, fonts, images, and structure preserved.
-    The .NET service should store the returned translated_file_url in ReportTranslation.
+    Auto-detects source language from stored page content (ingest first).
+    Arabic → English, anything else → Arabic.
+    Returns the GCS URI of the translated PDF; store it in ReportTranslation.
     """
+    # Use stored page text for language detection — no extra API round-trip needed
+    cur = await conn.execute(
+        'SELECT "Content" FROM report_pages WHERE "ReportId" = %s ORDER BY "PageNumber" LIMIT 1',
+        [str(body.report_id)],
+    )
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Report pages not found — ingest first")
+
+    source_language = detect_language(row[0])
+    target_language = "en" if source_language == "ar" else "ar"
+
+    # .NET sends a base prefix; Python appends the detected target-language subdir.
+    # Result: {output_prefix}{target_language}/original.pdf
+    base = body.output_prefix
+    if not base.startswith("gs://"):
+        raise HTTPException(status_code=400, detail="output_prefix must start with gs://")
+    if not base.endswith("/"):
+        base += "/"
+    final_prefix = f"{base}{target_language}/"
+
     translated_url = translate_pdf(
         gcs_input_uri=body.file_url,
-        output_prefix=body.output_prefix,
-        target_language=body.target_language,
-        source_language=body.source_language,
+        output_prefix=final_prefix,
+        source_language=source_language,
+        target_language=target_language,
     )
     return TranslateResponse(
         report_id=body.report_id,
-        target_language=body.target_language,
+        source_language=source_language,
+        target_language=target_language,
         translated_file_url=translated_url,
     )

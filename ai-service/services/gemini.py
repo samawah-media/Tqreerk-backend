@@ -1,54 +1,78 @@
-"""Thin wrapper around the Gemini Flash API.
+"""Gemini wrapper — thin client for vision, embedding, chat, summarization.
 
-Authentication uses Application Default Credentials (ADC) — no API key needed.
-Clients are initialized lazily on first use so import failures don't block startup.
+Concerns split:
+  - Auth + client init   → here
+  - Model names          → core.config
+  - Prompts + schemas    → core.prompts
+
+Auth selection:
+  - GEMINI_API_KEY set  → AI Studio
+  - otherwise           → Vertex AI via ADC
 """
-import base64
 import json
-import re
 
-import google.auth
-import google.generativeai as genai
+from google import genai
+from google.genai import types
+from pydantic import BaseModel
+
+from core import prompts
+from core.config import settings
 
 _initialized = False
-_flash = None
-_embed_model = "models/text-embedding-004"
+_client: genai.Client | None = None
+_mode: str = ""  # "api_key" | "vertex" — for diagnostics
 
 
 def _init():
-    global _initialized, _flash
+    global _initialized, _client, _mode
     if _initialized:
         return
-    credentials, _ = google.auth.default(
-        scopes=["https://www.googleapis.com/auth/cloud-platform"]
-    )
-    genai.configure(credentials=credentials)
-    _flash = genai.GenerativeModel("gemini-1.5-flash")
+    if settings.gemini_api_key:
+        _client = genai.Client(api_key=settings.gemini_api_key)
+        _mode = "api_key"
+    else:
+        _client = genai.Client(
+            vertexai=True,
+            project=settings.gcp_project_id,
+            location=settings.vertex_location,
+        )
+        _mode = "vertex"
     _initialized = True
 
 
+class ReportSummary(BaseModel):
+    summary: str
+    key_findings: list[str]
+    topics: list[str]
+
+
+# ── Public API ───────────────────────────────────────────────────────────────
+
 def describe_page_image(png_bytes: bytes) -> str:
-    """Send a PDF page rendered as PNG to Gemini and get rich text back."""
+    """Send a PDF page rendered as PNG to Gemini; returns combined text for embedding."""
     _init()
-    image_part = {"mime_type": "image/png", "data": base64.b64encode(png_bytes).decode()}
-    prompt = (
-        "You are processing a page from an Arabic research report. "
-        "Do two things in order:\n"
-        "1. Transcribe ALL visible text exactly as written (preserve Arabic).\n"
-        "2. For every chart, graph, table, or image on this page, write a detailed "
-        "textual description that captures the data, trends, labels, and key takeaways. "
-        "Label each description clearly, e.g. 'Chart: ...' or 'Table: ...'.\n"
-        "Output plain text only — no markdown, no extra commentary."
+    image_part = types.Part.from_bytes(data=png_bytes, mime_type="image/png")
+    response = _client.models.generate_content(
+        model=settings.gemini_vision_model,
+        contents=[prompts.PAGE_DESCRIPTION, image_part],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=prompts.PAGE_DESCRIPTION_SCHEMA,
+        ),
     )
-    response = _flash.generate_content([prompt, image_part])
-    return response.text.strip()
+    parsed = json.loads(response.text)
+    parts = [parsed.get("text", "")] + parsed.get("visual_elements", [])
+    return "\n\n".join(p for p in parts if p)
 
 
 def embed_text(text: str) -> list[float]:
     """Return a 768-dimensional embedding for the given text."""
     _init()
-    result = genai.embed_content(model=_embed_model, content=text)
-    return result["embedding"]
+    response = _client.models.embed_content(
+        model=settings.gemini_embed_model,
+        contents=text,
+    )
+    return response.embeddings[0].values
 
 
 def chat_with_context(
@@ -59,40 +83,35 @@ def chat_with_context(
 ) -> tuple[str, list[int]]:
     """Answer a user question given retrieved page chunks."""
     _init()
-    context_text = "\n\n---\n\n".join(context_chunks)
-    system_prompt = (
-        "You are an AI assistant for the Taqreerk platform. "
-        "Answer ONLY based on the provided report context. "
-        "If the answer is not in the context, say so clearly. "
-        "Respond in the same language the user used.\n\n"
-        f"REPORT CONTEXT:\n{context_text}"
-    )
+    system_prompt = prompts.chat_system_prompt("\n\n---\n\n".join(context_chunks))
 
-    gemini_history = []
+    contents = []
     for msg in history:
         role = "user" if msg["role"] == "user" else "model"
-        gemini_history.append({"role": role, "parts": [msg["content"]]})
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
 
-    chat = _flash.start_chat(history=gemini_history)
-    full_message = f"{system_prompt}\n\nUSER QUESTION: {user_message}"
-    response = chat.send_message(full_message)
+    contents.append({
+        "role": "user",
+        "parts": [{"text": prompts.chat_user_message(system_prompt, user_message)}],
+    })
+
+    response = _client.models.generate_content(
+        model=settings.gemini_chat_model,
+        contents=contents,
+    )
     return response.text.strip(), source_pages
 
 
-def summarize_report(pages_content: list[str]) -> dict:
+def summarize_report(pages_content: list[str]) -> ReportSummary:
     """Generate a structured summary + key findings for a full report."""
     _init()
     combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
-    prompt = (
-        "You are analyzing an Arabic research report. Based on the full text below, produce:\n"
-        "1. A concise executive summary (3-5 paragraphs).\n"
-        "2. A numbered list of the 5-10 most important key findings.\n"
-        "3. A list of the main topics/sectors covered.\n\n"
-        "Format your response as JSON with keys: summary, key_findings (list), topics (list).\n\n"
-        f"REPORT TEXT:\n{combined}"
+    response = _client.models.generate_content(
+        model=settings.gemini_summary_model,
+        contents=prompts.summarize_prompt(combined),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=prompts.REPORT_SUMMARY_SCHEMA,
+        ),
     )
-    response = _flash.generate_content(prompt)
-    text = response.text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+    return ReportSummary.model_validate_json(response.text)

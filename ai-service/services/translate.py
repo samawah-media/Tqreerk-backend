@@ -18,11 +18,20 @@ def _init():
         _parent = f"projects/{settings.gcp_project_id}/locations/{settings.translate_location}"
 
 
+def detect_language(text: str) -> str:
+    """Detect the language of a text snippet. Returns a BCP-47 language code e.g. 'ar'."""
+    _init()
+    response = _client.detect_language(
+        request={"parent": _parent, "content": text[:1000], "mime_type": "text/plain"}
+    )
+    return response.languages[0].language_code if response.languages else "ar"
+
+
 def translate_pdf(
     gcs_input_uri: str,    # gs://bucket/reports/{report_id}/original.pdf
-    output_prefix: str,    # gs://bucket/reports/{report_id}/translated/en/  — caller controls this
-    target_language: str,  # "en" | "ar" | "fr" etc.
-    source_language: str = "ar",
+    output_prefix: str,    # gs://bucket/reports/{report_id}/translated/en/
+    source_language: str,  # detected BCP-47 code e.g. "ar"
+    target_language: str,  # flipped BCP-47 code e.g. "en"
 ) -> str:
     """Translate a PDF stored in GCS. Returns the exact GCS URI of the translated PDF.
 
@@ -31,7 +40,7 @@ def translate_pdf(
       result        = gs://bucket/reports/{id}/translated/en/original.pdf
     """
     _init()
-    response = _client.translate_document(
+    _client.translate_document(
         request={
             "parent": _parent,
             "source_language_code": source_language,
@@ -45,5 +54,7 @@ def translate_pdf(
             },
         }
     )
-
-    return response.document_translation.translated_documents[0].gcs_output_uri
+    # The response from translate_document with a GCS destination does not echo
+    # back the output path, but Google writes to: output_prefix + source_filename
+    filename = gcs_input_uri.rsplit("/", 1)[-1]
+    return f"{output_prefix}{filename}"
