@@ -100,6 +100,38 @@ public class AuthController : ControllerBase
         return Accepted();
     }
 
+    /// <summary>Send a 6-digit verification code to the given email. Used by the OTP verify screen.</summary>
+    [HttpPost("otp/email/send")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> SendEmailOtp([FromBody] SendEmailOtpRequest req, CancellationToken ct)
+    {
+        await _auth.SendEmailOtpAsync(req.Email, ct);
+        return Accepted();
+    }
+
+    /// <summary>Resend the email OTP. Subject to a per-user cooldown.</summary>
+    [HttpPost("otp/email/resend")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public Task<IActionResult> ResendEmailOtp([FromBody] SendEmailOtpRequest req, CancellationToken ct)
+        => SendEmailOtp(req, ct);
+
+    /// <summary>Verify a 6-digit email OTP. On success, marks the email verified and issues a fresh token pair.</summary>
+    [HttpPost("otp/email/verify")]
+    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> VerifyEmailOtp([FromBody] VerifyEmailOtpRequest req, CancellationToken ct)
+    {
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var device = Request.Headers.UserAgent.ToString();
+
+        var result = await _auth.VerifyEmailOtpAsync(req.Email, req.Code, ip, device, ct);
+        AppendRefreshCookie(result.RefreshToken);
+        return Ok(result.Response);
+    }
+
     /// <summary>Confirm an email address using the token from the verification email.</summary>
     [HttpPost("verify-email/confirm")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
@@ -142,6 +174,51 @@ public class AuthController : ControllerBase
 
         var result = await _rbac.GetEffectivePermissionsAsync(userId, ct);
         return Ok(result);
+    }
+
+    /// <summary>List the current user's active sessions (one per device). The current device is flagged.</summary>
+    [HttpGet("sessions")]
+    [Authorize]
+    [ProducesResponseType(typeof(IReadOnlyList<SessionDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetSessions(CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+
+        var current = Request.Cookies[RefreshTokenCookie];
+        var sessions = await _auth.GetActiveSessionsAsync(userId, current, ct);
+        return Ok(sessions);
+    }
+
+    /// <summary>Revoke a specific session (other than the current). The owning user must match.</summary>
+    [HttpDelete("sessions/{sessionId:guid}")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> RevokeSession(Guid sessionId, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+
+        await _auth.RevokeSessionAsync(userId, sessionId, ct);
+        return NoContent();
+    }
+
+    /// <summary>Revoke every active session for the current user and clear the refresh cookie.</summary>
+    [HttpPost("logout-all")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> LogoutAll(CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+
+        await _auth.RevokeAllSessionsAsync(userId, ct);
+        Response.Cookies.Delete(RefreshTokenCookie);
+        return NoContent();
+    }
+
+    private bool TryGetUserId(out Guid userId)
+    {
+        var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+        return Guid.TryParse(sub, out userId);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

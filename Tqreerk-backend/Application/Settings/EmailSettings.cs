@@ -10,4 +10,11 @@ public class EmailSettings
 
     public int VerificationTokenHoursValid { get; set; } = 24;
     public int PasswordResetTokenMinutesValid { get; set; } = 60;
+
+    // SMTP configuration. When SmtpHost is empty, the LogEmailSender (dry-run) is used.
+    public string SmtpHost { get; set; } = string.Empty;
+    public int SmtpPort { get; set; } = 587;
+    public bool SmtpUseStartTls { get; set; } = true;
+    public string SmtpUsername { get; set; } = string.Empty;
+    public string SmtpPassword { get; set; } = string.Empty;
 }

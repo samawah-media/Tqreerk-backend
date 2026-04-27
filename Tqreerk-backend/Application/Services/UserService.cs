@@ -17,7 +17,44 @@ public class UserService : IUserService
         var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId, ct)
             ?? throw new KeyNotFoundException("User not found.");
 
-        return ToDto(user);
+        // A user is in at most one organization for now (per current product scope).
+        // We surface the first active membership; multi-org support can extend this later.
+        var membership = await _db.OrganizationMembers
+            .AsNoTracking()
+            .Where(m => m.UserId == userId && m.IsActive)
+            .Select(m => new
+            {
+                Org = m.Organization,
+                RoleName = m.Role.Name,
+            })
+            .FirstOrDefaultAsync(ct);
+
+        OrganizationSummaryDto? orgDto = null;
+        if (membership is not null && membership.Org is not null)
+        {
+            var o = membership.Org;
+            // The wizard guard depends on this — only the founder is bounced into
+            // the wizard on incomplete orgs; invited members go straight to dashboard.
+            // For legacy orgs without CreatedByUserId, fall back to the earliest active member
+            // so founder protection still has an anchor.
+            Guid? founderId = o.CreatedByUserId;
+            if (!founderId.HasValue)
+            {
+                founderId = await _db.OrganizationMembers
+                    .AsNoTracking()
+                    .Where(m => m.OrganizationId == o.Id && m.IsActive)
+                    .OrderBy(m => m.JoinedAt)
+                    .ThenBy(m => m.Id)
+                    .Select(m => (Guid?)m.UserId)
+                    .FirstOrDefaultAsync(ct);
+            }
+            var isFounder = founderId.HasValue && founderId.Value == userId;
+            orgDto = new OrganizationSummaryDto(
+                o.Id, o.NameAr, o.NameEn, o.Slug, o.Status.ToString(),
+                o.IsVerified, o.LogoUrl, membership.RoleName, isFounder);
+        }
+
+        return ToDto(user, orgDto);
     }
 
     public async Task<UserProfileDto> UpdateProfileAsync(Guid userId, UpdateProfileRequest req, CancellationToken ct = default)
@@ -44,7 +81,9 @@ public class UserService : IUserService
         }
 
         await _db.SaveChangesAsync(ct);
-        return ToDto(user);
+        // UpdateProfile doesn't change membership; reuse the rich loader so the
+        // response shape stays consistent with GetProfileAsync.
+        return await GetProfileAsync(userId, ct);
     }
 
     public async Task<UserInterestsDto> GetInterestsAsync(Guid userId, CancellationToken ct = default)
@@ -104,8 +143,8 @@ public class UserService : IUserService
         rows.Where(i => i.CountryId is not null).Select(i => i.CountryId!.Value).ToList()
     );
 
-    private static UserProfileDto ToDto(User u) => new(
+    private static UserProfileDto ToDto(User u, OrganizationSummaryDto? org = null) => new(
         u.Id, u.Email, u.Phone, u.FullName, u.UserType, u.JobTitle, u.InterestField,
-        u.CountryId, u.EmailVerified, u.PhoneVerified, u.PreferredLanguage, u.CreatedAt
+        u.CountryId, u.EmailVerified, u.PhoneVerified, u.PreferredLanguage, u.CreatedAt, org
     );
 }

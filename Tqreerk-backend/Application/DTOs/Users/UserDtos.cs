@@ -12,7 +12,20 @@ public record UserProfileDto(
     bool EmailVerified,
     bool PhoneVerified,
     string PreferredLanguage,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    OrganizationSummaryDto? Organization
+);
+
+public record OrganizationSummaryDto(
+    Guid Id,
+    string NameAr,
+    string NameEn,
+    string Slug,
+    string Status,
+    bool IsVerified,
+    string? LogoUrl,
+    string RoleName,
+    bool IsFounder
 );
 
 public record UpdateProfileRequest(

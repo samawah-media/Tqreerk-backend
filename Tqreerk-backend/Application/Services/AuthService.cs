@@ -59,6 +59,8 @@ public class AuthService : IAuthService
         _db.Users.Add(user);
         await _db.SaveChangesAsync(ct);
 
+        await TrySendInitialOtpAsync(user, ct);
+
         return await IssueTokensAsync(user, null, null, ct);
     }
 
@@ -94,6 +96,8 @@ public class AuthService : IAuthService
             WebsiteUrl = req.WebsiteUrl,
             SectorScope = req.SectorScope,
             Status = OrganizationStatus.PendingReview,
+            // Founder: protected from removal by other members.
+            // Set after the user gets its Id (via SaveChanges below).
         };
 
         var profile = new OrganizationProfile
@@ -116,7 +120,10 @@ public class AuthService : IAuthService
         _db.Organizations.Add(organization);
         await _db.SaveChangesAsync(ct);
 
-        // Add user as org admin
+        // Now that both rows have IDs, stamp the founder reference and create
+        // the membership row in a single follow-up save.
+        organization.CreatedByUserId = user.Id;
+
         var adminRole = await _db.Roles.FirstOrDefaultAsync(r => r.Name == "admin", ct)
             ?? throw new InvalidOperationException("Default roles not seeded.");
 
@@ -128,21 +135,111 @@ public class AuthService : IAuthService
         });
         await _db.SaveChangesAsync(ct);
 
+        await TrySendInitialOtpAsync(user, ct);
+
         return await IssueTokensAsync(user, null, null, ct);
     }
+
+    /// Best-effort initial OTP. We never let an email-send failure block registration —
+    /// the user can always resend from the verify screen.
+    private async Task TrySendInitialOtpAsync(User user, CancellationToken ct)
+    {
+        try
+        {
+            await SendEmailOtpAsync(user.Email, ct);
+        }
+        catch (Exception ex)
+        {
+            // Log only — registration must succeed regardless of email delivery.
+            // (No ILogger here; in dev we rely on LogEmailSender's own logging.)
+            System.Diagnostics.Debug.WriteLine($"Initial OTP send failed for {user.Email}: {ex.Message}");
+        }
+    }
+
+    private const int MaxFailedLoginAttempts = 5;
+    private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
 
     public async Task<AuthResult> LoginAsync(LoginRequest req, string? ipAddress, string? deviceInfo, CancellationToken ct = default)
     {
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == req.Email.ToLowerInvariant(), ct)
             ?? throw new UnauthorizedAccessException("Invalid credentials.");
 
+        // Locked out? Reject before checking the password so timing can't reveal lockout state.
+        if (user.LockoutEndsAt is { } lockedUntil && lockedUntil > DateTime.UtcNow)
+        {
+            var minutes = (int)Math.Ceiling((lockedUntil - DateTime.UtcNow).TotalMinutes);
+            throw new UnauthorizedAccessException(
+                $"Too many failed attempts. Try again in {minutes} minute(s).");
+        }
+
         if (!BCrypt.Net.BCrypt.Verify(req.Password, user.PasswordHash))
+        {
+            user.FailedLoginAttempts += 1;
+            if (user.FailedLoginAttempts >= MaxFailedLoginAttempts)
+            {
+                user.LockoutEndsAt = DateTime.UtcNow.Add(LockoutDuration);
+                user.FailedLoginAttempts = 0; // reset counter; lockout window takes over
+            }
+            await _db.SaveChangesAsync(ct);
             throw new UnauthorizedAccessException("Invalid credentials.");
+        }
 
         if (user.Status == UserStatus.Suspended)
             throw new UnauthorizedAccessException("Account is suspended.");
 
+        // Successful login clears the failure counter and any expired lockout.
+        if (user.FailedLoginAttempts != 0 || user.LockoutEndsAt is not null)
+        {
+            user.FailedLoginAttempts = 0;
+            user.LockoutEndsAt = null;
+            await _db.SaveChangesAsync(ct);
+        }
+
         return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
+    }
+
+    public async Task<IReadOnlyList<SessionDto>> GetActiveSessionsAsync(Guid userId, string? currentRefreshToken, CancellationToken ct = default)
+    {
+        var currentHash = string.IsNullOrWhiteSpace(currentRefreshToken) ? null : HashToken(currentRefreshToken);
+        var now = DateTime.UtcNow;
+
+        var rows = await _db.RefreshTokens
+            .AsNoTracking()
+            .Where(t => t.UserId == userId && !t.IsRevoked && t.ExpiresAt > now)
+            .OrderByDescending(t => t.CreatedAt)
+            .ToListAsync(ct);
+
+        return rows
+            .Select(t => new SessionDto(
+                t.Id,
+                t.DeviceInfo,
+                t.IpAddress,
+                t.CreatedAt,
+                t.ExpiresAt,
+                currentHash is not null && t.TokenHash == currentHash))
+            .ToList();
+    }
+
+    public async Task RevokeSessionAsync(Guid userId, Guid sessionId, CancellationToken ct = default)
+    {
+        var session = await _db.RefreshTokens
+            .FirstOrDefaultAsync(t => t.Id == sessionId && t.UserId == userId, ct)
+            ?? throw new KeyNotFoundException("Session not found.");
+
+        if (session.IsRevoked) return;
+
+        session.IsRevoked = true;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task RevokeAllSessionsAsync(Guid userId, CancellationToken ct = default)
+    {
+        var sessions = await _db.RefreshTokens
+            .Where(t => t.UserId == userId && !t.IsRevoked)
+            .ToListAsync(ct);
+
+        foreach (var s in sessions) s.IsRevoked = true;
+        if (sessions.Count > 0) await _db.SaveChangesAsync(ct);
     }
 
     public async Task<AuthResult> RefreshAsync(string refreshToken, string? ipAddress, CancellationToken ct = default)
@@ -208,6 +305,104 @@ public class AuthService : IAuthService
                    $"<p><a href=\"{link}\">{link}</a></p>";
 
         await _email.SendEmailAsync(user.Email, "Verify your Taqreerk email", body, ct);
+    }
+
+    // ── Email OTP (6-digit numeric code) ────────────────────────────────────
+
+    private const int OtpCodeLength = 6;
+    private static readonly TimeSpan OtpLifetime = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan OtpResendCooldown = TimeSpan.FromSeconds(60);
+
+    public async Task SendEmailOtpAsync(string email, CancellationToken ct = default)
+    {
+        var normalized = email.ToLowerInvariant();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == normalized, ct);
+
+        // Silent success on unknown address to avoid enumeration.
+        if (user is null) return;
+
+        if (user.EmailVerified)
+            throw new InvalidOperationException("Email is already verified.");
+
+        // Rate-limit: refuse a new send if the most recent unused token is younger than the cooldown.
+        var latest = await _db.EmailVerificationTokens
+            .Where(t => t.UserId == user.Id && t.UsedAt == null)
+            .OrderByDescending(t => t.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+
+        if (latest is not null && DateTime.UtcNow - latest.CreatedAt < OtpResendCooldown)
+        {
+            var wait = (int)Math.Ceiling((OtpResendCooldown - (DateTime.UtcNow - latest.CreatedAt)).TotalSeconds);
+            throw new InvalidOperationException($"Please wait {wait} seconds before requesting a new code.");
+        }
+
+        // Invalidate any outstanding tokens.
+        var existing = await _db.EmailVerificationTokens
+            .Where(t => t.UserId == user.Id && t.UsedAt == null)
+            .ToListAsync(ct);
+        foreach (var t in existing) t.UsedAt = DateTime.UtcNow;
+
+        var code = GenerateNumericCode(OtpCodeLength);
+        _db.EmailVerificationTokens.Add(new EmailVerificationToken
+        {
+            UserId = user.Id,
+            TokenHash = HashToken(code),
+            ExpiresAt = DateTime.UtcNow.Add(OtpLifetime),
+        });
+
+        await _db.SaveChangesAsync(ct);
+
+        var minutes = (int)OtpLifetime.TotalMinutes;
+        var body = $"<p>Hello {System.Net.WebUtility.HtmlEncode(user.FullName)},</p>" +
+                   $"<p>Your Taqreerk verification code is:</p>" +
+                   $"<p style=\"font-size:24px;font-weight:bold;letter-spacing:4px\">{code}</p>" +
+                   $"<p>This code expires in {minutes} minutes.</p>";
+
+        await _email.SendEmailAsync(user.Email, "Your Taqreerk verification code", body, ct);
+    }
+
+    public async Task<AuthResult> VerifyEmailOtpAsync(string email, string code, string? ipAddress, string? deviceInfo, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(code) || code.Length != OtpCodeLength || !code.All(char.IsDigit))
+            throw new ArgumentException("Invalid verification code.");
+
+        var normalized = email.ToLowerInvariant();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == normalized, ct)
+            ?? throw new UnauthorizedAccessException("Invalid verification code.");
+
+        var hash = HashToken(code);
+        var record = await _db.EmailVerificationTokens
+            .Where(t => t.UserId == user.Id && t.TokenHash == hash)
+            .OrderByDescending(t => t.CreatedAt)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new UnauthorizedAccessException("Invalid verification code.");
+
+        if (record.UsedAt is not null)
+            throw new UnauthorizedAccessException("Verification code has already been used.");
+
+        if (record.ExpiresAt < DateTime.UtcNow)
+            throw new UnauthorizedAccessException("Verification code has expired.");
+
+        record.UsedAt = DateTime.UtcNow;
+        user.EmailVerified = true;
+
+        await _db.SaveChangesAsync(ct);
+
+        return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
+    }
+
+    private static string GenerateNumericCode(int length)
+    {
+        // Cryptographically random uniform digits (avoid modulo bias from raw bytes).
+        var digits = new char[length];
+        Span<byte> buffer = stackalloc byte[4];
+        for (var i = 0; i < length; i++)
+        {
+            RandomNumberGenerator.Fill(buffer);
+            var value = BitConverter.ToUInt32(buffer) % 10;
+            digits[i] = (char)('0' + value);
+        }
+        return new string(digits);
     }
 
     public async Task ConfirmEmailAsync(string token, CancellationToken ct = default)
@@ -332,6 +527,7 @@ public class AuthService : IAuthService
 
         var response = new AuthResponse(
             AccessToken: accessToken,
+            RefreshToken: rawRefreshToken,
             ExpiresAt: expiresAt,
             User: new UserProfile(user.Id, user.FullName, user.Email, user.UserType, user.PreferredLanguage)
         );

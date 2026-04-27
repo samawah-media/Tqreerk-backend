@@ -191,6 +191,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ReportId");
+
                     b.HasIndex("UserId", "ReportId");
 
                     b.ToTable("chat_sessions", (string)null);
@@ -204,7 +206,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasDefaultValueSql("gen_random_uuid()");
 
                     b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
 
                     b.Property<string>("IsoCode")
                         .IsRequired()
@@ -227,6 +231,208 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("countries", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000001"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "SA",
+                            NameAr = "السعودية",
+                            NameEn = "Saudi Arabia"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000002"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "AE",
+                            NameAr = "الإمارات",
+                            NameEn = "UAE"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000003"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "EG",
+                            NameAr = "مصر",
+                            NameEn = "Egypt"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000004"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "JO",
+                            NameAr = "الأردن",
+                            NameEn = "Jordan"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000005"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "KW",
+                            NameAr = "الكويت",
+                            NameEn = "Kuwait"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000006"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "QA",
+                            NameAr = "قطر",
+                            NameEn = "Qatar"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000007"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "BH",
+                            NameAr = "البحرين",
+                            NameEn = "Bahrain"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000008"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "OM",
+                            NameAr = "عُمان",
+                            NameEn = "Oman"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000009"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "LB",
+                            NameAr = "لبنان",
+                            NameEn = "Lebanon"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-00000000000a"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "IQ",
+                            NameAr = "العراق",
+                            NameEn = "Iraq"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-00000000000b"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "SY",
+                            NameAr = "سوريا",
+                            NameEn = "Syria"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-00000000000c"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "PS",
+                            NameAr = "فلسطين",
+                            NameEn = "Palestine"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-00000000000d"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "YE",
+                            NameAr = "اليمن",
+                            NameEn = "Yemen"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-00000000000e"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "MA",
+                            NameAr = "المغرب",
+                            NameEn = "Morocco"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-00000000000f"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "DZ",
+                            NameAr = "الجزائر",
+                            NameEn = "Algeria"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000010"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "TN",
+                            NameAr = "تونس",
+                            NameEn = "Tunisia"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000011"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "LY",
+                            NameAr = "ليبيا",
+                            NameEn = "Libya"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000012"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "SD",
+                            NameAr = "السودان",
+                            NameEn = "Sudan"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000013"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "US",
+                            NameAr = "الولايات المتحدة",
+                            NameEn = "United States"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000014"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "GB",
+                            NameAr = "المملكة المتحدة",
+                            NameEn = "United Kingdom"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000015"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "DE",
+                            NameAr = "ألمانيا",
+                            NameEn = "Germany"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000016"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "FR",
+                            NameAr = "فرنسا",
+                            NameEn = "France"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000017"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "TR",
+                            NameAr = "تركيا",
+                            NameEn = "Turkey"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000018"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "CN",
+                            NameAr = "الصين",
+                            NameEn = "China"
+                        },
+                        new
+                        {
+                            Id = new Guid("40000000-0000-0000-0000-000000000019"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsoCode = "IN",
+                            NameAr = "الهند",
+                            NameEn = "India"
+                        });
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.EmailVerificationToken", b =>
@@ -425,6 +631,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -522,6 +731,60 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("OrganizationId");
 
                     b.ToTable("organization_files", (string)null);
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.OrganizationInvitation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime?>("AcceptedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("AcceptedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("InvitedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InvitedByUserId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("OrganizationId", "Email", "Status");
+
+                    b.ToTable("organization_invitations", (string)null);
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.OrganizationMember", b =>
@@ -1598,35 +1861,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("reports", (string)null);
                 });
 
-            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportPage", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasDefaultValueSql("gen_random_uuid()");
-
-                    b.Property<string>("Content")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<int>("PageNumber")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("ReportId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ReportId", "PageNumber").IsUnique();
-
-                    b.ToTable("report_pages", (string)null);
-                });
-
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportAiContent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1755,6 +1989,36 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("report_keywords", (string)null);
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportPage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<int>("PageNumber")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReportId", "PageNumber")
+                        .IsUnique();
+
+                    b.ToTable("report_pages", (string)null);
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportRating", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1851,6 +2115,10 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
                     b.Property<string>("TranslatedDescription")
                         .HasColumnType("text");
+
+                    b.Property<string>("TranslatedFileUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
 
                     b.Property<string>("TranslatedSummary")
                         .HasColumnType("text");
@@ -2567,14 +2835,18 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasDefaultValueSql("gen_random_uuid()");
 
                     b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
 
                     b.Property<string>("Description")
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
 
                     b.Property<string>("NameAr")
                         .IsRequired()
@@ -2597,6 +2869,170 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("sectors", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000001"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الاقتصاد",
+                            NameEn = "Economy",
+                            Slug = "economy"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000002"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "التعليم",
+                            NameEn = "Education",
+                            Slug = "education"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000003"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "التقنية",
+                            NameEn = "Technology",
+                            Slug = "technology"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000004"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الاستثمار",
+                            NameEn = "Investment",
+                            Slug = "investment"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000005"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الصحة",
+                            NameEn = "Health",
+                            Slug = "health"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000006"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الطاقة",
+                            NameEn = "Energy",
+                            Slug = "energy"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000007"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "البيئة",
+                            NameEn = "Environment",
+                            Slug = "environment"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000008"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الحكومة",
+                            NameEn = "Government",
+                            Slug = "government"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000009"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الشؤون الاجتماعية",
+                            NameEn = "Social Affairs",
+                            Slug = "social-affairs"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-00000000000a"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الثقافة",
+                            NameEn = "Culture",
+                            Slug = "culture"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-00000000000b"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الإعلام",
+                            NameEn = "Media",
+                            Slug = "media"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-00000000000c"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "السياحة",
+                            NameEn = "Tourism",
+                            Slug = "tourism"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-00000000000d"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الصناعة",
+                            NameEn = "Industry",
+                            Slug = "industry"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-00000000000e"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الزراعة",
+                            NameEn = "Agriculture",
+                            Slug = "agriculture"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-00000000000f"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "الاتصالات",
+                            NameEn = "Telecom",
+                            Slug = "telecom"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000010"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "المالية",
+                            NameEn = "Finance",
+                            Slug = "finance"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000011"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "العقارات",
+                            NameEn = "Real Estate",
+                            Slug = "real-estate"
+                        },
+                        new
+                        {
+                            Id = new Guid("50000000-0000-0000-0000-000000000012"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsActive = true,
+                            NameAr = "النقل والمواصلات",
+                            NameEn = "Transportation",
+                            Slug = "transportation"
+                        });
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.Subscription", b =>
@@ -2684,6 +3120,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Property<bool>("EmailVerified")
                         .HasColumnType("boolean");
 
+                    b.Property<int>("FailedLoginAttempts")
+                        .HasColumnType("integer");
+
                     b.Property<string>("FullName")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -2696,6 +3135,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Property<string>("JobTitle")
                         .HasMaxLength(150)
                         .HasColumnType("character varying(150)");
+
+                    b.Property<DateTime?>("LockoutEndsAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()
@@ -2945,6 +3387,25 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Organization");
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.OrganizationInvitation", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.User", "InvitedByUser")
+                        .WithMany()
+                        .HasForeignKey("InvitedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Taqreerk.Domain.Entities.Organization", "Organization")
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("InvitedByUser");
+
+                    b.Navigation("Organization");
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.OrganizationMember", b =>
                 {
                     b.HasOne("Taqreerk.Domain.Entities.Organization", "Organization")
@@ -3060,17 +3521,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("UploadedByUser");
                 });
 
-            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportPage", b =>
-                {
-                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
-                        .WithMany("Pages")
-                        .HasForeignKey("ReportId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Report");
-                });
-
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportAiContent", b =>
                 {
                     b.HasOne("Taqreerk.Domain.Entities.AiJob", "AiJob")
@@ -3111,6 +3561,17 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                 {
                     b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
                         .WithMany("Keywords")
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Report");
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportPage", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
+                        .WithMany("Pages")
                         .HasForeignKey("ReportId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -3321,6 +3782,11 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Translations");
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ChatSession", b =>
+                {
+                    b.Navigation("Messages");
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.Country", b =>
                 {
                     b.Navigation("Organizations");
@@ -3448,11 +3914,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("UploadedReports");
 
                     b.Navigation("UserRoles");
-                });
-
-            modelBuilder.Entity("Taqreerk.Domain.Entities.ChatSession", b =>
-                {
-                    b.Navigation("Messages");
                 });
 #pragma warning restore 612, 618
         }

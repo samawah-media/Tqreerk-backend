@@ -14,6 +14,7 @@ public class ReportTranslationConfiguration : IEntityTypeConfiguration<ReportTra
         builder.Property(t => t.Id).HasDefaultValueSql("gen_random_uuid()");
         builder.Property(t => t.Language).IsRequired().HasMaxLength(5);
         builder.Property(t => t.TranslatedTitle).HasMaxLength(500);
+        builder.Property(t => t.TranslatedFileUrl).HasMaxLength(1000);
         builder.Property(t => t.TranslationStatus).HasConversion<string>().HasMaxLength(30);
         builder.Property(t => t.CreatedAt).HasDefaultValueSql("now()");
 

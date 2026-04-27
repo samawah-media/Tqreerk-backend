@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 using Taqreerk.API.Middleware;
+using Taqreerk.Application.Settings;
 using Taqreerk.Extensions;
 using Taqreerk.Infrastructure.Data;
 
@@ -35,6 +37,16 @@ builder.Services.AddCors(options =>
 // that means the migration job did not run — investigate the pipeline.
 var app = builder.Build();
 
+// In Development, auto-apply pending migrations so devs don't have to run
+// `dotnet ef database update` after pulling. CI still owns migrations in
+// Staging/Production — this only runs locally.
+if (app.Environment.IsDevelopment())
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
+    await db.Database.MigrateAsync();
+}
+
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 if (!app.Environment.IsProduction())
@@ -47,6 +59,25 @@ if (!app.Environment.IsDevelopment())
 {
     app.UseHttpsRedirection();
 }
+
+// Serve files from the local-storage root when the LocalFileStorage provider is in use.
+// In dev this lets the frontend access uploaded files via /uploads/* without GCS.
+var fileStorage = app.Configuration.GetSection(FileStorageSettings.Section).Get<FileStorageSettings>()
+    ?? new FileStorageSettings();
+if ((fileStorage.Provider ?? "local").ToLowerInvariant() != "gcs")
+{
+    var rootPath = Path.IsPathRooted(fileStorage.LocalRoot)
+        ? fileStorage.LocalRoot
+        : Path.Combine(app.Environment.ContentRootPath, fileStorage.LocalRoot);
+    Directory.CreateDirectory(rootPath);
+
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(rootPath),
+        RequestPath = fileStorage.LocalPublicBaseUrl.TrimEnd('/'),
+    });
+}
+
 app.UseCors("DefaultCors");
 app.UseAuthentication();
 app.UseAuthorization();
