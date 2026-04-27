@@ -146,7 +146,7 @@ def summarize_report(pages_content: list[str]) -> ReportSummary:
         f"REPORT TEXT:\n{combined}"
     )
     response = _client.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
