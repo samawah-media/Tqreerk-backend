@@ -4188,5 +4188,13 @@
         "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.102/PortableRuntimeIdentifierGraph.json"
       }
     }
-  }
+  },
+  "logs": [
+    {
+      "code": "Undefined",
+      "level": "Warning",
+      "warningLevel": 1,
+      "message": "Problem reading the cache file C:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\obj\\project.nuget.cache : '\"' is invalid after a value. Expected either ',', '}', or ']'. Path: $.expectedPackageFiles[77] | LineNumber: 84 | BytePositionInLine: 4."
+    }
+  ]
 }
