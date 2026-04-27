@@ -14,7 +14,7 @@ import fitz  # PyMuPDF
 import numpy as np
 import httpx
 
-from core.db import get_conn
+from core.db import conn_ctx
 from services.gemini import describe_page_image, embed_text
 
 
@@ -36,7 +36,7 @@ async def ingest_report_bytes(report_id: UUID, pdf_bytes: bytes) -> int:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     processed = 0
 
-    async with get_conn() as conn:
+    async with conn_ctx() as conn:
         # Delete existing pages so re-ingestion is idempotent
         await conn.execute("DELETE FROM report_pages WHERE \"ReportId\" = %s", [str(report_id)])
 
