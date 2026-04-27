@@ -102,6 +102,38 @@ def chat_with_context(
     return response.text.strip(), source_pages
 
 
+def translate_pdf_content(pdf_bytes: bytes, target_language: str) -> list[str]:
+    """Send a PDF to Gemini and get back the translated text, one entry per page.
+
+    Used as a fallback when Google Translate's Document Translation produces
+    a copy of the input (e.g. path-rendered Arabic forms with no real text layer).
+    """
+    _init()
+    pdf_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+    prompt = (
+        f"Translate every page of this PDF to {target_language}. "
+        "Return a JSON object with key 'pages': an array of strings, one per page, "
+        "in original order. Preserve paragraph breaks within each page. "
+        "Output the translation only — no commentary, no explanation."
+    )
+    response = _client.models.generate_content(
+        model=settings.gemini_summary_model,
+        contents=[prompt, pdf_part],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "pages": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["pages"],
+            },
+        ),
+    )
+    parsed = json.loads(response.text)
+    return parsed.get("pages", [])
+
+
 def summarize_report(pages_content: list[str]) -> ReportSummary:
     """Generate a structured summary + key findings for a full report."""
     _init()
