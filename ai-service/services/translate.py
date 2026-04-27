@@ -4,9 +4,9 @@ Pipeline:
   1. Try Google Cloud Translation v3 Document Translation directly
      (with rotation_correction + shadow_removal flags).
   2. Find the new PDF Google created in the output prefix (filename pattern
-     varies — we list and pick the freshly created blob), extract text, and
-     detect its language.
-  3. If no PDF was created OR detected language == source language, the
+     varies — we list and pick the freshly created blob), then compare its
+     size to the input PDF's size.
+  3. If no PDF was created OR output size ≈ input size (within 2%), the
      translation didn't take (typical for path-rendered Arabic forms).
      Fallback: send the original PDF to Gemini → receive translated text per
      page → render a new PDF and upload it to GCS.
@@ -19,6 +19,10 @@ from google.cloud import storage, translate_v3
 
 from core.config import settings
 from services.gemini import translate_pdf_content
+
+# If Google's output is within this fraction of the input size, assume nothing
+# really got translated (the PDF was effectively passed through).
+SIZE_MATCH_TOLERANCE = 0.02  # 2 %
 
 _translate_client: translate_v3.TranslationServiceClient | None = None
 _storage_client: storage.Client | None = None
@@ -53,6 +57,12 @@ def _parse_gs(uri: str) -> tuple[str, str]:
     return bucket, path
 
 
+def _gcs_size(uri: str) -> int:
+    bucket_name, blob_path = _parse_gs(uri)
+    blob = _storage_client.bucket(bucket_name).get_blob(blob_path)
+    return blob.size if blob else 0
+
+
 def _download_pdf(uri: str) -> bytes:
     bucket_name, blob_path = _parse_gs(uri)
     return _storage_client.bucket(bucket_name).blob(blob_path).download_as_bytes()
@@ -65,7 +75,7 @@ def _upload_pdf(uri: str, data: bytes) -> None:
     )
 
 
-# ── Output discovery + verification ─────────────────────────────────────────
+# ── Output discovery ────────────────────────────────────────────────────────
 
 def _find_new_pdf_under(prefix_uri: str, after: datetime.datetime) -> str | None:
     """Find a PDF blob under prefix_uri that was created after `after`.
@@ -87,22 +97,6 @@ def _find_new_pdf_under(prefix_uri: str, after: datetime.datetime) -> str | None
     return f"gs://{bucket_name}/{candidates[0].name}"
 
 
-def _extract_pdf_text(gcs_uri: str, max_chars: int = 2000) -> str:
-    """Read enough text from a translated PDF to run language detection on."""
-    pdf_bytes = _download_pdf(gcs_uri)
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    chunks: list[str] = []
-    total = 0
-    for page in doc:
-        text = page.get_text()
-        chunks.append(text)
-        total += len(text)
-        if total >= max_chars:
-            break
-    doc.close()
-    return "".join(chunks)[:max_chars]
-
-
 # ── Gemini fallback PDF rendering ───────────────────────────────────────────
 
 def _render_translated_pdf(pages: list[str]) -> bytes:
@@ -117,7 +111,6 @@ def _render_translated_pdf(pages: list[str]) -> bytes:
     for page_text in pages:
         page = new_pdf.new_page(width=width, height=height)
         rect = fitz.Rect(margin, margin, width - margin, height - margin)
-        # insert_textbox returns negative if text overflows; we accept truncation.
         page.insert_textbox(rect, page_text or "", fontsize=10, align=0)
     out_bytes = new_pdf.tobytes()
     new_pdf.close()
@@ -175,13 +168,12 @@ def translate_pdf(
     # Step 2: discover the file Google actually wrote (filename varies)
     google_uri = _find_new_pdf_under(output_prefix, before)
 
-    # Step 3: if Google wrote a file, verify it actually got translated
+    # Step 3: size check — if output is within 2% of input, no real translation
     if google_uri:
-        sample = _extract_pdf_text(google_uri)
-        if sample.strip():
-            detected = detect_language(sample)
-            if detected != source_language:
-                return google_uri  # success — Google translated it
+        in_size = _gcs_size(gcs_input_uri)
+        out_size = _gcs_size(google_uri)
+        if in_size and out_size and abs(out_size - in_size) / in_size >= SIZE_MATCH_TOLERANCE:
+            return google_uri  # success — Google translated it
 
     # Step 4: fallback — Gemini reads the original PDF and renders a new one
     return _gemini_fallback(gcs_input_uri, output_prefix, target_language)
