@@ -3,14 +3,7 @@ from pydantic import BaseModel
 
 
 class SendMessageRequest(BaseModel):
-    session_id: UUID
     message: str
-
-
-class SendMessageResponse(BaseModel):
-    session_id: UUID
-    answer: str
-    source_pages: list[int]
 
 
 class CreateSessionRequest(BaseModel):
