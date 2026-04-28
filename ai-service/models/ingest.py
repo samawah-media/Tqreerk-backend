@@ -47,8 +47,6 @@ class BulkIngestItem(BaseModel):
 
 class BulkIngestRequest(BaseModel):
     items: list[BulkIngestItem]
-    user_id: UUID | None = None             # optional — who triggered this batch
-    organization_id: UUID | None = None     # optional — org context for the batch
 
 
 class BulkTranslateItem(BaseModel):
@@ -59,8 +57,6 @@ class BulkTranslateItem(BaseModel):
 
 class BulkTranslateRequest(BaseModel):
     items: list[BulkTranslateItem]
-    user_id: UUID | None = None
-    organization_id: UUID | None = None
 
 
 class CreatedJob(BaseModel):

@@ -138,21 +138,16 @@ async def _insert_job(
     job_id: UUID,
     job_type: str,
     report_id: UUID,
-    user_id: UUID | None,
-    organization_id: UUID | None,
     input_data: dict,
 ) -> None:
     await conn.execute(
         """
-        INSERT INTO ai_jobs ("Id", "UserId", "OrganizationId", "ReportId",
-                             "JobType", "Status", "TokensUsed",
-                             "InputData", "CreatedAt")
-        VALUES (%s, %s, %s, %s, %s, 'Pending', 0, %s, now())
+        INSERT INTO ai_jobs ("Id", "ReportId", "JobType", "Status",
+                             "TokensUsed", "InputData", "CreatedAt")
+        VALUES (%s, %s, %s, 'Pending', 0, %s, now())
         """,
         [
             str(job_id),
-            str(user_id) if user_id else None,
-            str(organization_id) if organization_id else None,
             str(report_id),
             job_type,
             json.dumps(input_data),
@@ -302,8 +297,6 @@ async def bulk_ingest_summarize(
             job_id=job_id,
             job_type="Ingest",
             report_id=item.report_id,
-            user_id=body.user_id,
-            organization_id=body.organization_id,
             input_data={"file_url": item.file_url, "step": "ingest+summarize"},
         )
         created.append(CreatedJob(job_id=job_id, report_id=item.report_id))
@@ -337,8 +330,6 @@ async def bulk_translate(
             job_id=job_id,
             job_type="Translate",
             report_id=item.report_id,
-            user_id=body.user_id,
-            organization_id=body.organization_id,
             input_data={"file_url": item.file_url, "output_prefix": item.output_prefix},
         )
         created.append(CreatedJob(job_id=job_id, report_id=item.report_id))
