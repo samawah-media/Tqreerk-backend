@@ -14,6 +14,17 @@ class IngestResponse(BaseModel):
     status: str = "Pending"
 
 
+class ReportPageContent(BaseModel):
+    page_number: int
+    content: str
+
+
+class ReportPagesResponse(BaseModel):
+    report_id: UUID
+    page_count: int
+    pages: list[ReportPageContent]
+
+
 class SummarizeRequest(BaseModel):
     report_id: UUID
 

@@ -25,6 +25,8 @@ from models.ingest import (
     InsightsRequest,
     InsightsResponse,
     JobStatusResponse,
+    ReportPageContent,
+    ReportPagesResponse,
     ReportSimilarity,
     SharedIndicator,
     SummarizeRequest,
@@ -54,6 +56,86 @@ async def _do_ingest_only_job(job_id: UUID, report_id: UUID, file_url: str) -> N
     except Exception as exc:
         logger.exception("ingest job %s failed", job_id)
         await _mark_failed(job_id, str(exc))
+
+
+async def _ensure_ingested(
+    report_id: UUID, conn: AsyncConnection
+) -> dict | None:
+    """Make sure a report has page content; if not, kick off an auto-ingest.
+
+    Returns:
+        None  → report is ingested, caller can proceed
+        dict  → not ingested; dict has {report_id, job_id, status, message}
+                — caller should raise HTTPException(202, detail=dict)
+
+    Behaviour:
+        1. If `report_pages` already has rows → ingested, return None.
+        2. If an Ingestion job is already Pending/Processing → return its info,
+           don't kick off a duplicate.
+        3. Otherwise look up the report's `FileUrl` and start a new ingest.
+    """
+    rid = str(report_id)
+
+    # 1. Already ingested?
+    cur = await conn.execute(
+        'SELECT 1 FROM report_pages WHERE "ReportId" = %s LIMIT 1',
+        [rid],
+    )
+    if await cur.fetchone():
+        return None
+
+    # 2. Ingest already in flight for this report?
+    cur = await conn.execute(
+        '''
+        SELECT "Id", "Status" FROM ai_jobs
+        WHERE "ReportId" = %s
+          AND "JobType" = 'Ingestion'
+          AND "Status" IN ('Pending', 'Processing')
+        ORDER BY "CreatedAt" DESC LIMIT 1
+        ''',
+        [rid],
+    )
+    in_flight = await cur.fetchone()
+    if in_flight:
+        return {
+            "report_id": rid,
+            "job_id": str(in_flight[0]),
+            "status": in_flight[1],
+            "message": "Ingest already in progress — retry when status is Completed",
+        }
+
+    # 3. Look up the report's FileUrl from the .NET-managed reports table.
+    cur = await conn.execute(
+        'SELECT "FileUrl" FROM reports WHERE "Id" = %s',
+        [rid],
+    )
+    row = await cur.fetchone()
+    if not row or not row[0]:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Report {rid} not found or has no file_url — cannot auto-ingest",
+        )
+    file_url = row[0]
+
+    # 4. Create the job and spawn the worker.
+    job_id = uuid4()
+    await _insert_job(
+        conn,
+        job_id=job_id,
+        job_type="Ingestion",
+        report_id=report_id,
+        input_data={"file_url": file_url, "step": "auto-ingest"},
+    )
+    await conn.commit()
+    asyncio.create_task(_do_ingest_only_job(job_id, report_id, file_url))
+
+    logger.info("auto-ingest triggered for report=%s job=%s", rid, job_id)
+    return {
+        "report_id": rid,
+        "job_id": str(job_id),
+        "status": "Pending",
+        "message": "Ingest started — retry when status is Completed",
+    }
 
 
 @router.post("/ingest", response_model=IngestResponse, status_code=202)
@@ -92,6 +174,10 @@ async def summarize(
     conn: AsyncConnection = Depends(get_conn),
 ):
     """Generate executive summary and key findings from stored page content."""
+    not_ready = await _ensure_ingested(body.report_id, conn)
+    if not_ready:
+        raise HTTPException(status_code=202, detail=not_ready)
+
     cur = await conn.execute(
         """
         SELECT "Content"
@@ -102,9 +188,6 @@ async def summarize(
         [str(body.report_id)],
     )
     rows = await cur.fetchall()
-    if not rows:
-        raise HTTPException(status_code=404, detail="Report pages not found — ingest first")
-
     pages_content = [r[0] for r in rows]
     result = summarize_report(pages_content)
     return SummarizeResponse(
@@ -112,6 +195,37 @@ async def summarize(
         summary=result.summary,
         key_findings=result.key_findings,
         topics=result.topics,
+    )
+
+
+@router.get("/{report_id}/pages", response_model=ReportPagesResponse)
+async def get_report_pages(
+    report_id: UUID,
+    conn: AsyncConnection = Depends(get_conn),
+):
+    """Return all per-page text extracted by Gemini Vision during ingest.
+
+    Useful for debugging ingest quality, displaying extracted content in admin
+    UIs, or feeding raw page text to other downstream processing.
+
+    Auto-triggers ingest if the report hasn't been ingested yet (returns 202
+    with the new job_id; retry once it Completes).
+    """
+    not_ready = await _ensure_ingested(report_id, conn)
+    if not_ready:
+        raise HTTPException(status_code=202, detail=not_ready)
+
+    cur = await conn.execute(
+        'SELECT "PageNumber", "Content" FROM report_pages '
+        'WHERE "ReportId" = %s ORDER BY "PageNumber"',
+        [str(report_id)],
+    )
+    rows = await cur.fetchall()
+
+    return ReportPagesResponse(
+        report_id=report_id,
+        page_count=len(rows),
+        pages=[ReportPageContent(page_number=r[0], content=r[1]) for r in rows],
     )
 
 
@@ -126,14 +240,16 @@ async def insights(
     Result can be persisted by .NET into `report_ai_content.Indicators` /
     `report_ai_content.Trends` (jsonb columns).
     """
+    not_ready = await _ensure_ingested(body.report_id, conn)
+    if not_ready:
+        raise HTTPException(status_code=202, detail=not_ready)
+
     cur = await conn.execute(
         'SELECT "Content" FROM report_pages '
         'WHERE "ReportId" = %s ORDER BY "PageNumber"',
         [str(body.report_id)],
     )
     rows = await cur.fetchall()
-    if not rows:
-        raise HTTPException(status_code=404, detail="Report pages not found — ingest first")
 
     result = extract_insights([r[0] for r in rows])
     return InsightsResponse(
@@ -168,6 +284,22 @@ async def compare(
     """
     if len(body.report_ids) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 report_ids to compare")
+
+    # Auto-ingest any reports that haven't been ingested yet. Returns 202 with
+    # the list of started/in-flight jobs — caller retries when all Completed.
+    pending: list[dict] = []
+    for rid in body.report_ids:
+        not_ready = await _ensure_ingested(rid, conn)
+        if not_ready:
+            pending.append(not_ready)
+    if pending:
+        raise HTTPException(
+            status_code=202,
+            detail={
+                "message": "One or more reports are not yet ingested — retry when all jobs Complete",
+                "pending_jobs": pending,
+            },
+        )
 
     ids = [str(rid) for rid in body.report_ids]
 
@@ -255,18 +387,20 @@ async def translate(
 ):
     """Translate the report PDF using Google Cloud Translation API v3 Document Translation.
 
-    Auto-detects source language from stored page content (ingest first).
+    Auto-detects source language from stored page content (auto-ingests if missing).
     Arabic → English, anything else → Arabic.
     Returns the GCS URI of the translated PDF; store it in ReportTranslation.
     """
+    not_ready = await _ensure_ingested(body.report_id, conn)
+    if not_ready:
+        raise HTTPException(status_code=202, detail=not_ready)
+
     # Use stored page text for language detection — no extra API round-trip needed
     cur = await conn.execute(
         'SELECT "Content" FROM report_pages WHERE "ReportId" = %s ORDER BY "PageNumber" LIMIT 1',
         [str(body.report_id)],
     )
     row = await cur.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Report pages not found — ingest first")
 
     source_language = detect_language(row[0])
     target_language = "en" if source_language == "ar" else "ar"
