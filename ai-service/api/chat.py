@@ -1,4 +1,5 @@
 """Chat endpoints — per-session Q&A with RAG (streaming)."""
+import asyncio
 import json
 from uuid import UUID, uuid4
 
@@ -182,11 +183,30 @@ async def send_message(
         try:
             # Tell the client which pages we're answering from before the first token
             yield f"data: {json.dumps({'type': 'sources', 'pages': source_pages})}\n\n"
+            await asyncio.sleep(0)  # let uvicorn flush the bytes to the client
 
-            # Stream tokens as Gemini produces them
-            for delta in chat_with_context_stream(history, user_message, context_chunks):
-                full_answer += delta
-                yield f"data: {json.dumps({'type': 'token', 'text': delta})}\n\n"
+            # Run the SYNC Gemini stream in a thread so we don't block the event loop.
+            # Each chunk gets pushed onto an async queue → consumed and yielded here.
+            queue: asyncio.Queue = asyncio.Queue()
+            SENTINEL = object()
+            loop = asyncio.get_running_loop()
+
+            def producer():
+                try:
+                    for delta in chat_with_context_stream(history, user_message, context_chunks):
+                        loop.call_soon_threadsafe(queue.put_nowait, delta)
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, SENTINEL)
+
+            asyncio.get_event_loop().run_in_executor(None, producer)
+
+            while True:
+                item = await queue.get()
+                if item is SENTINEL:
+                    break
+                full_answer += item
+                yield f"data: {json.dumps({'type': 'token', 'text': item})}\n\n"
+                await asyncio.sleep(0)
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as exc:
