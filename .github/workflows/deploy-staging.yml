@@ -3,6 +3,11 @@ name: Deploy — Staging
 on:
   push:
     branches: ["staging"]
+    paths:
+      - "Tqreerk-backend/**"
+      - "Tqreerk-backend.sln"
+      - "Dockerfile"
+      - ".github/workflows/deploy-staging.yml"
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}

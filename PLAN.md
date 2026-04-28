@@ -4,7 +4,7 @@
 
 Taqreerk (تقريرك) is an Arabic-first SaaS platform for aggregating, searching, and AI-analyzing Arabic reports. The client is شركة سماوة. The backend is `Taqreerk.back` — ASP.NET Core 8, PostgreSQL (Cloud SQL on GCP), Clean Architecture, deployed on Google Cloud Run.
 
-**Current state (as of 2026-04-24):** Phase 1 is ~85% done. Python AI service is fully built and ready to deploy. AI entities (ChatSession, ChatMessage, ReportPage + pgvector) added with migration. .NET AI proxy endpoints and GCS upload are the next .NET tasks. Remaining Phase 1: email/OTP auth flows, user profile endpoints, seed data.
+**Current state (as of 2026-04-28):** Phase 1 is ~95% done. Python AI service deployed to staging with full feature set: streaming chat (SSE), hybrid retrieval (dense vector + sparse tsvector), Gemini fallback for path-rendered PDFs, bulk async endpoints with `ai_jobs` tracking. Vertex AI Gemini via ADC (with API-key fallback). .NET side has full auth (incl. email verification, OTP, password reset), user profile + interests, reports upload with GCS + AI integration, organizations portal, public reports, RBAC, reference data, invitations, and a background worker that calls the Python AI service. Remaining: payments (Phase 2), seed data tweaks, observability polish.
 
 **Purpose of this file:** Track every deliverable from the PRD and project brief. Mark `[x]` when done so any agent picking up the project knows exactly what's left.
 
@@ -15,35 +15,43 @@ Taqreerk (تقريرك) is an Arabic-first SaaS platform for aggregating, search
 ```
 Tqreerk-backend/
 ├── .github/workflows/
-│   ├── ci.yml                          ← Build & test on push/PR ✅
-│   ├── deploy-staging.yml              ← .NET → Cloud Run staging ✅
-│   ├── deploy-production.yml           ← .NET → Cloud Run production ✅
-│   └── deploy-ai-service-staging.yml   ← Python AI service → Cloud Run staging ✅
-├── Dockerfile                          ← .NET multi-stage build ✅
-├── .dockerignore                       ✅
-├── ai-service/                         ← Python FastAPI RAG + chat service ✅
-│   ├── main.py                         ← FastAPI app entry point ✅
-│   ├── Dockerfile                      ← python:3.12-slim ✅
-│   ├── requirements.txt                ✅
-│   ├── core/config.py                  ← Settings (DATABASE_URL, GEMINI_API_KEY) ✅
-│   ├── core/db.py                      ← async psycopg3 + pgvector ✅
-│   ├── services/gemini.py              ← Gemini Flash: describe, embed, chat, summarize, translate ✅
-│   ├── pipelines/ingest.py             ← PDF → PNG → Gemini → embedding → DB ✅
-│   ├── models/chat.py                  ← Pydantic schemas for chat ✅
-│   ├── models/ingest.py                ← Pydantic schemas for ingest/summarize/translate ✅
-│   ├── api/chat.py                     ← Chat session + message endpoints ✅
-│   └── api/reports.py                  ← Ingest, summarize, translate endpoints ✅
+│   ├── ci.yml                              ← Build & test on push/PR ✅
+│   ├── deploy-staging.yml                  ← .NET → Cloud Run staging ✅
+│   ├── deploy-production.yml               ← .NET → Cloud Run production ✅
+│   ├── deploy-ai-service-staging.yml       ← Python → Cloud Run staging ✅
+│   └── deploy-ai-service-production.yml    ← Python → Cloud Run production ✅
+├── Dockerfile                              ← .NET multi-stage build ✅
+├── .dockerignore                           ✅
+├── production-db-setup.md                  ← runbook for prod DB (pgvector, GIN index, EF history) ✅
+├── test-chat-stream.html                   ← local test page for SSE chat streaming ✅
+├── ai-service/                             ← Python FastAPI RAG + chat service ✅
+│   ├── main.py                             ← FastAPI app entry point ✅
+│   ├── Dockerfile                          ← python:3.12-slim + libmupdf ✅
+│   ├── requirements.txt                    ✅
+│   ├── core/config.py                      ← Settings (Vertex/AI Studio dual mode + .NET-style DATABASE_URL normalizer) ✅
+│   ├── core/db.py                          ← async psycopg3 + pgvector (conn_ctx + get_conn dep) ✅
+│   ├── core/prompts.py                     ← centralized prompts library + JSON-schema constants ✅
+│   ├── services/gemini.py                  ← google-genai SDK: vision, embed, chat (+ stream), summarize, verify, translate ✅
+│   ├── services/translate.py               ← Google Translate v3 + Gemini fallback for path-rendered PDFs ✅
+│   ├── pipelines/ingest.py                 ← PDF (gs:// or https) → PNG → Gemini → embedding → DB ✅
+│   ├── models/chat.py                      ← Pydantic schemas for chat ✅
+│   ├── models/ingest.py                    ← Schemas for ingest/summarize/translate + bulk + job status ✅
+│   ├── api/chat.py                         ← Chat session + streaming SSE messages + page-number short-circuit ✅
+│   └── api/reports.py                      ← Single + bulk endpoints + job status polling ✅
 └── Tqreerk-backend/
-    ├── API/Controllers/                ← AuthController, RbacController, UsersController
+    ├── API/Controllers/                ← Auth, Rbac, Users, Reports, PublicReports, Organizations, Reference, Invitations ✅
     ├── API/Middleware/                  ← ExceptionHandlingMiddleware ✅
-    ├── Application/DTOs/               ← Request/Response objects
-    ├── Application/Interfaces/         ← Service contracts
-    ├── Application/Services/           ← AuthService, TokenService, UserService, RbacService ✅
+    ├── Application/DTOs/               ← Auth, Dashboard, Organizations, Rbac, Reports, Users ✅
+    ├── Application/Interfaces/         ← IAuthService, ITokenService, IUserService, IRbacService, IReportService, IReportAiService, IOrganizationService, IPublicReportService, IDashboardService, IAiServiceClient, IFileStorage, IEmailSender ✅
+    ├── Application/Services/           ← Auth, Token, User, Rbac, Report, ReportAi, Organization, PublicReport, Dashboard, LogEmailSender, SmtpEmailSender ✅
     ├── Application/Settings/           ← JwtSettings ✅
     ├── Domain/Entities/                ← 30 entities (27 + ChatSession, ChatMessage, ReportPage) ✅
     ├── Domain/Enums/                   ← All enums done ✅
     ├── Domain/Common/                  ← BaseEntity, AuditableEntity, SoftDeletableEntity ✅
-    ├── Infrastructure/Data/            ← TaqreerkDbContext, 29 configurations, 4 migrations ✅
+    ├── Infrastructure/AI/              ← AiServiceClient (HTTP→Python), ReportProcessingWorker (background ingest+summarize) ✅
+    ├── Infrastructure/Storage/         ← GcsFileStorage (production), LocalFileStorage (dev) ✅
+    ├── Infrastructure/Data/            ← TaqreerkDbContext, configurations, 10 migrations ✅
+    ├── Infrastructure/Data/Seed/       ← RbacSeedData, ReferenceSeedData (countries + sectors) ✅
     └── Extensions/                     ← ServiceExtensions ✅
 ```
 
@@ -87,11 +95,17 @@ Tqreerk-backend/
 - [x] Migration applied to `taqreerk_staging` database — auto-applied on container startup ✅ confirmed in logs
 - [x] `ChatSession`, `ChatMessage`, `ReportPage` entities + EF configs added ✅
 - [x] Migration `20260424000000_AddAiServiceTables` — pgvector extension + 3 new tables ✅
+- [x] Migration `20260425073458_Feature2_LockoutAndAiTables` — auth lockout + extended AI tracking ✅
+- [x] Migration `20260425083823_Feature3_SeedCountriesAndSectors` — Arab countries + sector seed via migration ✅
+- [x] Migration `20260425101038_Feature5_OrganizationInvitations` — org invitation flow ✅
+- [x] Migration `20260426000000_AddReportPagesFullTextSearch` — bilingual tsvector + GIN index + trigger on `report_pages.Content` (for hybrid chat retrieval) ✅
+- [x] Migration `20260427072658_Feature6_FixSearchVectorTrigger` — trigger fix for tsvector edge cases ✅
+- [x] Migration `20260427072700_Feature6_AddTranslatedFileUrl` — `TranslatedFileUrl` column on `ReportTranslation` ✅
 - [x] pgvector `vector(768)` embedding column on `report_pages` (no global HNSW — filter by ReportId first) ✅
-- [ ] Migration applied to `taqreerk_production` database — needs production deploy
-- [ ] Seed data: roles (admin, editor, partner, researcher, subscriber)
-- [ ] Seed data: common sectors (economy, education, technology, investment, etc.)
-- [ ] Seed data: Arab countries
+- [x] Staging DB: pgvector enabled + embedding column + search_vector + GIN index applied as `postgres` ✅
+- [ ] Production DB: same steps documented in [production-db-setup.md](production-db-setup.md) — apply before first prod deploy
+- [x] Seed: RBAC roles + permissions via `RbacSeedData` ✅
+- [x] Seed: countries (Arab + global) + sectors via `ReferenceSeedData` ✅
 
 ### Authentication (JWT + Refresh Tokens)
 - [x] `POST /api/auth/register/individual` — individual registration
@@ -103,16 +117,21 @@ Tqreerk-backend/
 - [x] JWT 15-min expiry (60-min in dev), Refresh 7-day expiry
 - [x] Token hashed (SHA256) before database storage
 - [x] IP address + device info tracking on tokens
-- [ ] Email verification flow (send verification email, confirm endpoint)
-- [ ] `POST /api/auth/forgot-password` — initiate password reset
-- [ ] `POST /api/auth/reset-password` — complete password reset
-- [ ] Unifonic OTP/SMS login (mobile authentication)
+- [x] `POST /api/auth/verify-email/send` + `verify-email/confirm` — email verification flow ✅
+- [x] `POST /api/auth/otp/email/send` + `resend` + `verify` — email OTP flow (alt to verification link) ✅
+- [x] `POST /api/auth/forgot-password` — initiate password reset ✅
+- [x] `POST /api/auth/reset-password` — complete password reset ✅
+- [x] Email sending: `SmtpEmailSender` (production) + `LogEmailSender` (dev) behind `IEmailSender` ✅
+- [x] Account lockout (failed-login throttling) ✅
+- [x] Session management: `GET /api/auth/sessions`, `DELETE sessions/{id}`, `POST logout-all` ✅
+- [x] `GET /api/auth/me/permissions` — current user effective permissions ✅
+- [ ] Unifonic OTP/SMS login (mobile authentication) — email OTP works; SMS still pending
 
 ### User Profile
-- [ ] `GET /api/users/me` — get current user profile
-- [ ] `PUT /api/users/me` — update profile (name, job title, interest field, country, language)
-- [ ] `POST /api/users/me/interests` — set user interests (sectors, organizations, countries)
-- [ ] `GET /api/users/me/interests` — get user interests
+- [x] `GET /api/users/me` — get current user profile ✅
+- [x] `PUT /api/users/me` — update profile (name, job title, interest field, country, language) ✅
+- [x] `POST /api/users/me/interests` — set user interests ✅
+- [x] `GET /api/users/me/interests` — get user interests ✅
 
 ---
 
@@ -152,20 +171,31 @@ Tqreerk-backend/
 ## Phase 3 — Core Features (Days 16–22)
 
 ### Reference Data APIs
-- [ ] `GET /api/sectors` — list all sectors (ar/en names)
-- [ ] `GET /api/countries` — list all countries (ar/en names)
+- [x] `GET /api/reference/sectors` — list all sectors (ar/en names) ✅
+- [x] `GET /api/reference/countries` — list all countries (ar/en names) ✅
 
 ### Reports — Upload & Management
-- [ ] `IReportService` + `ReportService` implementation
-- [ ] `POST /api/reports` — upload report (PDF + metadata), restricted to org admins
-- [ ] `GET /api/reports` — public report library (paginated, filterable by sector/country/org/year/language)
-- [ ] `GET /api/reports/{slug}` — public report detail page
-- [ ] `PUT /api/reports/{id}` — update report metadata (org admin or platform admin)
-- [ ] `DELETE /api/reports/{id}` — soft delete report
-- [ ] `GET /api/reports/search` — full-text search using PostgreSQL tsvector
-- [ ] File upload to GCP Cloud Storage (GCS client integration)
+- [x] `IReportService` + `ReportService` implementation ✅
+- [x] `IReportAiService` + `ReportAiService` — orchestrates GCS upload + Python ingest/summarize calls ✅
+- [x] `POST /api/reports` — upload report (PDF + metadata), restricted to org admins (org context inferred from JWT) ✅
+- [x] `GET /api/reports` — paginated org-scoped list ✅
+- [x] `GET /api/reports/{id:guid}` — single report with metadata + AI status ✅
+- [x] `DELETE /api/reports/{id}` — soft delete ✅
+- [x] `GET /api/reports/{id}/ai-status` — poll ingest/summarize/translate progress (reads `ai_jobs`) ✅
+- [x] `POST /api/reports/{id}/regenerate-ai` — re-run ingest+summarize (manual retry path) ✅
+- [x] File upload to GCP Cloud Storage via `GcsFileStorage : IFileStorage` ✅
+- [x] `ReportProcessingWorker` background worker — kicks off Python ingest after upload, polls until done ✅
+- [ ] `PUT /api/reports/{id}` — update report metadata
+- [ ] `GET /api/reports/search` — public full-text search using PostgreSQL tsvector
 - [ ] View tracking: `POST /api/reports/{id}/view`
 - [ ] Download tracking + permission check: `GET /api/reports/{id}/download`
+
+### Public Reports (anonymous browse)
+- [x] `GET /api/public/reports` — paginated public listing (filters: sector, country, org, year, language) ✅
+- [x] `GET /api/public/reports/featured` ✅
+- [x] `GET /api/public/reports/trending` ✅
+- [x] `GET /api/public/reports/recent` ✅
+- [x] `GET /api/public/reports/{slug}` — public report detail page ✅
 
 ### Report Interaction
 - [ ] `POST /api/reports/{id}/rate` — submit rating (1–5) with optional review
@@ -176,32 +206,88 @@ Tqreerk-backend/
 - [ ] `GET /api/users/me/saved-reports` — get user's saved reports
 
 ### Organizations — Public & Partner Portal
+- [x] `GET /api/organizations/me` — get current user's org ✅
+- [x] `PATCH /api/organizations/me/basics` — update name/description/logo ✅
+- [x] `PATCH /api/organizations/me/scope` — sector scope ✅
+- [x] `PATCH /api/organizations/me/reports` — report-publishing settings ✅
+- [x] `PATCH /api/organizations/me/contact` — phone/website/address ✅
+- [x] `POST /api/organizations/me/files` — org-level file uploads (logos etc.) ✅
+- [x] `GET /api/organizations/me/stats` — org analytics ✅
+- [x] `GET /api/organizations/me/recent-activity` — activity feed ✅
+- [x] `GET /api/organizations/me/members` — member list ✅
+- [x] `DELETE /api/organizations/me/members/{userId}` — remove member ✅
+- [x] `GET /api/organizations/me/invitations` — pending invitations ✅
+- [x] `POST /api/organizations/me/invitations` — invite member ✅
+- [x] `DELETE /api/organizations/me/invitations/{id}` — revoke invitation ✅
+- [x] `GET /api/invitations/preview` + `POST /api/invitations/accept` — token-based accept flow ✅
 - [ ] `GET /api/organizations/{slug}` — public organization page with report list
 - [ ] `GET /api/organizations` — list partner organizations
-- [ ] `GET /api/organization/me` — get current user's org (for org admins)
-- [ ] `PUT /api/organization/me` — update org profile
-- [ ] `POST /api/organization/me/members` — invite member to org
-- [ ] `DELETE /api/organization/me/members/{userId}` — remove member
-- [ ] `GET /api/organization/me/reports` — org's report list with analytics
-- [ ] `POST /api/organization/me/promote-report` — request featured slot for a report
+- [ ] `POST /api/organizations/me/promote-report` — request featured slot for a report
 
-### AI Pipeline — Python ai-service (Gemini Flash + pgvector RAG)
-- [x] PDF ingestion pipeline: PyMuPDF → PNG per page → Gemini Flash description → text-embedding-004 → pgvector ✅
-- [x] `POST /api/ai/reports/ingest` — trigger PDF ingestion (Python) ✅
-- [x] `POST /api/ai/reports/summarize` — executive summary + key findings via Gemini (Python) ✅
-- [x] `POST /api/ai/reports/translate` — translate page content AR↔EN via Gemini (Python) ✅
-- [x] `POST /api/ai/chat/sessions` — create chat session per user per report (Python) ✅
-- [x] `POST /api/ai/chat/sessions/{id}/messages` — RAG Q&A with 5-turn memory window (Python) ✅
-- [x] `GET /api/ai/chat/sessions/{id}` — full session history (Python) ✅
-- [x] `GET /api/ai/chat/reports/{id}/sessions` — list all sessions for user+report (Python) ✅
-- [x] Chat memory: last 10 messages sent to Gemini; full history stored in DB always ✅
-- [x] GitHub Actions `deploy-ai-service-staging.yml` — deploys Python service to Cloud Run ✅
-- [ ] `IAiServiceClient` in .NET — HTTP client to call Python service (needed by .NET dev)
-- [ ] `POST /api/chat/*` proxy in .NET — validates JWT then forwards to Python (needed by .NET dev)
-- [ ] `IGcsService` + `GcsService` in .NET — upload PDF to Cloud Storage (needed by .NET dev)
-- [ ] `POST /api/reports` in .NET — calls GCS upload + triggers Python ingest (needed by .NET dev)
-- [ ] `POST /api/ai/reports/{id}/insights` — extract indicators and trends
-- [ ] `POST /api/ai/compare` — compare 2+ reports with similarity scoring
+### AI Pipeline — Python ai-service (Gemini + pgvector RAG)
+
+**Auth & infrastructure**
+- [x] Unified `google-genai` SDK with dual auth: AI Studio (`GEMINI_API_KEY`) → Vertex AI (ADC) fallback ✅
+- [x] Vertex AI default region `me-central1` (same datacenter as Cloud Run + Cloud SQL) ✅
+- [x] Per-feature configurable models (`gemini_vision_model`, `gemini_chat_model`, `gemini_summary_model`, `gemini_embed_model`) ✅
+- [x] All Gemini calls run with `temperature=0.2` for deterministic factual output ✅
+- [x] Centralized prompt library at `core/prompts.py` (constants + JSON-schema for structured output) ✅
+- [x] DB connection-string normalizer — accepts .NET Npgsql format AND libpq URIs ✅
+- [x] PDF download supports both `gs://` URIs (via GCS client + ADC) and `https://` URLs ✅
+
+**Single-report endpoints**
+- [x] PDF ingestion pipeline: PyMuPDF → 150 DPI PNG per page → Gemini Vision → embedding → pgvector ✅
+- [x] **Parallel ingest** — pre-renders all pages, then runs Gemini Vision + embed in parallel via `Semaphore(5)` over a thread pool (~5× speedup; 50-page report drops from ~125 s to ~25 s) ✅
+- [x] `POST /api/ai/reports/ingest` — async fire-and-forget; returns 202 + `job_id` immediately, poll `/jobs/{id}` ✅
+  - Avoids .NET HttpClient timeouts on long PDFs (was sync, blew past 300 s on 50+ page Arabic reports)
+  - Skips empty pages so blank/visual-only pages don't crash `embed_text` ✅
+  - Per-page failures (SSL drops, Gemini errors) fail the whole job loudly — `ai_jobs.Status='Failed'` with the error message — so .NET / operators see the real problem instead of silently lost pages ✅
+- [x] `POST /api/ai/reports/summarize` — executive summary + key findings + topics (structured output) ✅
+- [x] `GET /api/ai/reports/{report_id}/pages` — return all extracted per-page text (Gemini Vision output) for debugging / admin UI ✅
+- [x] **Auto-ingest fallback** — `summarize`, `translate`, `insights`, `compare`, and `pages` endpoints automatically kick off an ingest job (looking up `reports.FileUrl`) when no page content exists. Return `202 Accepted` with the new `job_id`; caller retries when ingestion is `Completed`. Detects in-flight ingest jobs to avoid duplicates. ✅
+- [x] All raw-SQL table names verified against EF Core `ToTable()` configs — `report_ai_contents` (plural), `reports`, `ai_jobs`, `report_pages`, `chat_*` ✅
+- [x] `POST /api/ai/reports/translate` — Google Translate v3 Document Translation with `enable_rotation_correction` + `enable_shadow_removal_native_pdf` ✅
+- [x] Translation Gemini fallback — when Google's output ≈ input (path-rendered PDFs), Gemini reads PDF + renders new translated PDF (`.gemini.pdf` suffix) ✅
+- [x] Translation auto-detect source language → flip target (ar↔en); .NET sends `output_prefix` exactly where it wants the file saved ✅
+
+**Chat (streaming RAG)**
+- [x] `POST /api/ai/chat/sessions` — create chat session per user per report ✅
+- [x] `POST /api/ai/chat/sessions/{id}/messages` — **streaming SSE** (sources event → token stream → done) ✅
+- [x] `GET /api/ai/chat/sessions/{id}` — full session history ✅
+- [x] `GET /api/ai/chat/reports/{id}/sessions` — list all sessions for user+report ✅
+- [x] Hybrid retrieval: dense (`embedding <=>`) + sparse (`tsvector @@`) with weighted-sum reranking ✅
+- [x] Page-number short-circuit — explicit "page 2" / "صفحة ٢" requests bypass RAG and fetch directly ✅
+- [x] Chat memory: last 10 messages sent to Gemini; full history stored in DB ✅
+- [x] Producer/consumer thread bridge so streaming actually flushes token-by-token (not block-buffered) ✅
+- [x] Per-step latency logging (`embed_text`, `hybrid_sql`, `gemini_first_token`, `stream_total`) ✅
+
+**Bulk async endpoints (50+ items)**
+- [x] `POST /api/ai/reports/bulk/ingest-summarize` — async fire-and-forget, returns 202 + job IDs ✅
+- [x] `POST /api/ai/reports/bulk/translate` — same pattern ✅
+- [x] `GET /api/ai/reports/jobs/{job_id}` — poll job status (Pending/Processing/Completed/Failed) ✅
+- [x] Tracked via existing `ai_jobs` table (string-converted enums for `JobType` + `Status`) ✅
+- [x] Python `job_type` strings aligned with .NET `AiJobType` enum: `"Ingestion"`, `"Translation"` (matches `Domain/Enums/AiJobType.cs`) ✅
+- [x] Bounded concurrency (semaphore=3) so 50-item batches don't slam Gemini quota ✅
+
+**Deployment**
+- [x] GitHub Actions `deploy-ai-service-staging.yml` — auto-deploys on push to `staging` ✅
+- [x] GitHub Actions `deploy-ai-service-production.yml` — auto-deploys on push to `main` ✅
+- [x] Both workflows pass `GEMINI_API_KEY` (optional), `DATABASE_URL_*`, `GCS_BUCKET`, `GCP_PROJECT_ID` ✅
+
+**.NET integration**
+- [x] `IAiServiceClient` + `AiServiceClient` (Infrastructure/AI) — HTTP client to Python service ✅
+- [x] `IFileStorage` + `GcsFileStorage` + `LocalFileStorage` — upload PDFs, return `gs://` URI ✅
+- [x] `POST /api/reports` — calls GCS upload + triggers Python ingest via `ReportAiService` ✅
+- [x] `ReportProcessingWorker` (Infrastructure/AI) — background worker polling `ai_jobs` for state transitions ✅
+- [x] `GET /api/reports/{id}/ai-status` — reads `ai_jobs` directly via EF Core (no Python proxy needed) ✅
+- [x] `POST /api/reports/{id}/regenerate-ai` — manual retry trigger ✅
+- [x] `TranslatedFileUrl` column on `ReportTranslation` (migration `Feature6_AddTranslatedFileUrl`) ✅
+- [ ] Chat proxy: `POST /api/chat/*` in .NET — validates JWT then forwards SSE stream to Python (still TBD)
+- [ ] Stale-job cleanup cron — mark jobs `Processing > 30min` as Failed (defensive, for instance recycle)
+
+**Future AI features**
+- [x] `POST /api/ai/reports/insights` — extract structured indicators (name/value/unit/time/context) and trends (topic/direction/magnitude) via Gemini structured output ✅
+- [x] `POST /api/ai/reports/compare` — pairwise cosine similarity (mean page embeddings) + Gemini-driven qualitative comparison (common topics, key differences, shared indicators) ✅
 
 ### Infographics
 - [ ] `POST /api/reports/{id}/infographics` — generate infographic (bar/pie/line/radar) from AI extracted data
@@ -209,7 +295,8 @@ Tqreerk-backend/
 - [ ] `GET /api/infographics/{id}/export` — export as PNG/SVG/PDF
 
 ### User Dashboard
-- [ ] `GET /api/users/me/dashboard` — summary: saved reports, recent views, active subscription, AI usage
+- [x] `IDashboardService` + `DashboardService` + DashboardDtos — service layer wired up ✅
+- [ ] Dashboard controller endpoints — service exists, HTTP routes still TBD
 - [ ] `GET /api/users/me/comparisons` — history of AI comparisons
 
 ### Notifications
@@ -230,8 +317,11 @@ Tqreerk-backend/
 
 ### Error Monitoring
 - [x] Sentry SDK integrated in .NET (`Sentry.AspNetCore`, reads `Sentry__Dsn` env var) ✅
-- [ ] Sentry integrated in Python ai-service
-- [ ] Structured logging with Sentry breadcrumbs
+- [x] Sentry integrated in Python ai-service (`sentry-sdk[fastapi]`, auto-instruments FastAPI/Starlette, reads `SENTRY_DSN` env var, `ENVIRONMENT` tag) ✅
+- [x] Global exception handler in Python ai-service — returns clean JSON with `request_id`, `error`, `type`, `detail`; hides internals in production; auto-captures to Sentry ✅
+- [x] `X-Request-ID` middleware — every response carries a UUID for support traceability ✅
+- [x] Ingest pipeline skips empty pages (no Gemini Vision content → no crash on `embed_text`) ✅
+- [ ] Structured logging with Sentry breadcrumbs (optional polish — basic auto-breadcrumbs already capture logs/HTTP/SQL)
 
 ### Testing
 - [ ] Unit tests for AuthService, TokenService (xUnit + Moq)
@@ -290,6 +380,14 @@ Tqreerk-backend/
 | `DATABASE_URL_PRODUCTION` | Npgsql connection string → `taqreerk_production` DB |
 | `JWT_SECRET` | JWT signing key (min 32 chars) |
 
+**Set in workflows (already wired):**
+
+| Variable | Service | Where Used |
+|---|---|---|
+| `CLOUD_STORAGE_BUCKET` | Python ai-service | GCS bucket name (`taqreerk-uploads`, me-central1) ✅ |
+| `GEMINI_API_KEY` | Python (optional) | If set → AI Studio. If empty → falls back to Vertex AI via ADC ✅ |
+| `GCP_SERVICE_ACCOUNT` | Both | Cloud Run runtime service account |
+
 **Still needed (set when features are built):**
 
 | Variable | Service | Where Used |
@@ -299,16 +397,22 @@ Tqreerk-backend/
 | `MISER_WEBHOOK_SECRET` | .NET | Miser webhook HMAC verification |
 | `UNIFONIC_API_KEY` | .NET | OTP/SMS login |
 | `UNIFONIC_SENDER_ID` | .NET | SMS sender ID |
-| `GEMINI_API_KEY` | Python | Google Gemini Flash + text-embedding-004 |
 | `SENTRY_DSN` | Both | Error monitoring |
-| `CLOUD_STORAGE_BUCKET` | .NET | PDF uploads to GCS |
 | `AI_SERVICE_URL_STAGING` | .NET | Python Cloud Run URL (staging) |
 | `AI_SERVICE_URL_PRODUCTION` | .NET | Python Cloud Run URL (production) |
+
+**GCP-side setup required (not GitHub secrets):**
+
+- Vertex AI API enabled
+- Cloud Translation API enabled
+- Cloud SQL Admin API enabled
+- Service account roles: `Vertex AI User`, `Cloud Translation API User`, `Storage Object Viewer` on `taqreerk-uploads`, `Cloud SQL Client`
 
 ---
 
 ## Conventions
 
+- **Any work done must be reflected in this plan** — when you finish a task, mark its checkbox `[x]` and add a brief note. When you add new work that isn't tracked, append it to the relevant phase. This file is the source of truth for project status.
 - All new controllers follow pattern in `AuthController.cs`
 - All new services register in `ServiceExtensions.cs`
 - All new DTOs go in `Application/DTOs/{Feature}/`
@@ -318,3 +422,5 @@ Tqreerk-backend/
 - Never expose `PasswordHash` or `TokenHash` in responses
 - All list endpoints must be paginated
 - Arabic (`Ar`) and English (`En`) fields on all public-facing entities
+- Python ai-service: prompts live in `core/prompts.py`, model names in `core/config.py` — no hardcoded prompts or models inside services
+- Python ai-service: all new Gemini calls run with `temperature=0.2` for deterministic factual output

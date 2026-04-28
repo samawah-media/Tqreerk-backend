@@ -3,6 +3,11 @@ name: Deploy — Production
 on:
   push:
     branches: ["production"]
+    paths:
+      - "Tqreerk-backend/**"
+      - "Tqreerk-backend.sln"
+      - "Dockerfile"
+      - ".github/workflows/deploy-production.yml"
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}

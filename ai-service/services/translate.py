@@ -1,26 +1,29 @@
-"""PDF document translation using Google Cloud Translation API v3.
+"""PDF document translation with Gemini verification + fallback.
 
-Strategy: smart fallback (Option B).
-  1. Try translating the original PDF directly — fastest, preserves fonts.
-  2. If Google's output is essentially identical to input (no real translation
-     happened — typical for path-rendered Arabic government forms), preprocess
-     the PDF with OCRmyPDF (adds a real text layer via Tesseract) and retry.
-  3. Return the final translated GCS URI.
+Pipeline:
+  1. Try Google Cloud Translation v3 Document Translation directly
+     (with rotation_correction + shadow_removal flags).
+  2. Find the new PDF Google created in the output prefix (filename pattern
+     varies — we list and pick the freshly created blob).
+  3. Send BOTH the original and the Google-translated PDF to Gemini, asking
+     whether the second is actually translated into the target language.
+     This catches the path-rendered case where Google produces a near-copy of
+     the input (size barely changes, so a size check is unreliable).
+  4. If Gemini says "not translated", fall back: send the original PDF to
+     Gemini → receive translated text per page → render a new PDF + upload.
+  5. Return the URI of whichever translated PDF the pipeline produced.
 """
-import os
-import tempfile
+import datetime
 
-import ocrmypdf
+import fitz  # PyMuPDF
 from google.cloud import storage, translate_v3
 
 from core.config import settings
+from services.gemini import translate_pdf_content, verify_translation
 
 _translate_client: translate_v3.TranslationServiceClient | None = None
 _storage_client: storage.Client | None = None
 _parent: str | None = None
-
-# If Google's output is within this much of the input size, assume nothing translated.
-SIZE_MATCH_TOLERANCE = 0.02  # 2 %
 
 
 def _init():
@@ -34,7 +37,7 @@ def _init():
 # ── Language detection ───────────────────────────────────────────────────────
 
 def detect_language(text: str) -> str:
-    """Detect the language of a text snippet. Returns a BCP-47 language code e.g. 'ar'."""
+    """Detect the language of a text snippet. Returns a BCP-47 code e.g. 'ar'."""
     _init()
     response = _translate_client.detect_language(
         request={"parent": _parent, "content": text[:1000], "mime_type": "text/plain"}
@@ -51,12 +54,6 @@ def _parse_gs(uri: str) -> tuple[str, str]:
     return bucket, path
 
 
-def _gcs_size(uri: str) -> int:
-    bucket_name, blob_path = _parse_gs(uri)
-    blob = _storage_client.bucket(bucket_name).get_blob(blob_path)
-    return blob.size if blob else 0
-
-
 def _download_pdf(uri: str) -> bytes:
     bucket_name, blob_path = _parse_gs(uri)
     return _storage_client.bucket(bucket_name).blob(blob_path).download_as_bytes()
@@ -69,62 +66,79 @@ def _upload_pdf(uri: str, data: bytes) -> None:
     )
 
 
-# ── OCR preprocessing (fallback path) ────────────────────────────────────────
+# ── Output discovery ────────────────────────────────────────────────────────
 
-def _preprocess_with_ocr(input_gcs_uri: str) -> str:
-    """Download → run OCRmyPDF (Arabic+English) → upload to a sibling path.
+def _find_new_pdf_under(prefix_uri: str, after: datetime.datetime) -> str | None:
+    """Find a PDF blob under prefix_uri that was created after `after`.
 
-    Returns the gs:// URI of the OCR-processed PDF, ready to send to Translate.
+    Google's translate_document with a GCS destination doesn't return the
+    output URI; it generates a filename like
+    `<input-path>_<target_lang>_translations.pdf`. List + filter is the
+    reliable way to discover it.
     """
-    pdf_bytes = _download_pdf(input_gcs_uri)
-
-    in_fd, in_path = tempfile.mkstemp(suffix=".pdf")
-    out_fd, out_path = tempfile.mkstemp(suffix=".pdf")
-    os.close(in_fd)
-    os.close(out_fd)
-
-    try:
-        with open(in_path, "wb") as f:
-            f.write(pdf_bytes)
-
-        # force_ocr=True: re-OCR even pages that already have a text layer
-        # (path-rendered PDFs have garbage text layers that need replacing)
-        ocrmypdf.ocr(
-            in_path, out_path,
-            language="ara+eng",
-            force_ocr=True,
-            deskew=True,
-            rotate_pages=True,
-            clean=True,
-            progress_bar=False,
-        )
-
-        with open(out_path, "rb") as f:
-            ocr_bytes = f.read()
-    finally:
-        for p in (in_path, out_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
-
-    # Save next to the original: .../original.pdf → .../original.ocr.pdf
-    bucket, path = _parse_gs(input_gcs_uri)
-    base, _, ext = path.rpartition(".")
-    ocr_uri = f"gs://{bucket}/{base}.ocr.{ext}"
-    _upload_pdf(ocr_uri, ocr_bytes)
-    return ocr_uri
+    bucket_name, prefix = _parse_gs(prefix_uri)
+    bucket = _storage_client.bucket(bucket_name)
+    candidates = [
+        b for b in bucket.list_blobs(prefix=prefix)
+        if b.name.lower().endswith(".pdf") and b.time_created and b.time_created > after
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda b: b.time_created, reverse=True)
+    return f"gs://{bucket_name}/{candidates[0].name}"
 
 
-# ── Core translation call ────────────────────────────────────────────────────
+# ── Gemini fallback PDF rendering ───────────────────────────────────────────
 
-def _translate_document(
+def _render_translated_pdf(pages: list[str]) -> bytes:
+    """Build a plain-text PDF from translated page strings.
+
+    Layout from the original is lost, but content is correct. The output is a
+    clean A4 PDF with one source page = one new page.
+    """
+    new_pdf = fitz.open()
+    margin = 50.0
+    width, height = 595.0, 842.0  # A4 in points
+    for page_text in pages:
+        page = new_pdf.new_page(width=width, height=height)
+        rect = fitz.Rect(margin, margin, width - margin, height - margin)
+        page.insert_textbox(rect, page_text or "", fontsize=10, align=0)
+    out_bytes = new_pdf.tobytes()
+    new_pdf.close()
+    return out_bytes
+
+
+def _gemini_fallback(
+    gcs_input_uri: str, output_prefix: str, target_language: str
+) -> str:
+    """Use Gemini to translate the PDF, build a new PDF, upload, return URI."""
+    pdf_bytes = _download_pdf(gcs_input_uri)
+    pages = translate_pdf_content(pdf_bytes, target_language)
+    rendered = _render_translated_pdf(pages)
+
+    filename = gcs_input_uri.rsplit("/", 1)[-1]
+    base, _, ext = filename.rpartition(".")
+    new_name = f"{base}.gemini.{ext or 'pdf'}"
+    output_uri = f"{output_prefix}{new_name}"
+    _upload_pdf(output_uri, rendered)
+    return output_uri
+
+
+# ── Public translate API ─────────────────────────────────────────────────────
+
+def translate_pdf(
     gcs_input_uri: str,
     output_prefix: str,
     source_language: str,
     target_language: str,
 ) -> str:
-    """Single Google Translate call. Returns deterministic output gs:// URI."""
+    """Translate a PDF stored in GCS. Falls back to Gemini if Google Translate
+    returns a copy of the input.
+    """
+    _init()
+
+    # Step 1: direct Google Translate Document Translation
+    before = datetime.datetime.now(datetime.timezone.utc)
     _translate_client.translate_document(
         request={
             "parent": _parent,
@@ -141,36 +155,16 @@ def _translate_document(
             "enable_shadow_removal_native_pdf": True,
         }
     )
-    filename = gcs_input_uri.rsplit("/", 1)[-1]
-    return f"{output_prefix}{filename}"
 
+    # Step 2: discover the file Google actually wrote (filename varies)
+    google_uri = _find_new_pdf_under(output_prefix, before)
 
-def translate_pdf(
-    gcs_input_uri: str,    # gs://bucket/reports/{report_id}/original.pdf
-    output_prefix: str,    # gs://bucket/reports/{report_id}/translated/en/
-    source_language: str,
-    target_language: str,
-) -> str:
-    """Translate a PDF stored in GCS with smart OCR fallback.
+    # Step 3: verify translation by sending BOTH PDFs to Gemini
+    if google_uri:
+        original_bytes = _download_pdf(gcs_input_uri)
+        translated_bytes = _download_pdf(google_uri)
+        if verify_translation(original_bytes, translated_bytes, target_language):
+            return google_uri  # ✅ Gemini confirms translation succeeded
 
-    Returns the exact GCS URI of the translated PDF.
-    """
-    _init()
-
-    # Step 1: try native translate (fast, preserves fonts when it works)
-    translated_uri = _translate_document(
-        gcs_input_uri, output_prefix, source_language, target_language
-    )
-
-    # Step 2: did anything actually translate? Compare GCS object sizes.
-    in_size = _gcs_size(gcs_input_uri)
-    out_size = _gcs_size(translated_uri)
-    if in_size and out_size and abs(out_size - in_size) / in_size < SIZE_MATCH_TOLERANCE:
-        # Output ≈ input → Google didn't translate (path-rendered text invisible to OCR).
-        # Fallback: pre-OCR the PDF, then translate the OCR'd version.
-        ocr_uri = _preprocess_with_ocr(gcs_input_uri)
-        translated_uri = _translate_document(
-            ocr_uri, output_prefix, source_language, target_language
-        )
-
-    return translated_uri
+    # Step 4: fallback — Gemini reads the original PDF and renders a new one
+    return _gemini_fallback(gcs_input_uri, output_prefix, target_language)

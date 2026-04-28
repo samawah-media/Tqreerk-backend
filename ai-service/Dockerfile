@@ -2,19 +2,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps:
-#   - libmupdf-dev: PyMuPDF (PDF rendering for ingest)
-#   - tesseract-ocr + ara/eng packs + ghostscript/unpaper/qpdf/pngquant: OCRmyPDF
-#     used as a fallback for path-rendered Arabic PDFs that Google Translate can't read
+# System deps for PyMuPDF
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmupdf-dev \
-    tesseract-ocr \
-    tesseract-ocr-ara \
-    tesseract-ocr-eng \
-    ghostscript \
-    unpaper \
-    qpdf \
-    pngquant \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

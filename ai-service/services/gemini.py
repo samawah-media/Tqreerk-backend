@@ -56,6 +56,7 @@ def describe_page_image(png_bytes: bytes) -> str:
         model=settings.gemini_vision_model,
         contents=[prompts.PAGE_DESCRIPTION, image_part],
         config=types.GenerateContentConfig(
+            temperature=0.2,
             response_mime_type="application/json",
             response_schema=prompts.PAGE_DESCRIPTION_SCHEMA,
         ),
@@ -81,7 +82,7 @@ def chat_with_context(
     context_chunks: list[str],
     source_pages: list[int],
 ) -> tuple[str, list[int]]:
-    """Answer a user question given retrieved page chunks."""
+    """Answer a user question given retrieved page chunks (non-streaming)."""
     _init()
     system_prompt = prompts.chat_system_prompt("\n\n---\n\n".join(context_chunks))
 
@@ -98,8 +99,169 @@ def chat_with_context(
     response = _client.models.generate_content(
         model=settings.gemini_chat_model,
         contents=contents,
+        config=types.GenerateContentConfig(temperature=0.2),
     )
     return response.text.strip(), source_pages
+
+
+def chat_with_context_stream(
+    history: list[dict],
+    user_message: str,
+    context_chunks: list[str],
+):
+    """Same as chat_with_context but yields text chunks as they arrive.
+
+    Use for streaming endpoints (SSE / WebSocket). Yields plain string deltas;
+    join them to reconstruct the full answer.
+    """
+    _init()
+    system_prompt = prompts.chat_system_prompt("\n\n---\n\n".join(context_chunks))
+
+    contents = []
+    for msg in history:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    contents.append({
+        "role": "user",
+        "parts": [{"text": prompts.chat_user_message(system_prompt, user_message)}],
+    })
+
+    stream = _client.models.generate_content_stream(
+        model=settings.gemini_chat_model,
+        contents=contents,
+        config=types.GenerateContentConfig(temperature=0.2),
+    )
+    for chunk in stream:
+        if chunk.text:
+            yield chunk.text
+
+
+def verify_translation(
+    original_pdf: bytes,
+    translated_pdf: bytes,
+    target_language: str,
+) -> bool:
+    """Send both PDFs to Gemini and ask whether the second is a real translation
+    of the first into ``target_language``.
+
+    Returns True if Gemini judges the second PDF to contain the document content
+    actually rendered in ``target_language`` — i.e., the translation succeeded.
+    Returns False if the second PDF looks like a copy of the first (same source
+    language, no real translation happened).
+    """
+    _init()
+    prompt = (
+        "Two PDFs are attached. The first is the ORIGINAL document. The second is "
+        f"supposed to be its translation into {target_language}.\n\n"
+        "Decide: does the second PDF actually contain the document text rendered "
+        f"in {target_language}? If the second is essentially a copy of the first "
+        "(same source language, no real translation took place), answer false. "
+        "Otherwise answer true.\n\n"
+        "Return ONLY a JSON object: {\"translated\": boolean}"
+    )
+    response = _client.models.generate_content(
+        model=settings.gemini_summary_model,
+        contents=[
+            prompt,
+            types.Part.from_bytes(data=original_pdf, mime_type="application/pdf"),
+            types.Part.from_bytes(data=translated_pdf, mime_type="application/pdf"),
+        ],
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {"translated": {"type": "boolean"}},
+                "required": ["translated"],
+            },
+        ),
+    )
+    parsed = json.loads(response.text)
+    return bool(parsed.get("translated", False))
+
+
+def translate_pdf_content(pdf_bytes: bytes, target_language: str) -> list[str]:
+    """Send a PDF to Gemini and get back the translated text, one entry per page.
+
+    Used as a fallback when Google Translate's Document Translation produces
+    a copy of the input (e.g. path-rendered Arabic forms with no real text layer).
+    """
+    _init()
+    pdf_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+    prompt = (
+        f"Translate every page of this PDF to {target_language}. "
+        "Return a JSON object with key 'pages': an array of strings, one per page, "
+        "in original order. Preserve paragraph breaks within each page. "
+        "Output the translation only — no commentary, no explanation."
+    )
+    response = _client.models.generate_content(
+        model=settings.gemini_summary_model,
+        contents=[prompt, pdf_part],
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "pages": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["pages"],
+            },
+        ),
+    )
+    parsed = json.loads(response.text)
+    return parsed.get("pages", [])
+
+
+def extract_insights(pages_content: list[str]) -> dict:
+    """Extract structured indicators + trends from a report's page content.
+
+    Returns a dict with keys 'indicators' and 'trends'. Each is a list of dicts
+    matching the schema in core/prompts.INSIGHTS_SCHEMA.
+    """
+    _init()
+    combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
+    response = _client.models.generate_content(
+        model=settings.gemini_summary_model,
+        contents=prompts.insights_prompt(combined),
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_schema=prompts.INSIGHTS_SCHEMA,
+        ),
+    )
+    return json.loads(response.text)
+
+
+def compare_reports(reports: list[dict]) -> dict:
+    """Compare multiple reports.
+
+    `reports` is a list of {"report_id": "...", "summary": "...", "key_findings": [...]}.
+    Returns a dict matching core/prompts.COMPARE_SCHEMA.
+    """
+    _init()
+    sections = []
+    for i, rep in enumerate(reports, start=1):
+        kf = rep.get("key_findings") or []
+        kf_block = "\n".join(f"  - {f}" for f in kf) if kf else "  (no key findings)"
+        sections.append(
+            f"[Report {i}] id={rep['report_id']}\n"
+            f"Summary:\n{rep.get('summary') or '(no summary available)'}\n"
+            f"Key findings:\n{kf_block}"
+        )
+    reports_section = "\n\n".join(sections)
+
+    response = _client.models.generate_content(
+        model=settings.gemini_summary_model,
+        contents=prompts.compare_prompt(reports_section),
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_schema=prompts.COMPARE_SCHEMA,
+        ),
+    )
+    return json.loads(response.text)
 
 
 def summarize_report(pages_content: list[str]) -> ReportSummary:
@@ -110,6 +272,7 @@ def summarize_report(pages_content: list[str]) -> ReportSummary:
         model=settings.gemini_summary_model,
         contents=prompts.summarize_prompt(combined),
         config=types.GenerateContentConfig(
+            temperature=0.2,
             response_mime_type="application/json",
             response_schema=prompts.REPORT_SUMMARY_SCHEMA,
         ),

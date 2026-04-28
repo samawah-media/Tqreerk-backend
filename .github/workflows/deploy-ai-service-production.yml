@@ -63,6 +63,8 @@ jobs:
             GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
             GCS_BUCKET=${{ secrets.CLOUD_STORAGE_BUCKET }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+            ENVIRONMENT=production
 
       - name: Verify deployment
         run: |
