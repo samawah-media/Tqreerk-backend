@@ -82,3 +82,57 @@ class JobStatusResponse(BaseModel):
     output_data: dict | None = None     # parsed jsonb output (varies by job_type)
     started_at: str | None = None       # ISO 8601
     completed_at: str | None = None
+
+
+# ── Insights (per report) ────────────────────────────────────────────────────
+
+class InsightsRequest(BaseModel):
+    report_id: UUID
+
+
+class Indicator(BaseModel):
+    name: str
+    value: str
+    unit: str | None = None
+    time_period: str | None = None
+    context: str | None = None
+
+
+class Trend(BaseModel):
+    topic: str
+    direction: str                       # increasing | decreasing | stable | volatile | mixed
+    time_span: str | None = None
+    magnitude: str | None = None
+    explanation: str | None = None
+
+
+class InsightsResponse(BaseModel):
+    report_id: UUID
+    indicators: list[Indicator]
+    trends: list[Trend]
+
+
+# ── Comparison (multi-report) ────────────────────────────────────────────────
+
+class CompareRequest(BaseModel):
+    report_ids: list[UUID]               # 2 or more
+
+
+class SharedIndicator(BaseModel):
+    name: str
+    values_per_report: str               # e.g. "Report 1: 4.2%, Report 2: 3.8%"
+
+
+class ReportSimilarity(BaseModel):
+    report_a: UUID
+    report_b: UUID
+    score: float                         # cosine similarity, -1 .. 1
+
+
+class CompareResponse(BaseModel):
+    report_ids: list[UUID]
+    common_topics: list[str]
+    key_differences: list[str]
+    shared_indicators: list[SharedIndicator]
+    overall_summary: str
+    similarities: list[ReportSimilarity] # pairwise embedding cosine similarity

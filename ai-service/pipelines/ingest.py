@@ -71,10 +71,15 @@ async def ingest_report_bytes(report_id: UUID, pdf_bytes: bytes) -> int:
             # Extract rich text via Gemini
             content = describe_page_image(png_bytes)
 
+            # Skip pages with no extractable content (blank pages, visual-only).
+            # Storing them with no text/embedding would fail the embed call AND
+            # poison hybrid search results.
+            if not content or not content.strip():
+                continue
+
             # Embed the description
             embedding = embed_text(content)
             embedding_vec = np.array(embedding, dtype=np.float32)
-
 
             await conn.execute(
                 """

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""           # optional: AI Studio key — if set, used INSTEAD of Vertex AI
     internal_api_key: str = ""         # optional: shared secret for .NET → Python calls
 
+    # ── Observability ────────────────────────────────────────────────────────
+    sentry_dsn: str = ""               # optional — if set, errors + perf traces go to Sentry
+    environment: str = "staging"       # "staging" | "production" — Sentry environment tag
+
     # ── Model names (override per env without code changes) ──────────────────
     gemini_vision_model: str  = "gemini-2.5-flash"        # PDF page → text + chart descriptions
     gemini_chat_model: str    = "gemini-2.5-flash"        # RAG chat answers (fast, small context)

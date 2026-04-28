@@ -214,6 +214,56 @@ def translate_pdf_content(pdf_bytes: bytes, target_language: str) -> list[str]:
     return parsed.get("pages", [])
 
 
+def extract_insights(pages_content: list[str]) -> dict:
+    """Extract structured indicators + trends from a report's page content.
+
+    Returns a dict with keys 'indicators' and 'trends'. Each is a list of dicts
+    matching the schema in core/prompts.INSIGHTS_SCHEMA.
+    """
+    _init()
+    combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
+    response = _client.models.generate_content(
+        model=settings.gemini_summary_model,
+        contents=prompts.insights_prompt(combined),
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_schema=prompts.INSIGHTS_SCHEMA,
+        ),
+    )
+    return json.loads(response.text)
+
+
+def compare_reports(reports: list[dict]) -> dict:
+    """Compare multiple reports.
+
+    `reports` is a list of {"report_id": "...", "summary": "...", "key_findings": [...]}.
+    Returns a dict matching core/prompts.COMPARE_SCHEMA.
+    """
+    _init()
+    sections = []
+    for i, rep in enumerate(reports, start=1):
+        kf = rep.get("key_findings") or []
+        kf_block = "\n".join(f"  - {f}" for f in kf) if kf else "  (no key findings)"
+        sections.append(
+            f"[Report {i}] id={rep['report_id']}\n"
+            f"Summary:\n{rep.get('summary') or '(no summary available)'}\n"
+            f"Key findings:\n{kf_block}"
+        )
+    reports_section = "\n\n".join(sections)
+
+    response = _client.models.generate_content(
+        model=settings.gemini_summary_model,
+        contents=prompts.compare_prompt(reports_section),
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_schema=prompts.COMPARE_SCHEMA,
+        ),
+    )
+    return json.loads(response.text)
+
+
 def summarize_report(pages_content: list[str]) -> ReportSummary:
     """Generate a structured summary + key findings for a full report."""
     _init()

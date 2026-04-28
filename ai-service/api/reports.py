@@ -7,6 +7,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg import AsyncConnection
 
+import numpy as np
+
 from core.db import conn_ctx, get_conn
 from models.ingest import (
     BulkIngestItem,
@@ -14,17 +16,25 @@ from models.ingest import (
     BulkJobsResponse,
     BulkTranslateItem,
     BulkTranslateRequest,
+    CompareRequest,
+    CompareResponse,
     CreatedJob,
+    Indicator,
     IngestRequest,
     IngestResponse,
+    InsightsRequest,
+    InsightsResponse,
     JobStatusResponse,
+    ReportSimilarity,
+    SharedIndicator,
     SummarizeRequest,
     SummarizeResponse,
+    Trend,
     TranslateRequest,
     TranslateResponse,
 )
 from pipelines.ingest import ingest_report
-from services.gemini import summarize_report
+from services.gemini import compare_reports, extract_insights, summarize_report
 from services.translate import detect_language, translate_pdf
 
 logger = logging.getLogger(__name__)
@@ -68,6 +78,139 @@ async def summarize(
         summary=result.summary,
         key_findings=result.key_findings,
         topics=result.topics,
+    )
+
+
+@router.post("/insights", response_model=InsightsResponse)
+async def insights(
+    body: InsightsRequest,
+    conn: AsyncConnection = Depends(get_conn),
+):
+    """Extract structured indicators and trends from an already-ingested report.
+
+    Reads stored `report_pages.Content` and asks Gemini for structured output.
+    Result can be persisted by .NET into `report_ai_content.Indicators` /
+    `report_ai_content.Trends` (jsonb columns).
+    """
+    cur = await conn.execute(
+        'SELECT "Content" FROM report_pages '
+        'WHERE "ReportId" = %s ORDER BY "PageNumber"',
+        [str(body.report_id)],
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Report pages not found — ingest first")
+
+    result = extract_insights([r[0] for r in rows])
+    return InsightsResponse(
+        report_id=body.report_id,
+        indicators=[Indicator(**i) for i in result.get("indicators", [])],
+        trends=[Trend(**t) for t in result.get("trends", [])],
+    )
+
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    na, nb = float(np.linalg.norm(a)), float(np.linalg.norm(b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return float(np.dot(a, b) / (na * nb))
+
+
+@router.post("/compare", response_model=CompareResponse)
+async def compare(
+    body: CompareRequest,
+    conn: AsyncConnection = Depends(get_conn),
+):
+    """Compare 2+ reports.
+
+    Two layers:
+      1. Numerical similarity — pairwise cosine on each report's mean page
+         embedding. Cheap, runs in pgvector + numpy, gives a 0..1 score per pair.
+      2. Qualitative comparison — sends the stored summaries + key findings of
+         each report to Gemini for structured output (common topics, key
+         differences, shared indicators).
+
+    Each report must already be ingested AND summarized.
+    """
+    if len(body.report_ids) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 report_ids to compare")
+
+    ids = [str(rid) for rid in body.report_ids]
+
+    # 1. Mean page embedding per report — done in numpy, since pgvector's avg()
+    #    aggregate isn't universally available.
+    emb_cur = await conn.execute(
+        'SELECT "ReportId", embedding FROM report_pages '
+        'WHERE "ReportId" = ANY(%s) AND embedding IS NOT NULL',
+        [ids],
+    )
+    emb_rows = await emb_cur.fetchall()
+
+    by_report: dict[str, list[np.ndarray]] = {}
+    for rid, emb in emb_rows:
+        by_report.setdefault(str(rid), []).append(np.asarray(emb, dtype=np.float32))
+
+    means: dict[str, np.ndarray] = {
+        rid: np.mean(np.stack(vecs), axis=0) for rid, vecs in by_report.items()
+    }
+
+    similarities: list[ReportSimilarity] = []
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            ra, rb = ids[i], ids[j]
+            if ra in means and rb in means:
+                similarities.append(ReportSimilarity(
+                    report_a=ra, report_b=rb,
+                    score=round(_cosine(means[ra], means[rb]), 4),
+                ))
+
+    # 2. Pull summary + key_findings from report_ai_content for each report.
+    ai_cur = await conn.execute(
+        '''
+        SELECT "ReportId", "Summary", "KeyFindings"
+        FROM report_ai_content
+        WHERE "ReportId" = ANY(%s)
+        ''',
+        [ids],
+    )
+    ai_rows = await ai_cur.fetchall()
+    by_id_ai: dict[str, tuple] = {str(r[0]): (r[1], r[2]) for r in ai_rows}
+
+    reports_for_gemini: list[dict] = []
+    for rid in ids:
+        summary, key_findings_raw = by_id_ai.get(rid, (None, None))
+        # KeyFindings is jsonb — psycopg3 returns it parsed already
+        if isinstance(key_findings_raw, str):
+            try:
+                key_findings = json.loads(key_findings_raw)
+            except json.JSONDecodeError:
+                key_findings = []
+        else:
+            key_findings = key_findings_raw or []
+        reports_for_gemini.append({
+            "report_id": rid,
+            "summary": summary,
+            "key_findings": key_findings,
+        })
+
+    # If none of the reports have summaries, the comparison won't be useful
+    if not any(r.get("summary") for r in reports_for_gemini):
+        raise HTTPException(
+            status_code=400,
+            detail="No report has a stored summary — run /summarize on each first",
+        )
+
+    qualitative = compare_reports(reports_for_gemini)
+
+    return CompareResponse(
+        report_ids=body.report_ids,
+        common_topics=qualitative.get("common_topics", []),
+        key_differences=qualitative.get("key_differences", []),
+        shared_indicators=[
+            SharedIndicator(**si) for si in qualitative.get("shared_indicators", [])
+        ],
+        overall_summary=qualitative.get("overall_summary", ""),
+        similarities=similarities,
     )
 
 
