@@ -1,6 +1,7 @@
 """Chat endpoints — per-session Q&A with RAG (streaming)."""
 import asyncio
 import json
+import re
 from uuid import UUID, uuid4
 
 import numpy as np
@@ -21,6 +22,29 @@ from services.gemini import chat_with_context_stream, embed_text
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 TOP_K = 5  # number of page chunks to retrieve per question
+
+# Recognises explicit page requests in either Arabic or English, accepting both
+# Western (0-9) and Arabic-Indic (٠-٩) digit forms.
+_PAGE_PATTERN = re.compile(
+    r"(?:page|pg\.?|p\.?|الصفحة|صفحة|الصفحه|صفحه)\s*[#:\-]?\s*(\d+|[٠-٩]+)",
+    re.IGNORECASE,
+)
+_ARABIC_TO_LATIN = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+
+def _detect_page_request(message: str) -> int | None:
+    """Return the page number if the message explicitly asks for a page, else None.
+
+    Examples that match: "give me page 2", "what is on page 5?",
+    "ما هو محتوى الصفحة 3", "صفحة ٧".
+    """
+    m = _PAGE_PATTERN.search(message)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).translate(_ARABIC_TO_LATIN))
+    except ValueError:
+        return None
 
 
 @router.post("/sessions", response_model=CreateSessionResponse, status_code=201)
@@ -121,48 +145,66 @@ async def send_message(
     )
     history = [{"role": r, "content": c} for r, c in await hist_cur.fetchall()]
 
-    # ─── Hybrid RAG retrieval (dense vector + sparse tsvector) ─────────────
-    question_vec = np.array(embed_text(body.message), dtype=np.float32)
-    pages_cur = await conn.execute(
-        """
-        WITH dense AS (
-            SELECT "PageNumber", "Content",
-                   1 - (embedding <=> %s) AS score
-            FROM report_pages
-            WHERE "ReportId" = %s AND embedding IS NOT NULL
-            ORDER BY embedding <=> %s
-            LIMIT 20
-        ),
-        sparse AS (
-            SELECT "PageNumber", "Content",
-                   ts_rank(search_vector,
-                           plainto_tsquery('arabic', %s) ||
-                           plainto_tsquery('english', %s)) AS score
-            FROM report_pages
-            WHERE "ReportId" = %s
-              AND search_vector @@ (plainto_tsquery('arabic', %s) ||
-                                    plainto_tsquery('english', %s))
-            ORDER BY score DESC
-            LIMIT 20
+    # ─── Page-number short-circuit ─────────────────────────────────────────
+    # If the user explicitly asks for a specific page, fetch it directly and
+    # skip the embedding + hybrid retrieval step entirely. Falls through to
+    # hybrid search if the requested page doesn't exist in this report.
+    requested_page = _detect_page_request(body.message)
+    direct_rows: list[tuple] = []
+    if requested_page is not None:
+        direct_cur = await conn.execute(
+            'SELECT "PageNumber", "Content" FROM report_pages '
+            'WHERE "ReportId" = %s AND "PageNumber" = %s',
+            [str(report_id), requested_page],
         )
-        SELECT "PageNumber", "Content",
-               COALESCE(d.score, 0) * 0.7 + COALESCE(s.score, 0) * 0.3 AS final_score
-        FROM dense d
-        FULL OUTER JOIN sparse s USING ("PageNumber", "Content")
-        ORDER BY final_score DESC
-        LIMIT %s
-        """,
-        [
-            question_vec, str(report_id), question_vec,
-            body.message, body.message, str(report_id),
-            body.message, body.message,
-            TOP_K,
-        ],
-    )
-    page_rows = await pages_cur.fetchall()
-    page_rows = [(p, c) for p, c, _ in page_rows]
-    context_chunks = [c for _, c in page_rows]
-    source_pages = [p for p, _ in page_rows]
+        direct_rows = await direct_cur.fetchall()
+
+    if direct_rows:
+        context_chunks = [c for _, c in direct_rows]
+        source_pages = [p for p, _ in direct_rows]
+    else:
+        # ─── Hybrid RAG retrieval (dense vector + sparse tsvector) ──────
+        question_vec = np.array(embed_text(body.message), dtype=np.float32)
+        pages_cur = await conn.execute(
+            """
+            WITH dense AS (
+                SELECT "PageNumber", "Content",
+                       1 - (embedding <=> %s) AS score
+                FROM report_pages
+                WHERE "ReportId" = %s AND embedding IS NOT NULL
+                ORDER BY embedding <=> %s
+                LIMIT 20
+            ),
+            sparse AS (
+                SELECT "PageNumber", "Content",
+                       ts_rank(search_vector,
+                               plainto_tsquery('arabic', %s) ||
+                               plainto_tsquery('english', %s)) AS score
+                FROM report_pages
+                WHERE "ReportId" = %s
+                  AND search_vector @@ (plainto_tsquery('arabic', %s) ||
+                                        plainto_tsquery('english', %s))
+                ORDER BY score DESC
+                LIMIT 20
+            )
+            SELECT "PageNumber", "Content",
+                   COALESCE(d.score, 0) * 0.7 + COALESCE(s.score, 0) * 0.3 AS final_score
+            FROM dense d
+            FULL OUTER JOIN sparse s USING ("PageNumber", "Content")
+            ORDER BY final_score DESC
+            LIMIT %s
+            """,
+            [
+                question_vec, str(report_id), question_vec,
+                body.message, body.message, str(report_id),
+                body.message, body.message,
+                TOP_K,
+            ],
+        )
+        page_rows = await pages_cur.fetchall()
+        page_rows = [(p, c) for p, c, _ in page_rows]
+        context_chunks = [c for _, c in page_rows]
+        source_pages = [p for p, _ in page_rows]
 
     # ─── Persist the user message before streaming starts ───────────────────
     await conn.execute(
