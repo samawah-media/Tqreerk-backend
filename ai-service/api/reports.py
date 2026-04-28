@@ -330,11 +330,11 @@ async def compare(
                     score=round(_cosine(means[ra], means[rb]), 4),
                 ))
 
-    # 2. Pull summary + key_findings from report_ai_content for each report.
+    # 2. Pull summary + key_findings from report_ai_contents for each report.
     ai_cur = await conn.execute(
         '''
         SELECT "ReportId", "Summary", "KeyFindings"
-        FROM report_ai_content
+        FROM report_ai_contents
         WHERE "ReportId" = ANY(%s)
         ''',
         [ids],

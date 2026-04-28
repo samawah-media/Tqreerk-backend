@@ -245,6 +245,7 @@ Tqreerk-backend/
 - [x] `POST /api/ai/reports/summarize` — executive summary + key findings + topics (structured output) ✅
 - [x] `GET /api/ai/reports/{report_id}/pages` — return all extracted per-page text (Gemini Vision output) for debugging / admin UI ✅
 - [x] **Auto-ingest fallback** — `summarize`, `translate`, `insights`, `compare`, and `pages` endpoints automatically kick off an ingest job (looking up `reports.FileUrl`) when no page content exists. Return `202 Accepted` with the new `job_id`; caller retries when ingestion is `Completed`. Detects in-flight ingest jobs to avoid duplicates. ✅
+- [x] All raw-SQL table names verified against EF Core `ToTable()` configs — `report_ai_contents` (plural), `reports`, `ai_jobs`, `report_pages`, `chat_*` ✅
 - [x] `POST /api/ai/reports/translate` — Google Translate v3 Document Translation with `enable_rotation_correction` + `enable_shadow_removal_native_pdf` ✅
 - [x] Translation Gemini fallback — when Google's output ≈ input (path-rendered PDFs), Gemini reads PDF + renders new translated PDF (`.gemini.pdf` suffix) ✅
 - [x] Translation auto-detect source language → flip target (ar↔en); .NET sends `output_prefix` exactly where it wants the file saved ✅
