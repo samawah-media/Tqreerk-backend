@@ -56,6 +56,7 @@ def describe_page_image(png_bytes: bytes) -> str:
         model=settings.gemini_vision_model,
         contents=[prompts.PAGE_DESCRIPTION, image_part],
         config=types.GenerateContentConfig(
+            temperature=0.2,
             response_mime_type="application/json",
             response_schema=prompts.PAGE_DESCRIPTION_SCHEMA,
         ),
@@ -98,6 +99,7 @@ def chat_with_context(
     response = _client.models.generate_content(
         model=settings.gemini_chat_model,
         contents=contents,
+        config=types.GenerateContentConfig(temperature=0.2),
     )
     return response.text.strip(), source_pages
 
@@ -128,6 +130,7 @@ def chat_with_context_stream(
     stream = _client.models.generate_content_stream(
         model=settings.gemini_chat_model,
         contents=contents,
+        config=types.GenerateContentConfig(temperature=0.2),
     )
     for chunk in stream:
         if chunk.text:
@@ -165,6 +168,7 @@ def verify_translation(
             types.Part.from_bytes(data=translated_pdf, mime_type="application/pdf"),
         ],
         config=types.GenerateContentConfig(
+            temperature=0.2,
             response_mime_type="application/json",
             response_schema={
                 "type": "object",
@@ -195,6 +199,7 @@ def translate_pdf_content(pdf_bytes: bytes, target_language: str) -> list[str]:
         model=settings.gemini_summary_model,
         contents=[prompt, pdf_part],
         config=types.GenerateContentConfig(
+            temperature=0.2,
             response_mime_type="application/json",
             response_schema={
                 "type": "object",
@@ -217,6 +222,7 @@ def summarize_report(pages_content: list[str]) -> ReportSummary:
         model=settings.gemini_summary_model,
         contents=prompts.summarize_prompt(combined),
         config=types.GenerateContentConfig(
+            temperature=0.2,
             response_mime_type="application/json",
             response_schema=prompts.REPORT_SUMMARY_SCHEMA,
         ),
