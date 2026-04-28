@@ -150,6 +150,48 @@ public class ReportsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>Re-submit a returned-for-edit report with a new PDF (and
+    /// optional cover). Status flips back to PendingReview and the report
+    /// re-enters the moderation queue.</summary>
+    [HttpPost("{id:guid}/resubmit")]
+    [RequestSizeLimit(MaxUploadBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaxUploadBytes)]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType(typeof(ReportDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Resubmit(
+        Guid id,
+        [FromForm] ResubmitReportForm form,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        if (form.File is null || form.File.Length == 0)
+            return BadRequest(new { title = "File is required." });
+
+        await using var reportBuffer = await BufferAsync(form.File, ct);
+        var reportFile = new UploadedFile(reportBuffer, form.File.FileName, form.File.ContentType);
+
+        UploadedFile? coverFile = null;
+        MemoryStream? coverBuffer = null;
+        try
+        {
+            if (form.CoverImage is not null && form.CoverImage.Length > 0)
+            {
+                coverBuffer = await BufferAsync(form.CoverImage, ct);
+                coverFile = new UploadedFile(coverBuffer, form.CoverImage.FileName, form.CoverImage.ContentType);
+            }
+
+            var updated = await _reports.ResubmitAsync(userId, id, reportFile, coverFile, ct);
+            return Ok(updated);
+        }
+        finally
+        {
+            if (coverBuffer is not null) await coverBuffer.DisposeAsync();
+        }
+    }
+
     /// <summary>Get the current AI processing status (jobs + summary + translations).
     /// Polled by the frontend every 3s while overall status is Processing.</summary>
     [HttpGet("{id:guid}/ai-status")]
@@ -195,6 +237,15 @@ public class ReportsController : ControllerBase
         public string? PublicationDate { get; set; }
         public Guid? SectorId { get; set; }
         public Guid? CountryId { get; set; }
+    }
+
+    /// Multipart form for resubmitting a returned-for-edit report. Carries
+    /// only the file(s) — metadata stays the same, since the org isn't
+    /// re-running the wizard, just swapping PDF content.
+    public class ResubmitReportForm
+    {
+        public IFormFile? File { get; set; }
+        public IFormFile? CoverImage { get; set; }
     }
 
     private bool TryGetUserId(out Guid userId)

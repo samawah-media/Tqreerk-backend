@@ -29,18 +29,15 @@ public class ReportService : IReportService
 
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
-    private readonly IReportAiService _ai;
     private readonly ILogger<ReportService> _logger;
 
     public ReportService(
         TaqreerkDbContext db,
         IFileStorage files,
-        IReportAiService ai,
         ILogger<ReportService> logger)
     {
         _db = db;
         _files = files;
-        _ai = ai;
         _logger = logger;
     }
 
@@ -116,6 +113,12 @@ public class ReportService : IReportService
             _logger.LogInformation("No cover image provided for new report in org {OrgId}", orgId);
         }
 
+        // The report goes straight into the admin review queue. Status =
+        // PendingReview, SubmittedForReviewAt set now. AI pipeline is NOT
+        // triggered here — it fires when an admin approves the report (see
+        // ReportAiService.EnqueueIngestAsync called from the future
+        // AdminReviewsController.ApproveAsync, PR A4).
+        var now = DateTime.UtcNow;
         var report = new Report
         {
             OrganizationId = orgId,
@@ -131,22 +134,12 @@ public class ReportService : IReportService
             CountryId = req.CountryId,
             FileUrl = storedReport.ObjectKey,
             CoverImageUrl = coverKey,
-            Status = ReportStatus.Draft,
+            Status = ReportStatus.PendingReview,
+            SubmittedForReviewAt = now,
             SourceType = ReportSourceType.Organization,
         };
         _db.Reports.Add(report);
         await _db.SaveChangesAsync(ct);
-
-        // Kick off the AI pipeline. Best-effort — if the queue insert fails the
-        // report is still saved and the user can retry via /regenerate-ai.
-        try
-        {
-            await _ai.EnqueueIngestAsync(report.Id, ct);
-        }
-        catch (Exception)
-        {
-            // Swallow: never let an AI-pipeline glitch fail the upload itself.
-        }
 
         return await BuildDetailAsync(report.Id, ct)
             ?? throw new InvalidOperationException("Report saved but reload failed.");
@@ -270,6 +263,89 @@ public class ReportService : IReportService
         await _db.SaveChangesAsync(ct);
     }
 
+    public async Task<ReportDetailDto> ResubmitAsync(
+        Guid currentUserId,
+        Guid reportId,
+        UploadedFile reportFile,
+        UploadedFile? coverImage,
+        CancellationToken ct = default)
+    {
+        if (!AllowedContentTypes.Contains(reportFile.ContentType, StringComparer.OrdinalIgnoreCase))
+            throw new ArgumentException("Only PDF files are accepted.");
+        if (reportFile.Content.CanSeek && reportFile.Content.Length > MaxFileSizeBytes)
+            throw new ArgumentException("File exceeds the 50 MB size limit.");
+        if (coverImage is not null)
+        {
+            if (!AllowedCoverContentTypes.Contains(coverImage.ContentType, StringComparer.OrdinalIgnoreCase))
+                throw new ArgumentException("Cover image must be PNG, JPEG, or WEBP.");
+            if (coverImage.Content.CanSeek && coverImage.Content.Length > MaxCoverImageBytes)
+                throw new ArgumentException("Cover image exceeds the 5 MB size limit.");
+        }
+
+        var orgId = await GetCallerOrgIdAsync(currentUserId, ct);
+
+        var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == reportId, ct)
+            ?? throw new KeyNotFoundException("Report not found.");
+        if (report.OrganizationId != orgId)
+            throw new UnauthorizedAccessException("This report belongs to another organization.");
+
+        // Resubmit only makes sense for reports the reviewer kicked back.
+        // Letting an org "resubmit" a Published or PendingReview report
+        // would silently overwrite its file — that's edit territory, not
+        // resubmit. Block it so the only way to reach this code is the
+        // ReturnedForEdit flow.
+        if (report.Status != ReportStatus.ReturnedForEdit)
+        {
+            throw new InvalidOperationException(
+                "Only reports that were returned for edit can be resubmitted.");
+        }
+
+        // Upload the new file. We keep the OLD file in GCS too — the
+        // version history isn't a separate table yet (Plan §Feature 7
+        // mentions report_versions but it's out of scope for this PR), so
+        // leaving the old object around is the safest "no data loss"
+        // option until that lands.
+        var storedReport = await _files.UploadAsync(
+            reportFile.Content, reportFile.OriginalFileName, reportFile.ContentType,
+            $"{ReportFolder}/{orgId}", ct);
+        report.FileUrl = storedReport.ObjectKey;
+
+        if (coverImage is not null)
+        {
+            try
+            {
+                var storedCover = await _files.UploadAsync(
+                    coverImage.Content, coverImage.OriginalFileName, coverImage.ContentType,
+                    $"{CoverFolder}/{orgId}", ct);
+                report.CoverImageUrl = storedCover.ObjectKey;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Resubmit: cover image upload failed for org {OrgId}; keeping previous cover.",
+                    orgId);
+            }
+        }
+
+        // Back to the queue. Bump SubmittedForReviewAt so FIFO ordering
+        // treats the resubmission as fresh — the org effectively sent a
+        // new report and the original wait time shouldn't penalise the
+        // re-review (or skip ahead unfairly, depending on perspective;
+        // we match the plan's "treat resubmits as fresh" guidance).
+        report.Status = ReportStatus.PendingReview;
+        report.SubmittedForReviewAt = DateTime.UtcNow;
+        report.ClaimedByReviewerId = null;
+        report.ClaimedAt = null;
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Org user {UserId} resubmitted report {ReportId} after edit",
+            currentUserId, report.Id);
+
+        return await BuildDetailAsync(report.Id, ct)
+            ?? throw new InvalidOperationException("Report saved but reload failed.");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private async Task<Guid> GetCallerOrgIdAsync(Guid userId, CancellationToken ct)
@@ -341,6 +417,16 @@ public class ReportService : IReportService
             catch { coverUrl = null; }
         }
 
+        // Latest review note — drives the org-side dashboard banner when
+        // the report was returned for edit or rejected. We only fetch the
+        // single most-recent row to keep this cheap.
+        var latestReview = await _db.ReportReviews
+            .AsNoTracking()
+            .Where(rr => rr.ReportId == row.Id)
+            .OrderByDescending(rr => rr.CreatedAt)
+            .Select(rr => new { rr.Decision, rr.ReviewNotes, rr.ReviewedAt })
+            .FirstOrDefaultAsync(ct);
+
         return new ReportDetailDto(
             row.Id,
             row.OrganizationId,
@@ -367,6 +453,9 @@ public class ReportService : IReportService
             row.SectorNameAr,
             row.CountryId,
             row.CountryNameAr,
+            latestReview?.Decision.ToString(),
+            latestReview?.ReviewNotes,
+            latestReview?.ReviewedAt,
             row.CreatedAt
         );
     }

@@ -46,27 +46,53 @@ public class AuthController : ControllerBase
         return Ok(result.Response);
     }
 
-    /// <summary>Authenticate with email and password. Returns access token; sets refresh token as HttpOnly cookie.</summary>
+    /// <summary>Authenticate with email and password. Returns either a
+    /// full token pair (sets refresh token as HttpOnly cookie) OR a 2FA
+    /// challenge when the caller is platform staff with 2FA enabled.
+    /// The SPA inspects the response shape and branches accordingly.</summary>
     [HttpPost("login")]
-    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Login([FromBody] LoginRequest req, CancellationToken ct)
     {
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
         var device = Request.Headers.UserAgent.ToString();
 
-        var result = await _auth.LoginAsync(req, ip, device, ct);
-        AppendRefreshCookie(result.RefreshToken);
-        return Ok(result.Response);
+        var outcome = await _auth.LoginWithTwoFactorAsync(req, ip, device, ct);
+
+        if (outcome.Tokens is { } tokens)
+        {
+            AppendRefreshCookie(tokens.RefreshToken);
+            return Ok(new LoginResponse(Tokens: tokens.Response, TwoFactor: null));
+        }
+
+        // 2FA challenge path. Don't set the refresh cookie here — the
+        // user hasn't proven possession of the second factor yet. The
+        // /admin/auth/2fa/verify endpoint sets it after step 2 succeeds.
+        var challenge = outcome.TwoFactorChallenge!;
+        return Ok(new LoginResponse(
+            Tokens: null,
+            TwoFactor: new TwoFactorChallenge(
+                ChallengeToken: challenge.ChallengeToken,
+                Email: challenge.Email,
+                IsConfigured: true)));
     }
 
-    /// <summary>Exchange a refresh token (from cookie or body) for a new token pair.</summary>
+    /// <summary>Exchange a refresh token (from body or cookie) for a new token pair.</summary>
     [HttpPost("refresh")]
     [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Refresh([FromBody] RefreshTokenRequest? body, CancellationToken ct)
     {
-        var token = Request.Cookies[RefreshTokenCookie] ?? body?.RefreshToken;
+        // Prefer the body over the cookie. The cookie can drift out of sync
+        // with the SPA's localStorage copy through the dev proxy (a cancelled
+        // refresh response can leave the browser with a rotated cookie value
+        // that the SPA never saw). Both ends agree on the body, so make that
+        // the source of truth and let the cookie act as a fallback for older
+        // clients that don't echo the token in the body.
+        var token = !string.IsNullOrWhiteSpace(body?.RefreshToken)
+            ? body!.RefreshToken
+            : Request.Cookies[RefreshTokenCookie];
 
         if (string.IsNullOrWhiteSpace(token))
             return Unauthorized(new { title = "Refresh token is required." });

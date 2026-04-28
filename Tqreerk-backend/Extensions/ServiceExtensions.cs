@@ -8,6 +8,7 @@ using Taqreerk.API.Authorization;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Services;
 using Taqreerk.Application.Settings;
+using Taqreerk.Infrastructure.Admin;
 using Taqreerk.Infrastructure.AI;
 using Taqreerk.Infrastructure.Data;
 using Taqreerk.Infrastructure.Storage;
@@ -60,18 +61,37 @@ public static class ServiceExtensions
         services.Configure<EmailSettings>(config.GetSection(EmailSettings.Section));
         services.Configure<FileStorageSettings>(config.GetSection(FileStorageSettings.Section));
         services.Configure<AiServiceSettings>(config.GetSection(AiServiceSettings.Section));
+        services.Configure<AdminWorkerSettings>(config.GetSection(AdminWorkerSettings.Section));
 
         services.AddMemoryCache();
 
+        // Data protection: backs IEncryptionService for at-rest 2FA secrets.
+        // Default key persistence (file system under %LOCALAPPDATA% in dev,
+        // ContentRoot/keys in container images) is fine for now; switch to a
+        // shared key ring before scaling to >1 admin host.
+        services.AddDataProtection();
+
+        // IHttpContextAccessor — needed by AdminActionLogger to capture
+        // IP / UA from the current request. Cheap to register; safe even
+        // for non-HTTP code paths (the accessor returns null context).
+        services.AddHttpContextAccessor();
+
         services.AddScoped<ITokenService, TokenService>();
         services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<IAdminAuthService, AdminAuthService>();
+        services.AddScoped<IAdminActionLogger, AdminActionLogger>();
         services.AddScoped<IRbacService, RbacService>();
+        services.AddScoped<IStaffService, StaffService>();
+        services.AddScoped<ITwoFactorService, TwoFactorService>();
+        services.AddSingleton<IEncryptionService, DataProtectorEncryptionService>();
+        services.AddScoped<IAdminDashboardService, AdminDashboardService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IOrganizationService, OrganizationService>();
         services.AddScoped<IDashboardService, DashboardService>();
         services.AddScoped<IReportService, ReportService>();
         services.AddScoped<IPublicReportService, PublicReportService>();
         services.AddScoped<IReportAiService, ReportAiService>();
+        services.AddScoped<IReviewService, ReviewService>();
 
         // Typed HttpClient for the external Python ai-service. Each call is a
         // long-running RPC (ingest can take minutes); the per-call timeout is
@@ -81,6 +101,9 @@ public static class ServiceExtensions
         // Background worker that drains the ai_jobs queue. Single instance —
         // see ReportProcessingWorker.cs for scaling notes.
         services.AddHostedService<ReportProcessingWorker>();
+
+        // Background worker that releases stale review claims (>N min idle).
+        services.AddHostedService<ClaimAutoReleaseWorker>();
 
         // File storage: pick GCS when explicitly configured, otherwise local disk.
         // Same fall-through pattern as the email senders.

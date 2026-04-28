@@ -7,6 +7,9 @@
 		{
 			"name": "Tqreerk-backend",
 			"path": "../.."
+		},
+		{
+			"path": "../../../takrerak-frontend/apps/takrerak-front-admin-dashboard"
 		}
 	]
 }

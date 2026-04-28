@@ -86,6 +86,10 @@
               "target": "Package",
               "version": "[8.0.0, )"
             },
+            "Otp.NET": {
+              "target": "Package",
+              "version": "[1.4.0, )"
+            },
             "Sentry.AspNetCore": {
               "target": "Package",
               "version": "[4.13.0, )"

@@ -41,4 +41,16 @@ public interface IReportService
         Guid currentUserId,
         Guid reportId,
         CancellationToken ct = default);
+
+    /// Re-submit a report that was returned for edit. Replaces the PDF
+    /// (and optionally the cover) with the new upload, flips status back
+    /// to PendingReview, and bumps SubmittedForReviewAt so the queue
+    /// re-orders. Only valid when the report is currently in
+    /// ReturnedForEdit; any other status throws.
+    Task<ReportDetailDto> ResubmitAsync(
+        Guid currentUserId,
+        Guid reportId,
+        UploadedFile reportFile,
+        UploadedFile? coverImage,
+        CancellationToken ct = default);
 }

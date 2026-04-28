@@ -33,6 +33,11 @@ public class ReportConfiguration : IEntityTypeConfiguration<Report>
         builder.HasIndex(r => r.SearchVector).HasMethod("GIN");
         builder.HasIndex(r => r.Status);
         builder.HasIndex(r => r.OrganizationId);
+        // Used by the queue endpoint to find reports a specific reviewer
+        // has currently claimed, and by the auto-release job to scan stale
+        // claims by ClaimedAt — partial index keeps it tiny.
+        builder.HasIndex(r => r.ClaimedByReviewerId)
+            .HasFilter("\"ClaimedByReviewerId\" IS NOT NULL");
 
         builder.HasOne(r => r.Organization)
             .WithMany(o => o.Reports)
@@ -43,6 +48,15 @@ public class ReportConfiguration : IEntityTypeConfiguration<Report>
             .WithMany(u => u.UploadedReports)
             .HasForeignKey(r => r.UploadedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // ClaimedByReviewer is optional and not tracked from the User side
+        // (we don't need a `User.ClaimedReports` collection) — SetNull on
+        // delete so a removed reviewer's stale claim doesn't block the
+        // report from being moved.
+        builder.HasOne(r => r.ClaimedByReviewer)
+            .WithMany()
+            .HasForeignKey(r => r.ClaimedByReviewerId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         builder.HasOne(r => r.Sector)
             .WithMany(s => s.Reports)

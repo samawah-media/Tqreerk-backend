@@ -26,6 +26,7 @@ public class TaqreerkDbContext : DbContext
 
     // Reports
     public DbSet<Report> Reports => Set<Report>();
+    public DbSet<ReportReview> ReportReviews => Set<ReportReview>();
     public DbSet<ReportTranslation> ReportTranslations => Set<ReportTranslation>();
     public DbSet<ReportKeyword> ReportKeywords => Set<ReportKeyword>();
     public DbSet<ReportAiContent> ReportAiContents => Set<ReportAiContent>();
@@ -54,6 +55,10 @@ public class TaqreerkDbContext : DbContext
 
     // Audit
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<AdminActionLog> AdminActionLogs => Set<AdminActionLog>();
+
+    // Admin 2FA
+    public DbSet<Admin2faSecret> Admin2faSecrets => Set<Admin2faSecret>();
 
     // RBAC
     public DbSet<Page> Pages => Set<Page>();

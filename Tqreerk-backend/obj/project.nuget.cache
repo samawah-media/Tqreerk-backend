@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "y7nDR7vzn3M=",
+  "dgSpecHash": "3xf1I6CbwL8=",
   "success": true,
   "projectFilePath": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
   "expectedPackageFiles": [
@@ -56,6 +56,7 @@
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\newtonsoft.json\\13.0.4\\newtonsoft.json.13.0.4.nupkg.sha512",
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\npgsql\\8.0.0\\npgsql.8.0.0.nupkg.sha512",
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\npgsql.entityframeworkcore.postgresql\\8.0.0\\npgsql.entityframeworkcore.postgresql.8.0.0.nupkg.sha512",
+    "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\otp.net\\1.4.0\\otp.net.1.4.0.nupkg.sha512",
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\sentry\\4.13.0\\sentry.4.13.0.nupkg.sha512",
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\sentry.aspnetcore\\4.13.0\\sentry.aspnetcore.4.13.0.nupkg.sha512",
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\sentry.extensions.logging\\4.13.0\\sentry.extensions.logging.4.13.0.nupkg.sha512",
@@ -82,15 +83,5 @@
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\system.text.json\\8.0.0\\system.text.json.8.0.0.nupkg.sha512",
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\system.threading.channels\\6.0.0\\system.threading.channels.6.0.0.nupkg.sha512"
   ],
-  "logs": [
-    {
-      "code": "Undefined",
-      "level": "Warning",
-      "message": "Problem reading the cache file C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\obj\\project.nuget.cache : '\"' is invalid after a value. Expected either ',', '}', or ']'. Path: $.expectedPackageFiles[77] | LineNumber: 84 | BytePositionInLine: 4.",
-      "projectPath": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
-      "warningLevel": 1,
-      "filePath": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
-      "targetGraphs": []
-    }
-  ]
+  "logs": []
 }

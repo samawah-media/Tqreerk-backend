@@ -1066,6 +1066,15 @@
           }
         }
       },
+      "Otp.NET/1.4.0": {
+        "type": "package",
+        "compile": {
+          "lib/net8.0/Otp.NET.dll": {}
+        },
+        "runtime": {
+          "lib/net8.0/Otp.NET.dll": {}
+        }
+      },
       "Sentry/4.13.0": {
         "type": "package",
         "compile": {
@@ -3340,6 +3349,26 @@
         "postgresql.png"
       ]
     },
+    "Otp.NET/1.4.0": {
+      "sha512": "Fk1NKc0lWmlo6LAFYpFJInRgFKt72knRNEvxndDYoQHFwYOPXav+WEUBvQA0k4lxq5xt0SymrZ+oi0F/G40bPQ==",
+      "type": "package",
+      "path": "otp.net/1.4.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "LICENSE.txt",
+        "README.md",
+        "icon.png",
+        "lib/net461/Otp.NET.dll",
+        "lib/net5.0/Otp.NET.dll",
+        "lib/net6.0/Otp.NET.dll",
+        "lib/net7.0/Otp.NET.dll",
+        "lib/net8.0/Otp.NET.dll",
+        "lib/netstandard2.0/Otp.NET.dll",
+        "otp.net.1.4.0.nupkg.sha512",
+        "otp.net.nuspec"
+      ]
+    },
     "Sentry/4.13.0": {
       "sha512": "Wfw3M1WpFcrYaGzPm7QyUTfIOYkVXQ1ry6p4WYjhbLz9fPwV23SGQZTFDpdox67NHM0V0g1aoQ4YKLm4ANtEEg==",
       "type": "package",
@@ -4048,6 +4077,7 @@
       "Microsoft.EntityFrameworkCore.Design >= 8.0.0",
       "Microsoft.EntityFrameworkCore.Tools >= 10.0.7",
       "Npgsql.EntityFrameworkCore.PostgreSQL >= 8.0.0",
+      "Otp.NET >= 1.4.0",
       "Sentry.AspNetCore >= 4.13.0",
       "Swashbuckle.AspNetCore >= 6.6.2"
     ]
@@ -4138,6 +4168,10 @@
             "target": "Package",
             "version": "[8.0.0, )"
           },
+          "Otp.NET": {
+            "target": "Package",
+            "version": "[1.4.0, )"
+          },
           "Sentry.AspNetCore": {
             "target": "Package",
             "version": "[4.13.0, )"
@@ -4158,24 +4192,6 @@
         ],
         "assetTargetFallback": true,
         "warn": true,
-        "downloadDependencies": [
-          {
-            "name": "Microsoft.AspNetCore.App.Ref",
-            "version": "[8.0.23, 8.0.23]"
-          },
-          {
-            "name": "Microsoft.NETCore.App.Host.win-x64",
-            "version": "[8.0.23, 8.0.23]"
-          },
-          {
-            "name": "Microsoft.NETCore.App.Ref",
-            "version": "[8.0.23, 8.0.23]"
-          },
-          {
-            "name": "Microsoft.WindowsDesktop.App.Ref",
-            "version": "[8.0.23, 8.0.23]"
-          }
-        ],
         "frameworkReferences": {
           "Microsoft.AspNetCore.App": {
             "privateAssets": "none"
@@ -4187,13 +4203,5 @@
         "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.306/PortableRuntimeIdentifierGraph.json"
       }
     }
-  },
-  "logs": [
-    {
-      "code": "Undefined",
-      "level": "Warning",
-      "warningLevel": 1,
-      "message": "Problem reading the cache file C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\obj\\project.nuget.cache : '\"' is invalid after a value. Expected either ',', '}', or ']'. Path: $.expectedPackageFiles[77] | LineNumber: 84 | BytePositionInLine: 4."
-    }
-  ]
+  }
 }

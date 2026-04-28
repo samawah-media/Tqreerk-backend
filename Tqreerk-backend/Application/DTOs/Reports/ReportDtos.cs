@@ -52,6 +52,12 @@ public record ReportDetailDto(
     string? SectorNameAr,
     Guid? CountryId,
     string? CountryNameAr,
+    /// Latest review decision the report received (Approved / Rejected /
+    /// ReturnedForEdit). Null when nobody has reviewed it yet — the org
+    /// dashboard uses this to render the review-notes banner.
+    string? LatestReviewDecision,
+    string? LatestReviewNotes,
+    DateTime? LatestReviewedAt,
     DateTime CreatedAt
 );
 
