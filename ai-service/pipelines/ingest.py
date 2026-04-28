@@ -92,21 +92,16 @@ async def ingest_report_bytes(report_id: UUID, pdf_bytes: bytes) -> int:
             embedding = await loop.run_in_executor(None, embed_text, content)
             return page_num, content, np.array(embedding, dtype=np.float32)
 
+    # Any per-page failure (connection error, Gemini error, etc.) propagates
+    # and fails the whole ingest job. The caller's _do_ingest_only_job will
+    # catch it and mark the ai_jobs row as Failed with the error message —
+    # so .NET sees the actual problem instead of silently dropped pages.
     results = await asyncio.gather(
         *(process_page(pn, png) for pn, png in page_pngs),
-        return_exceptions=True,
     )
 
-    # Drop None (skipped) and Exception (per-page failures don't kill the batch)
-    successes: list[tuple[int, str, np.ndarray]] = []
-    for r in results:
-        if isinstance(r, Exception):
-            logger.warning("ingest report=%s a page failed: %s", report_id, r)
-            continue
-        if r is None:
-            continue
-        successes.append(r)
-
+    # Drop None (intentionally skipped blank pages); the rest are successes.
+    successes: list[tuple[int, str, np.ndarray]] = [r for r in results if r is not None]
     successes.sort(key=lambda x: x[0])  # write in page order
 
     # ── Step 3: bulk insert in a single transaction ──────────────────────────

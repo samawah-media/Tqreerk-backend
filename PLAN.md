@@ -241,7 +241,7 @@ Tqreerk-backend/
 - [x] `POST /api/ai/reports/ingest` — async fire-and-forget; returns 202 + `job_id` immediately, poll `/jobs/{id}` ✅
   - Avoids .NET HttpClient timeouts on long PDFs (was sync, blew past 300 s on 50+ page Arabic reports)
   - Skips empty pages so blank/visual-only pages don't crash `embed_text` ✅
-  - Per-page failures don't kill the whole batch; surviving pages still indexed ✅
+  - Per-page failures (SSL drops, Gemini errors) fail the whole job loudly — `ai_jobs.Status='Failed'` with the error message — so .NET / operators see the real problem instead of silently lost pages ✅
 - [x] `POST /api/ai/reports/summarize` — executive summary + key findings + topics (structured output) ✅
 - [x] `GET /api/ai/reports/{report_id}/pages` — return all extracted per-page text (Gemini Vision output) for debugging / admin UI ✅
 - [x] **Auto-ingest fallback** — `summarize`, `translate`, `insights`, `compare`, and `pages` endpoints automatically kick off an ingest job (looking up `reports.FileUrl`) when no page content exists. Return `202 Accepted` with the new `job_id`; caller retries when ingestion is `Completed`. Detects in-flight ingest jobs to avoid duplicates. ✅
