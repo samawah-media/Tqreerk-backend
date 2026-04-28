@@ -237,9 +237,11 @@ Tqreerk-backend/
 
 **Single-report endpoints**
 - [x] PDF ingestion pipeline: PyMuPDF → 150 DPI PNG per page → Gemini Vision → embedding → pgvector ✅
+- [x] **Parallel ingest** — pre-renders all pages, then runs Gemini Vision + embed in parallel via `Semaphore(5)` over a thread pool (~5× speedup; 50-page report drops from ~125 s to ~25 s) ✅
 - [x] `POST /api/ai/reports/ingest` — async fire-and-forget; returns 202 + `job_id` immediately, poll `/jobs/{id}` ✅
   - Avoids .NET HttpClient timeouts on long PDFs (was sync, blew past 300 s on 50+ page Arabic reports)
   - Skips empty pages so blank/visual-only pages don't crash `embed_text` ✅
+  - Per-page failures don't kill the whole batch; surviving pages still indexed ✅
 - [x] `POST /api/ai/reports/summarize` — executive summary + key findings + topics (structured output) ✅
 - [x] `POST /api/ai/reports/translate` — Google Translate v3 Document Translation with `enable_rotation_correction` + `enable_shadow_removal_native_pdf` ✅
 - [x] Translation Gemini fallback — when Google's output ≈ input (path-rendered PDFs), Gemini reads PDF + renders new translated PDF (`.gemini.pdf` suffix) ✅
