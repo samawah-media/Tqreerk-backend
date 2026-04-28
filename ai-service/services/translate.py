@@ -1,16 +1,17 @@
-"""PDF document translation with Gemini fallback.
+"""PDF document translation with Gemini verification + fallback.
 
 Pipeline:
   1. Try Google Cloud Translation v3 Document Translation directly
      (with rotation_correction + shadow_removal flags).
   2. Find the new PDF Google created in the output prefix (filename pattern
-     varies — we list and pick the freshly created blob), then compare its
-     size to the input PDF's size.
-  3. If no PDF was created OR output size ≈ input size (within 2%), the
-     translation didn't take (typical for path-rendered Arabic forms).
-     Fallback: send the original PDF to Gemini → receive translated text per
-     page → render a new PDF and upload it to GCS.
-  4. Return the URI of whichever translated PDF the pipeline produced.
+     varies — we list and pick the freshly created blob).
+  3. Send BOTH the original and the Google-translated PDF to Gemini, asking
+     whether the second is actually translated into the target language.
+     This catches the path-rendered case where Google produces a near-copy of
+     the input (size barely changes, so a size check is unreliable).
+  4. If Gemini says "not translated", fall back: send the original PDF to
+     Gemini → receive translated text per page → render a new PDF + upload.
+  5. Return the URI of whichever translated PDF the pipeline produced.
 """
 import datetime
 
@@ -18,11 +19,7 @@ import fitz  # PyMuPDF
 from google.cloud import storage, translate_v3
 
 from core.config import settings
-from services.gemini import translate_pdf_content
-
-# If Google's output is within this fraction of the input size, assume nothing
-# really got translated (the PDF was effectively passed through).
-SIZE_MATCH_TOLERANCE = 0.02  # 2 %
+from services.gemini import translate_pdf_content, verify_translation
 
 _translate_client: translate_v3.TranslationServiceClient | None = None
 _storage_client: storage.Client | None = None
@@ -55,12 +52,6 @@ def _parse_gs(uri: str) -> tuple[str, str]:
     assert uri.startswith("gs://")
     bucket, _, path = uri[5:].partition("/")
     return bucket, path
-
-
-def _gcs_size(uri: str) -> int:
-    bucket_name, blob_path = _parse_gs(uri)
-    blob = _storage_client.bucket(bucket_name).get_blob(blob_path)
-    return blob.size if blob else 0
 
 
 def _download_pdf(uri: str) -> bytes:
@@ -168,12 +159,12 @@ def translate_pdf(
     # Step 2: discover the file Google actually wrote (filename varies)
     google_uri = _find_new_pdf_under(output_prefix, before)
 
-    # Step 3: size check — if output is within 2% of input, no real translation
+    # Step 3: verify translation by sending BOTH PDFs to Gemini
     if google_uri:
-        in_size = _gcs_size(gcs_input_uri)
-        out_size = _gcs_size(google_uri)
-        if in_size and out_size and abs(out_size - in_size) / in_size >= SIZE_MATCH_TOLERANCE:
-            return google_uri  # success — Google translated it
+        original_bytes = _download_pdf(gcs_input_uri)
+        translated_bytes = _download_pdf(google_uri)
+        if verify_translation(original_bytes, translated_bytes, target_language):
+            return google_uri  # ✅ Gemini confirms translation succeeded
 
     # Step 4: fallback — Gemini reads the original PDF and renders a new one
     return _gemini_fallback(gcs_input_uri, output_prefix, target_language)

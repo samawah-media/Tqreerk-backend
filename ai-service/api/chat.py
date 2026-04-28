@@ -1,21 +1,21 @@
-"""Chat endpoints — per-session Q&A with RAG."""
+"""Chat endpoints — per-session Q&A with RAG (streaming)."""
 import json
 from uuid import UUID, uuid4
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from psycopg import AsyncConnection
 
-from core.db import get_conn
+from core.db import conn_ctx, get_conn
 from models.chat import (
     CreateSessionRequest,
     CreateSessionResponse,
     SendMessageRequest,
-    SendMessageResponse,
     SessionHistoryResponse,
     SessionMessage,
 )
-from services.gemini import chat_with_context, embed_text
+from services.gemini import chat_with_context_stream, embed_text
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -78,13 +78,23 @@ async def get_session(
     )
 
 
-@router.post("/sessions/{session_id}/messages", response_model=SendMessageResponse)
+@router.post("/sessions/{session_id}/messages")
 async def send_message(
     session_id: UUID,
     body: SendMessageRequest,
     conn: AsyncConnection = Depends(get_conn),
 ):
-    # Verify session exists and get report_id
+    """Stream the assistant's answer back as Server-Sent Events.
+
+    Event format (one event per line, blank-line separated):
+      data: {"type": "sources", "pages": [3, 7, 12]}      ← sent first
+      data: {"type": "token", "text": "Hello"}            ← repeated
+      data: {"type": "token", "text": " there"}
+      data: {"type": "done"}                              ← sent last
+
+    Frontend should consume via EventSource or fetch + ReadableStream.
+    """
+    # ─── Validate session ───────────────────────────────────────────────────
     row = await conn.execute(
         'SELECT "ReportId" FROM chat_sessions WHERE "Id" = %s',
         [str(session_id)],
@@ -94,9 +104,7 @@ async def send_message(
         raise HTTPException(status_code=404, detail="Session not found")
     report_id = session[0]
 
-    # Load conversation history
-    # Send only the last 10 messages (5 turns) to Gemini to control token usage.
-    # Full history is always available in the DB for display.
+    # ─── Load conversation history (last 10 messages → 5 turns) ────────────
     hist_cur = await conn.execute(
         """
         SELECT "Role", "Content" FROM (
@@ -112,9 +120,7 @@ async def send_message(
     )
     history = [{"role": r, "content": c} for r, c in await hist_cur.fetchall()]
 
-    # Hybrid RAG retrieval: combine dense (vector) + sparse (BM25-style tsvector) ranks.
-    # Both candidate sets are scored, fused with weighted sum, top-K returned.
-    # Filter by ReportId first → each side scans only ~100 rows per report.
+    # ─── Hybrid RAG retrieval (dense vector + sparse tsvector) ─────────────
     question_vec = np.array(embed_text(body.message), dtype=np.float32)
     pages_cur = await conn.execute(
         """
@@ -146,9 +152,9 @@ async def send_message(
         LIMIT %s
         """,
         [
-            question_vec, str(report_id), question_vec,        # dense CTE
+            question_vec, str(report_id), question_vec,
             body.message, body.message, str(report_id),
-            body.message, body.message,                         # sparse CTE
+            body.message, body.message,
             TOP_K,
         ],
     )
@@ -157,10 +163,7 @@ async def send_message(
     context_chunks = [c for _, c in page_rows]
     source_pages = [p for p, _ in page_rows]
 
-    # Generate answer
-    answer, used_pages = chat_with_context(history, body.message, context_chunks, source_pages)
-
-    # Persist user message
+    # ─── Persist the user message before streaming starts ───────────────────
     await conn.execute(
         """
         INSERT INTO chat_messages ("Id", "SessionId", "Role", "Content", "SourcePages", "CreatedAt")
@@ -168,18 +171,54 @@ async def send_message(
         """,
         [str(session_id), body.message],
     )
-
-    # Persist assistant message
-    await conn.execute(
-        """
-        INSERT INTO chat_messages ("Id", "SessionId", "Role", "Content", "SourcePages", "CreatedAt")
-        VALUES (gen_random_uuid(), %s, 'assistant', %s, %s, now())
-        """,
-        [str(session_id), answer, json.dumps(used_pages)],
-    )
-
     await conn.commit()
-    return SendMessageResponse(session_id=session_id, answer=answer, source_pages=used_pages)
+
+    # ─── Streaming generator ────────────────────────────────────────────────
+    user_message = body.message
+    sid = str(session_id)
+
+    async def event_stream():
+        full_answer = ""
+        try:
+            # Tell the client which pages we're answering from before the first token
+            yield f"data: {json.dumps({'type': 'sources', 'pages': source_pages})}\n\n"
+
+            # Stream tokens as Gemini produces them
+            for delta in chat_with_context_stream(history, user_message, context_chunks):
+                full_answer += delta
+                yield f"data: {json.dumps({'type': 'token', 'text': delta})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            return
+
+        # ─── After the stream, persist the full assistant message ─────────
+        # The dep-injected `conn` was already returned to its pool when the
+        # handler returned, so open a fresh one for the save step.
+        try:
+            async with conn_ctx() as save_conn:
+                await save_conn.execute(
+                    """
+                    INSERT INTO chat_messages ("Id", "SessionId", "Role", "Content", "SourcePages", "CreatedAt")
+                    VALUES (gen_random_uuid(), %s, 'assistant', %s, %s, now())
+                    """,
+                    [sid, full_answer, json.dumps(source_pages)],
+                )
+                await save_conn.commit()
+        except Exception:
+            # Don't fail the response if persistence fails; the stream already
+            # delivered the answer to the user.
+            pass
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable proxy buffering for real streaming
+        },
+    )
 
 
 @router.get("/reports/{report_id}/sessions", response_model=list[dict])
