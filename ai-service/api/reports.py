@@ -45,11 +45,45 @@ _BULK_CONCURRENCY = 3
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
+async def _do_ingest_only_job(job_id: UUID, report_id: UUID, file_url: str) -> None:
+    """Worker: ingest PDF only (no summarize). Updates ai_jobs as it progresses."""
+    await _mark_processing(job_id)
+    try:
+        pages_processed = await ingest_report(report_id, file_url)
+        await _mark_completed(job_id, {"pages_processed": pages_processed})
+    except Exception as exc:
+        logger.exception("ingest job %s failed", job_id)
+        await _mark_failed(job_id, str(exc))
+
+
 @router.post("/ingest", response_model=IngestResponse, status_code=202)
-async def ingest(body: IngestRequest):
-    """Trigger PDF ingestion: extract text via Gemini and store embeddings."""
-    pages = await ingest_report(body.report_id, body.file_url)
-    return IngestResponse(report_id=body.report_id, pages_processed=pages)
+async def ingest(
+    body: IngestRequest,
+    conn: AsyncConnection = Depends(get_conn),
+):
+    """Queue PDF ingestion (fire-and-forget). Returns immediately with a job_id.
+
+    Ingest is too slow for sync HTTP — a 50-page Arabic PDF takes 3-10 min
+    because each page is a Gemini Vision call. The .NET HttpClient default
+    timeout is 100 s and Cloud Run caps at 3600 s, so we don't try to wait.
+
+    Poll `GET /api/ai/reports/jobs/{job_id}` for status. When `Completed`,
+    `output_data.pages_processed` will hold the page count.
+    """
+    job_id = uuid4()
+    await _insert_job(
+        conn,
+        job_id=job_id,
+        job_type="Ingestion",
+        report_id=body.report_id,
+        input_data={"file_url": body.file_url, "step": "ingest"},
+    )
+    await conn.commit()
+
+    # Spawn worker — request returns immediately with the job_id
+    asyncio.create_task(_do_ingest_only_job(job_id, body.report_id, body.file_url))
+
+    return IngestResponse(report_id=body.report_id, job_id=job_id)
 
 
 @router.post("/summarize", response_model=SummarizeResponse)
@@ -438,7 +472,7 @@ async def bulk_ingest_summarize(
         await _insert_job(
             conn,
             job_id=job_id,
-            job_type="Ingest",
+            job_type="Ingestion",
             report_id=item.report_id,
             input_data={"file_url": item.file_url, "step": "ingest+summarize"},
         )
@@ -471,7 +505,7 @@ async def bulk_translate(
         await _insert_job(
             conn,
             job_id=job_id,
-            job_type="Translate",
+            job_type="Translation",
             report_id=item.report_id,
             input_data={"file_url": item.file_url, "output_prefix": item.output_prefix},
         )

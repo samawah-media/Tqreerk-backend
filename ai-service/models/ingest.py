@@ -8,9 +8,10 @@ class IngestRequest(BaseModel):
 
 
 class IngestResponse(BaseModel):
+    """202 — ingest queued. Poll /api/ai/reports/jobs/{job_id} for completion."""
     report_id: UUID
-    pages_processed: int
-    status: str = "ok"
+    job_id: UUID
+    status: str = "Pending"
 
 
 class SummarizeRequest(BaseModel):

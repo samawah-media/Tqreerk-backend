@@ -237,7 +237,9 @@ Tqreerk-backend/
 
 **Single-report endpoints**
 - [x] PDF ingestion pipeline: PyMuPDF → 150 DPI PNG per page → Gemini Vision → embedding → pgvector ✅
-- [x] `POST /api/ai/reports/ingest` — trigger PDF ingestion ✅
+- [x] `POST /api/ai/reports/ingest` — async fire-and-forget; returns 202 + `job_id` immediately, poll `/jobs/{id}` ✅
+  - Avoids .NET HttpClient timeouts on long PDFs (was sync, blew past 300 s on 50+ page Arabic reports)
+  - Skips empty pages so blank/visual-only pages don't crash `embed_text` ✅
 - [x] `POST /api/ai/reports/summarize` — executive summary + key findings + topics (structured output) ✅
 - [x] `POST /api/ai/reports/translate` — Google Translate v3 Document Translation with `enable_rotation_correction` + `enable_shadow_removal_native_pdf` ✅
 - [x] Translation Gemini fallback — when Google's output ≈ input (path-rendered PDFs), Gemini reads PDF + renders new translated PDF (`.gemini.pdf` suffix) ✅
@@ -259,6 +261,7 @@ Tqreerk-backend/
 - [x] `POST /api/ai/reports/bulk/translate` — same pattern ✅
 - [x] `GET /api/ai/reports/jobs/{job_id}` — poll job status (Pending/Processing/Completed/Failed) ✅
 - [x] Tracked via existing `ai_jobs` table (string-converted enums for `JobType` + `Status`) ✅
+- [x] Python `job_type` strings aligned with .NET `AiJobType` enum: `"Ingestion"`, `"Translation"` (matches `Domain/Enums/AiJobType.cs`) ✅
 - [x] Bounded concurrency (semaphore=3) so 50-item batches don't slam Gemini quota ✅
 
 **Deployment**
