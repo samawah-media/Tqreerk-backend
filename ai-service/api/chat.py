@@ -1,8 +1,12 @@
 """Chat endpoints — per-session Q&A with RAG (streaming)."""
 import asyncio
 import json
+import logging
 import re
+import time
 from uuid import UUID, uuid4
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
@@ -119,6 +123,13 @@ async def send_message(
 
     Frontend should consume via EventSource or fetch + ReadableStream.
     """
+    # ── Timing instrumentation — each step logs its duration ───────────────
+    t0 = time.perf_counter()
+    def _mark(label: str, since: float) -> float:
+        now = time.perf_counter()
+        logger.info("chat[%s] %s: %.0f ms", str(session_id)[:8], label, (now - since) * 1000)
+        return now
+
     # ─── Validate session ───────────────────────────────────────────────────
     row = await conn.execute(
         'SELECT "ReportId" FROM chat_sessions WHERE "Id" = %s',
@@ -128,6 +139,7 @@ async def send_message(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     report_id = session[0]
+    t1 = _mark("validate_session", t0)
 
     # ─── Load conversation history (last 10 messages → 5 turns) ────────────
     hist_cur = await conn.execute(
@@ -144,11 +156,9 @@ async def send_message(
         [str(session_id)],
     )
     history = [{"role": r, "content": c} for r, c in await hist_cur.fetchall()]
+    t2 = _mark("load_history", t1)
 
     # ─── Page-number short-circuit ─────────────────────────────────────────
-    # If the user explicitly asks for a specific page, fetch it directly and
-    # skip the embedding + hybrid retrieval step entirely. Falls through to
-    # hybrid search if the requested page doesn't exist in this report.
     requested_page = _detect_page_request(body.message)
     direct_rows: list[tuple] = []
     if requested_page is not None:
@@ -162,9 +172,13 @@ async def send_message(
     if direct_rows:
         context_chunks = [c for _, c in direct_rows]
         source_pages = [p for p, _ in direct_rows]
+        t3 = _mark("retrieval(direct_page=%d)" % requested_page, t2)
     else:
         # ─── Hybrid RAG retrieval (dense vector + sparse tsvector) ──────
+        t_embed_start = time.perf_counter()
         question_vec = np.array(embed_text(body.message), dtype=np.float32)
+        t_embed_done = _mark("embed_text", t_embed_start)
+
         pages_cur = await conn.execute(
             """
             WITH dense AS (
@@ -205,6 +219,7 @@ async def send_message(
         page_rows = [(p, c) for p, c, _ in page_rows]
         context_chunks = [c for _, c in page_rows]
         source_pages = [p for p, _ in page_rows]
+        t3 = _mark("hybrid_sql", t_embed_done)
 
     # ─── Persist the user message before streaming starts ───────────────────
     await conn.execute(
@@ -215,13 +230,19 @@ async def send_message(
         [str(session_id), body.message],
     )
     await conn.commit()
+    t4 = _mark("save_user_msg", t3)
+    logger.info("chat[%s] pre_stream_total: %.0f ms", str(session_id)[:8], (t4 - t0) * 1000)
 
     # ─── Streaming generator ────────────────────────────────────────────────
     user_message = body.message
     sid = str(session_id)
+    sid_short = sid[:8]
 
     async def event_stream():
         full_answer = ""
+        stream_start = time.perf_counter()
+        first_token_at: float | None = None
+        token_count = 0
         try:
             # Tell the client which pages we're answering from before the first token
             yield f"data: {json.dumps({'type': 'sources', 'pages': source_pages})}\n\n"
@@ -246,12 +267,28 @@ async def send_message(
                 item = await queue.get()
                 if item is SENTINEL:
                     break
+                if first_token_at is None:
+                    first_token_at = time.perf_counter()
+                    logger.info(
+                        "chat[%s] gemini_first_token: %.0f ms",
+                        sid_short, (first_token_at - stream_start) * 1000,
+                    )
+                token_count += 1
                 full_answer += item
                 yield f"data: {json.dumps({'type': 'token', 'text': item})}\n\n"
                 await asyncio.sleep(0)
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            stream_end = time.perf_counter()
+            logger.info(
+                "chat[%s] stream_total: %.0f ms, tokens: %d, total_request: %.0f ms",
+                sid_short,
+                (stream_end - stream_start) * 1000,
+                token_count,
+                (stream_end - t0) * 1000,
+            )
         except Exception as exc:
+            logger.error("chat[%s] stream_error: %s", sid_short, exc)
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
             return
 
@@ -259,6 +296,7 @@ async def send_message(
         # The dep-injected `conn` was already returned to its pool when the
         # handler returned, so open a fresh one for the save step.
         try:
+            save_start = time.perf_counter()
             async with conn_ctx() as save_conn:
                 await save_conn.execute(
                     """
@@ -268,10 +306,12 @@ async def send_message(
                     [sid, full_answer, json.dumps(source_pages)],
                 )
                 await save_conn.commit()
-        except Exception:
-            # Don't fail the response if persistence fails; the stream already
-            # delivered the answer to the user.
-            pass
+            logger.info(
+                "chat[%s] save_assistant_msg: %.0f ms",
+                sid_short, (time.perf_counter() - save_start) * 1000,
+            )
+        except Exception as exc:
+            logger.warning("chat[%s] save_assistant_msg failed: %s", sid_short, exc)
 
     return StreamingResponse(
         event_stream(),
