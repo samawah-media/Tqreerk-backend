@@ -13,6 +13,7 @@ charts / figures / diagrams — the longer captions describe trends and
 labels rather than just shape, which is what RAG retrieval over reports
 actually needs.
 
+
 Failure mode
 ============
 On any inference error we return "" so the orchestrator can still embed the
