@@ -47,7 +47,7 @@ from models.ingest import (
 )
 from pipelines.jobs import insert_job
 from services.gemini import compare_reports, extract_insights, summarize_report
-from services.translate import detect_language, translate_pdf
+from services.translate import detect_source_language, translate_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -394,35 +394,27 @@ async def translate(
 ):
     """Translate the report PDF using Google Cloud Translation API v3 Document Translation.
 
-    Auto-detects source language from stored chunk content (auto-queues ingest
-    if missing). Arabic → English, anything else → Arabic. Returns the GCS URI
-    of the translated PDF; store it in ReportTranslation.
+    Language selection:
+      - If `source_language` and `target_language` are both provided in the
+        request, those are used verbatim.
+      - If only one is provided, the other is auto-derived (Arabic ↔ English).
+      - If neither is provided, source is detected from the report's stored
+        chunks (handles glyph-form Arabic correctly) and target is the
+        opposite of Arabic vs English.
     """
     not_ready = await _ensure_ingested(body.report_id, conn)
     if not_ready:
         raise HTTPException(status_code=202, detail=not_ready)
-
-    # Use the first chunk's content for language detection — no extra API
-    # round-trip needed. Page 1, chunk 0 captures the document's dominant text.
-    cur = await conn.execute(
-        '''
-        SELECT "Content" FROM report_chunks
-        WHERE "ReportId" = %s
-        ORDER BY "PageNumber", "ChunkIndex"
-        LIMIT 1
-        ''',
-        [str(body.report_id)],
-    )
-    row = await cur.fetchone()
-
-    source_language = detect_language(row[0])
-    target_language = "en" if source_language == "ar" else "ar"
 
     output_prefix = body.output_prefix
     if not output_prefix.startswith("gs://"):
         raise HTTPException(status_code=400, detail="output_prefix must start with gs://")
     if not output_prefix.endswith("/"):
         output_prefix += "/"
+
+    source_language, target_language = await _resolve_languages(
+        conn, body.report_id, body.source_language, body.target_language,
+    )
 
     translated_url = translate_pdf(
         gcs_input_uri=body.file_url,
@@ -436,6 +428,51 @@ async def translate(
         target_language=target_language,
         translated_file_url=translated_url,
     )
+
+
+async def _resolve_languages(
+    conn: AsyncConnection,
+    report_id: UUID,
+    source_override: str | None,
+    target_override: str | None,
+) -> tuple[str, str]:
+    """Decide (source, target) language given optional caller overrides.
+
+    Reads from report_chunks only when at least one of the languages still
+    needs to be detected — saves a query when both are passed explicitly."""
+    if source_override and target_override:
+        if source_override == target_override:
+            raise HTTPException(
+                status_code=400,
+                detail="source_language and target_language must differ",
+            )
+        return source_override, target_override
+
+    # Need to detect at least one — sample chunks once.
+    if not source_override:
+        cur = await conn.execute(
+            '''
+            SELECT "Content" FROM report_chunks
+            WHERE "ReportId" = %s
+            ORDER BY "PageNumber", "ChunkIndex"
+            LIMIT 10
+            ''',
+            [str(report_id)],
+        )
+        rows = await cur.fetchall()
+        sample = " ".join(r[0] for r in rows if r[0])
+        source_language = detect_source_language(sample)
+    else:
+        source_language = source_override
+
+    target_language = target_override or ("en" if source_language == "ar" else "ar")
+
+    if source_language == target_language:
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_language ({source_language}) and target_language match",
+        )
+    return source_language, target_language
 
 
 # ── Bulk endpoints ───────────────────────────────────────────────────────────

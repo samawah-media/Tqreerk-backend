@@ -47,6 +47,11 @@ class TranslateRequest(BaseModel):
     file_url: str           # gs://bucket/reports/{report_id}/original.pdf  — input from GCS
     output_prefix: str      # gs://bucket/reports/{report_id}/translated/  — .NET-owned base path (must end with /)
                             # Python appends "{detected_target_lang}/" before calling Google Translate.
+    # Optional language overrides. When omitted, the worker auto-detects
+    # source_language from the report's stored chunks and flips it for
+    # target_language ("ar" → "en", anything else → "ar").
+    source_language: str | None = None
+    target_language: str | None = None
 
 
 class TranslateResponse(BaseModel):
