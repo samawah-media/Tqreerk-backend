@@ -237,13 +237,16 @@ def _translate_chunked(
 
     # Per-job temp scratch space — colocate with the final output so we
     # don't need a second bucket and cleanup is a single prefix wipe.
+    # `chunk_path_root` is a *bucket-relative* path (no gs:// prefix); we
+    # build object keys against it and only re-attach gs:// at the API
+    # boundary. Mixing the two is what caused the doubled-gs:// bug.
     job_id = uuid.uuid4().hex[:12]
-    chunk_prefix = f"{output_prefix}_chunks_{job_id}/"
-    chunk_bucket, _ = _parse_gs(chunk_prefix)
+    chunk_uri_prefix = f"{output_prefix}_chunks_{job_id}/"
+    chunk_bucket, chunk_path_root = _parse_gs(chunk_uri_prefix)
     bucket = _storage_client.bucket(chunk_bucket)
 
     translated_chunk_bytes: list[bytes] = []
-    temp_blobs: list[str] = []  # paths under chunk_bucket to delete at the end
+    temp_blobs: list[str] = []  # bucket-relative paths to delete at the end
 
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as src:
@@ -257,11 +260,13 @@ def _translate_chunked(
                 chunk_pdf_bytes = chunk_doc.tobytes()
                 chunk_doc.close()
 
-                # Upload the chunk under its own prefix so the translated
-                # output blob can be discovered without ambiguity.
-                this_prefix = f"{chunk_prefix}{chunk_idx:03d}/"
-                input_blob_path = f"{this_prefix}input.pdf"
+                # Per-chunk paths: bucket-relative for blob ops, full gs://
+                # URI for the Translate API.
+                this_path_prefix = f"{chunk_path_root}{chunk_idx:03d}/"
+                this_uri_prefix = f"gs://{chunk_bucket}/{this_path_prefix}"
+                input_blob_path = f"{this_path_prefix}input.pdf"
                 input_uri = f"gs://{chunk_bucket}/{input_blob_path}"
+
                 bucket.blob(input_blob_path).upload_from_string(
                     chunk_pdf_bytes, content_type="application/pdf",
                 )
@@ -272,16 +277,18 @@ def _translate_chunked(
                     chunk_idx, start + 1, end + 1, input_uri,
                 )
 
-                # Translate the chunk.
+                # Translate the chunk. _translate_single uses gs:// URIs for
+                # both input and output prefix — the API expects URIs, not
+                # bucket-relative paths.
                 translated_chunk_uri = _translate_single(
-                    input_uri, this_prefix, source_language, target_language,
+                    input_uri, this_uri_prefix, source_language, target_language,
                 )
                 if not translated_chunk_uri:
                     raise RuntimeError(
                         f"chunk {chunk_idx} ({start+1}-{end+1}): Google produced no output"
                     )
 
-                # Track translated blob for cleanup.
+                # Track translated blob (bucket-relative) for cleanup.
                 _, translated_blob_path = _parse_gs(translated_chunk_uri)
                 temp_blobs.append(translated_blob_path)
 
