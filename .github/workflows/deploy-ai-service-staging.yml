@@ -112,6 +112,5 @@ jobs:
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             ENVIRONMENT=staging
-            DOC_PROCESSOR_ENABLED=${{ secrets.DOC_PROCESSOR_ENABLED }}
+            DOC_PROCESSOR_ENABLED=true
             DOC_PROCESSOR_URL=${{ secrets.DOC_PROCESSOR_URL_STAGING }}
-            DOC_PROCESSOR_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
