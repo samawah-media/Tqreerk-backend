@@ -1,5 +1,8 @@
 using System;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Taqreerk.Infrastructure.Data;
 
 #nullable disable
 
@@ -14,6 +17,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
     /// Existing report_pages data is dropped. Reports must be re-ingested by the
     /// Python ai-service to repopulate report_chunks.
     /// </summary>
+    [DbContext(typeof(TaqreerkDbContext))]
+    [Migration("20260429000000_ReplaceReportPagesWithReportChunks")]
     public partial class ReplaceReportPagesWithReportChunks : Migration
     {
         /// <inheritdoc />

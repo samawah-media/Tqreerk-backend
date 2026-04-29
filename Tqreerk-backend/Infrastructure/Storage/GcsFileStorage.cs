@@ -32,7 +32,14 @@ public class GcsFileStorage : IFileStorage
                 throw new InvalidOperationException(
                     $"GCS credentials file not found at: {_settings.GcsCredentialsJsonPath}");
 
-            credential = GoogleCredential.FromFile(_settings.GcsCredentialsJsonPath);
+            // Local-dev only path (Cloud Run uses ADC via the service account).
+            // FromStream is marked obsolete by Google.Apis.Auth; the suggested
+            // CredentialFactory replacement requires async setup we can't run
+            // in a constructor, so we keep this and silence the warning.
+#pragma warning disable CS0618
+            using var keyStream = File.OpenRead(_settings.GcsCredentialsJsonPath);
+            credential = GoogleCredential.FromStream(keyStream);
+#pragma warning restore CS0618
         }
         else
         {

@@ -1,4 +1,7 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Taqreerk.Infrastructure.Data;
 
 #nullable disable
 
@@ -18,6 +21,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
     /// EF never reads or writes it; we only declare the schema here so all
     /// database structure stays in one place.
     /// </summary>
+    [DbContext(typeof(TaqreerkDbContext))]
+    [Migration("20260429000100_AddChatCache")]
     public partial class AddChatCache : Migration
     {
         /// <inheritdoc />
