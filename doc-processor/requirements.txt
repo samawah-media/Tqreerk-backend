@@ -23,6 +23,10 @@ docling==2.5.2
 transformers==4.45.2
 accelerate==1.0.1
 einops==0.8.0
+# Florence-2 loads its DaViT vision backbone via trust_remote_code, which
+# imports timm at runtime. Not declared by the transformers wheel, so we
+# pin it explicitly here.
+timm==1.0.11
 
 # EasyOCR — Arabic + English OCR fallback for low-quality / scanned regions
 easyocr==1.7.2
