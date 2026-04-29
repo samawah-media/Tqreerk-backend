@@ -48,7 +48,7 @@ from models.schema import (
     PageMetadata,
     TableData,
 )
-from pipeline import figures, formulas, layout, ocr, tables
+from pipeline import arabic_normalize, figures, formulas, layout, ocr, tables
 
 logger = logging.getLogger(__name__)
 
@@ -142,21 +142,31 @@ def _process_region(
                 text = ocr_text
         if not text:
             return None
+        # Repair PDFs that encode Arabic as visual-order glyph forms.
+        # No-op for already-correct text — NFKC is idempotent and the
+        # reverse only fires above the Arabic-density threshold.
+        text = arabic_normalize.normalize(text)
         return Block(content=text, **base)
 
     if region.kind == "table" and options.extract_tables:
         if not region.table_data:
             return None
-        markdown = tables.grid_to_markdown(region.table_data)
+        # Normalize each cell BEFORE building markdown — keeps the table
+        # structure intact while fixing any Arabic glyph-form cells.
+        normalized_rows = [
+            [arabic_normalize.normalize(cell) for cell in row]
+            for row in region.table_data
+        ]
+        markdown = tables.grid_to_markdown(normalized_rows)
         if not markdown:
             return None
         return Block(
             content=markdown,
             table=TableData(
-                rows=region.table_data,
+                rows=normalized_rows,
                 markdown=markdown,
-                n_rows=len(region.table_data),
-                n_cols=len(region.table_data[0]) if region.table_data else 0,
+                n_rows=len(normalized_rows),
+                n_cols=len(normalized_rows[0]) if normalized_rows else 0,
             ),
             **base,
         )
@@ -169,6 +179,9 @@ def _process_region(
         # This is independent of captioning — even when Florence-2 is off
         # we still want searchable text for legends.
         extracted = ocr.ocr_crop(page_img, region.bbox)
+        # Florence-2 captions are English so NFKC is a no-op; OCR'd legends
+        # may be Arabic glyphs and need the same fix as text blocks.
+        extracted = arabic_normalize.normalize(extracted)
         # Compose chunk-friendly inline marker so retrieval can recover
         # figure context even after embedding.
         if caption and extracted:
