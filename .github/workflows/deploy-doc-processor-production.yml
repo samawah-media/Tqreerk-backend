@@ -63,7 +63,7 @@ jobs:
             --cpu=4 \
             --memory=16Gi \
             --min-instances=1 \
-            --max-instances=10 \
+            --max-instances=2 \
             --concurrency=1 \
             --timeout=600 \
             --port=8080 \
