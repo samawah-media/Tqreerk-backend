@@ -38,7 +38,6 @@ from google.cloud import storage
 from core.chunking import chunk_text
 from core.db import conn_ctx
 from services import doc_extractor
-from services.gemini import embed_text, reset_client as reset_gemini_client
 
 logger = logging.getLogger(__name__)
 
@@ -125,13 +124,9 @@ async def ingest_report_bytes(report_id: UUID, pdf_bytes: bytes) -> dict:
             report_id, pages_total,
         )
 
-    # Step 3 — chunk + embed every page concurrently. We bound concurrency on
-    # embedding calls to stay under Gemini RPM regardless of which extractor
-    # produced the content.
-    # Reset the Gemini client first: the connection pool has been idle while
-    # doc-processor ran (often 1-5 min), and the GCLB times out idle keep-alive
-    # connections after ~10 min, returning SSL EOF on the next request.
-    reset_gemini_client()
+    # Step 3 — chunk every page, then embed all chunks in one GPU batch via
+    # doc-processor /v1/embed. Single round-trip replaces N Vertex calls and
+    # keeps inference inside the same Cloud Run network as extraction.
     logger.info("[ingest %s] chunk+embed phase starting (%d pages)", report_id, len(page_results))
     chunk_rows = await _chunk_and_embed(page_results)
     logger.info("[ingest %s] chunk+embed produced %d rows", report_id, len(chunk_rows))
@@ -205,44 +200,54 @@ async def _chunk_and_embed(
 ) -> list[tuple[int, int, str, np.ndarray, dict]]:
     """Convert per-page extraction output into chunk rows.
 
-    Returns rows shaped (page_number, chunk_index, content, embedding,
-    metadata), already sorted by (page_number, chunk_index) so DB inserts
-    happen in deterministic order.
-    """
-    sem = asyncio.Semaphore(PARALLELISM)
-    loop = asyncio.get_running_loop()
+    Pipeline:
+      1. Chunk every non-empty page locally (sub-page chunking via LangChain).
+      2. Send ALL chunk strings in one batch to doc-processor /v1/embed.
+         Single HTTP round-trip; the GPU service batches internally so a
+         100-chunk doc embeds in one VRAM pass instead of 100 Vertex calls.
+      3. Stitch (page, idx, text, embedding, metadata) tuples back in order.
 
-    async def _per_page(page: dict):
+    Returns rows sorted by (page_number, chunk_index) for deterministic insert.
+    """
+    # Step 1 — chunk locally, preserving (page_num, chunk_idx, metadata).
+    pending: list[tuple[int, int, str, dict]] = []
+    for page in page_results:
         page_num = int(page.get("page_number") or 0) or None
         content: str = page.get("content") or ""
         metadata: dict = dict(page.get("metadata") or {})
         if page_num is None or not content.strip():
-            return []
-
+            continue
         chunks = chunk_text(content)
-        if not chunks:
-            return []
+        for idx, ch in enumerate(chunks):
+            pending.append((page_num, idx, ch, metadata))
 
-        # Sequential embedding within a page: keeps the per-page concurrency
-        # cap meaningful. Gemini's embedding API is ~100-200 ms per call so
-        # the in-page serialisation cost is small for typical 3-5 chunks.
-        async with sem:
-            rows: list[tuple[int, int, str, np.ndarray, dict]] = []
-            for idx, ch in enumerate(chunks):
-                emb = await loop.run_in_executor(None, embed_text, ch)
-                rows.append((
-                    page_num,
-                    idx,
-                    ch,
-                    np.array(emb, dtype=np.float32),
-                    metadata,
-                ))
-            return rows
+    if not pending:
+        return []
 
-    nested = await asyncio.gather(*(_per_page(p) for p in page_results))
-    rows: list[tuple[int, int, str, np.ndarray, dict]] = []
-    for r in nested:
-        rows.extend(r)
+    texts = [p[2] for p in pending]
+    logger.info(
+        "[ingest] embedding %d chunks via doc-processor /v1/embed (one batch)",
+        len(texts),
+    )
+
+    # Step 2 — embed all chunks in one GPU batch. The doc-processor handles
+    # internal batching so we send the entire list and get one response back.
+    loop = asyncio.get_running_loop()
+    vectors = await loop.run_in_executor(
+        None,
+        lambda: doc_extractor.embed_texts(texts, "passage"),
+    )
+
+    if len(vectors) != len(pending):
+        raise RuntimeError(
+            f"embed batch returned {len(vectors)} vectors for {len(pending)} chunks"
+        )
+
+    # Step 3 — assemble final rows, already in chunk order.
+    rows: list[tuple[int, int, str, np.ndarray, dict]] = [
+        (page_num, idx, ch, np.array(vec, dtype=np.float32), metadata)
+        for (page_num, idx, ch, metadata), vec in zip(pending, vectors)
+    ]
     rows.sort(key=lambda x: (x[0], x[1]))
     return rows
 

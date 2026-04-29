@@ -229,6 +229,49 @@ def _call_doc_processor(png_bytes: bytes, page_number: int) -> dict:
     )
 
 
+# ── Embeddings ──────────────────────────────────────────────────────────────
+
+def embed_texts(texts: list[str], kind: str = "passage") -> list[list[float]]:
+    """POST a list of strings to doc-processor /v1/embed and return one
+    768-dim vector per input.
+
+    Replaces services.gemini.embed_text — embeddings now run on the GPU
+    service alongside extraction, so we don't pay a Vertex round-trip per
+    chunk and we don't depend on cross-region Vertex availability.
+
+    Raises on any HTTP / network error so the caller's existing retry logic
+    kicks in. Returns [] only if `texts` is empty.
+    """
+    if not texts:
+        return []
+    if not (settings.doc_processor_enabled and settings.doc_processor_url):
+        raise RuntimeError(
+            "doc_processor not configured — cannot embed; set DOC_PROCESSOR_ENABLED=true "
+            "and DOC_PROCESSOR_URL"
+        )
+
+    url = settings.doc_processor_url.rstrip("/") + "/v1/embed"
+    headers = _build_headers()
+    payload = {"texts": texts, "kind": kind}
+
+    started = time.perf_counter()
+    response = _client().post(url, headers=headers, json=payload)
+    response.raise_for_status()
+    body = response.json()
+    vectors = body.get("embeddings") or []
+    if len(vectors) != len(texts):
+        raise RuntimeError(
+            f"doc-processor /v1/embed returned {len(vectors)} vectors for {len(texts)} inputs"
+        )
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "doc-processor embed kind=%s n=%d latency=%dms model=%s",
+        kind, len(texts), elapsed_ms, body.get("model"),
+    )
+    return vectors
+
+
 # ── Shared helpers ──────────────────────────────────────────────────────────
 
 def _build_headers() -> dict[str, str]:

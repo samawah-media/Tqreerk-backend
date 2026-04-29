@@ -36,8 +36,15 @@ def _build_client() -> genai.Client:
     global _mode
     if settings.gemini_api_key:
         _mode = "api_key"
+        logger.info(
+            "[gemini] building client mode=api_key (AI Studio)"
+        )
         return genai.Client(api_key=settings.gemini_api_key)
     _mode = "vertex"
+    logger.info(
+        "[gemini] building client mode=vertex project=%s location=%s",
+        settings.gcp_project_id, settings.vertex_location,
+    )
     return genai.Client(
         vertexai=True,
         project=settings.gcp_project_id,

@@ -27,6 +27,13 @@ einops==0.8.0
 # EasyOCR — Arabic + English OCR fallback for low-quality / scanned regions
 easyocr==1.7.2
 
+# sentence-transformers — multilingual text embedding (replaces Vertex AI text-embedding-004).
+# `intfloat/multilingual-e5-base` is 768-dim (matches DB schema), ~1GB VRAM,
+# strong on Arabic + English retrieval. Loads alongside Florence-2 with room
+# to spare on the L4. Keeping all inference on the GPU service eliminates the
+# Vertex network egress that was SSL-EOF'ing on Cloud Run.
+sentence-transformers==3.2.1
+
 # pix2tex — formula image -> LaTeX
 # DISABLED: pix2tex 0.1.4 pins x-transformers==0.15.0 which segfaults when
 # combined with transformers>=4.42 at import time. Re-enable once a compatible

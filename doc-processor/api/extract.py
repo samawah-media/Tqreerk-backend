@@ -22,13 +22,18 @@ import logging
 
 from fastapi import APIRouter, Header, HTTPException
 
+import time
+
 from core.config import settings
 from models.schema import (
+    EmbedRequest,
+    EmbedResponse,
     ExtractDocumentRequest,
     ExtractDocumentResponse,
     ExtractRequest,
     ExtractResponse,
 )
+from pipeline import embeddings
 from pipeline.orchestrator import process_document, process_page
 
 logger = logging.getLogger(__name__)
@@ -116,6 +121,47 @@ async def extract_document(
         response.total_latency_ms,
     )
     return response
+
+
+@router.post("/embed", response_model=EmbedResponse)
+async def embed(
+    body: EmbedRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> EmbedResponse:
+    """Encode a list of strings into 768-dim embeddings on the GPU.
+
+    Replaces the previous Vertex AI text-embedding-004 call from ai-service.
+    Same vector dimension so the existing pgvector(768) column is unchanged.
+    """
+    _check_token(x_internal_token)
+
+    if not body.texts:
+        raise HTTPException(status_code=400, detail="texts must be non-empty")
+    if not embeddings.is_ready():
+        raise HTTPException(status_code=503, detail="embedding model is still loading")
+
+    started = time.perf_counter()
+    loop = asyncio.get_running_loop()
+    vectors = await loop.run_in_executor(
+        None, embeddings.embed, body.texts, body.kind,
+    )
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    if not vectors:
+        # is_ready() said yes but encode returned nothing — model crashed
+        # mid-flight (OOM, CUDA error). Surface 500 so the caller retries.
+        raise HTTPException(status_code=500, detail="embedding encode failed")
+
+    logger.info(
+        "embed: kind=%s n=%d latency=%dms",
+        body.kind, len(body.texts), elapsed_ms,
+    )
+    return EmbedResponse(
+        embeddings=vectors,
+        dim=len(vectors[0]) if vectors else 768,
+        model=settings.embed_model_id,
+        latency_ms=elapsed_ms,
+    )
 
 
 def _check_token(provided: str | None) -> None:

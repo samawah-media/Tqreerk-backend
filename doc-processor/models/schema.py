@@ -168,6 +168,29 @@ class ExtractDocumentResponse(BaseModel):
     total_latency_ms: int
 
 
+# ── Embeddings ────────────────────────────────────────────────────────────────
+
+class EmbedRequest(BaseModel):
+    """Request body for POST /v1/embed.
+
+    `kind` selects the E5 task prefix the model was trained with:
+        - "passage" for ingest-time chunks (the default — what we store in
+          report_chunks.embedding)
+        - "query"   for chat-time questions
+    """
+    texts: list[str] = Field(..., description="UTF-8 strings to embed.")
+    kind: Literal["passage", "query"] = "passage"
+
+
+class EmbedResponse(BaseModel):
+    """One 768-dim vector per input, in the same order. `dim` lets clients
+    sanity-check against their stored schema before persisting."""
+    embeddings: list[list[float]]
+    dim: int = 768
+    model: str
+    latency_ms: int
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

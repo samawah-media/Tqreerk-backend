@@ -43,7 +43,8 @@ from models.chat import (
     SessionMessage,
 )
 from services import chat_cache, reranker
-from services.gemini import chat_with_context_stream, embed_text
+from services.doc_extractor import embed_texts as embed_via_gpu
+from services.gemini import chat_with_context_stream
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -315,7 +316,13 @@ async def send_message(
     question_vec: np.ndarray | None = None
     if cache_hit is None and not direct_chunks:
         t_embed_start = time.perf_counter()
-        question_vec = np.array(embed_text(body.message), dtype=np.float32)
+        # E5 expects "query: ..." prefix for retrieval queries — passages are
+        # stored with "passage: ..." in the ingest pipeline. Mismatched prefixes
+        # roughly halve retrieval quality.
+        question_vec = np.array(
+            embed_via_gpu([body.message], kind="query")[0],
+            dtype=np.float32,
+        )
         t_embed_done = _mark("embed_question", t_embed_start)
 
         # Layer 2 cache lookup is cheap once we have the embedding — try it

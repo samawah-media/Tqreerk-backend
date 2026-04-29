@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     # run. Add more via env (CSV) without rebuilding the image.
     ocr_languages: str = "ar,en"
 
+    # Multilingual sentence-transformer for /v1/embed. 768 dims matches the
+    # existing report_chunks.embedding pgvector column (vector(768)) so we
+    # don't need a schema migration when swapping from text-embedding-004.
+    # multilingual-e5-base supports Arabic, English, and 100 other languages.
+    embed_model_id: str = "intfloat/multilingual-e5-base"
+    embed_max_seq_length: int = 512        # tokens per chunk; longer is truncated
+    embed_batch_size: int = 32             # batch on GPU; bigger if VRAM allows
+
     # Hardware / inference toggles.
     device: str = "cuda"                         # "cuda" | "cpu" — set "cpu" for local dev
     fp16: bool  = True                           # half-precision for VLM speed
