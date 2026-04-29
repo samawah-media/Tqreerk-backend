@@ -67,10 +67,13 @@ def init() -> None:
     _processor = AutoProcessor.from_pretrained(
         settings.florence_model_id, trust_remote_code=True,
     )
+    # attn_implementation="eager" avoids PyTorch SDPA which segfaults on
+    # CUDA 12.1 + cuDNN 8 with Florence-2's trust_remote_code execution.
     model = AutoModelForCausalLM.from_pretrained(
         settings.florence_model_id,
         trust_remote_code=True,
         torch_dtype=_dtype,
+        attn_implementation="eager",
     )
     model.to(_device)
     model.eval()
