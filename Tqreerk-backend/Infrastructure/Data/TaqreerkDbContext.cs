@@ -38,7 +38,7 @@ public class TaqreerkDbContext : DbContext
 
     // AI
     public DbSet<AiJob> AiJobs => Set<AiJob>();
-    public DbSet<ReportPage> ReportPages => Set<ReportPage>();
+    public DbSet<ReportChunk> ReportChunks => Set<ReportChunk>();
     public DbSet<ChatSession> ChatSessions => Set<ChatSession>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
 

@@ -5,9 +5,11 @@ pgvector==0.3.6
 google-genai==0.8.0
 google-cloud-translate==3.18.0
 google-cloud-storage==2.18.2
+google-cloud-discoveryengine==0.13.0
 pymupdf==1.24.14
 pillow==11.0.0
 python-multipart==0.0.18
 pydantic-settings==2.6.1
 httpx==0.28.0
 sentry-sdk[fastapi]==2.18.0
+langchain-text-splitters==0.3.2

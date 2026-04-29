@@ -1,3 +1,17 @@
+"""Process entrypoint — selects between FastAPI server and background worker.
+
+Modes
+-----
+WORKER_MODE = "api"     → uvicorn boots `app` (the default Cloud Run service).
+WORKER_MODE = "worker"  → an asyncio loop polls ai_jobs and runs ingest /
+                          translate jobs on a separate Cloud Run service.
+
+Both modes share the same image; the deployment just sets WORKER_MODE so
+each Cloud Run service autoscales independently. The API stays responsive
+under heavy ingest load because page-rendering / Gemini Vision runs on the
+worker pool, not on the request-serving instance.
+"""
+import asyncio
 import logging
 import uuid
 
@@ -109,7 +123,7 @@ async def add_request_id(request: Request, call_next):
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {"status": "healthy", "mode": settings.worker_mode}
 
 
 # Routers imported after /health so health check always responds even if imports fail
@@ -124,3 +138,34 @@ except Exception as exc:
     logger.error(f"Failed to load routers: {exc}", exc_info=True)
     if settings.sentry_dsn:
         sentry_sdk.capture_exception(exc)
+
+
+# ── Worker entrypoint ───────────────────────────────────────────────────────
+# When WORKER_MODE=worker the container runs `python main.py`, which calls
+# main() below. The Dockerfile picks the right CMD based on WORKER_MODE.
+
+def main() -> None:
+    """Launch whichever runtime mode is configured.
+
+    Worker mode never returns under normal operation — it loops forever. If it
+    crashes hard, Cloud Run restarts the container, which is the desired
+    behaviour for a queue worker.
+    """
+    if settings.worker_mode == "worker":
+        from pipelines.jobs import run_worker_loop
+
+        logger.info("Starting in WORKER mode")
+        try:
+            asyncio.run(run_worker_loop())
+        except KeyboardInterrupt:
+            logger.info("Worker received SIGINT — shutting down")
+        return
+
+    # API mode — defer to uvicorn launched from the Dockerfile CMD. Running
+    # uvicorn programmatically here would double-import main.py during reload,
+    # so we just exit cleanly and let the supervisor (Cloud Run) start uvicorn.
+    logger.info("WORKER_MODE=api: start uvicorn via the Dockerfile CMD instead.")
+
+
+if __name__ == "__main__":
+    main()

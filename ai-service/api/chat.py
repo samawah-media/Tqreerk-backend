@@ -1,4 +1,24 @@
-"""Chat endpoints — per-session Q&A with RAG (streaming)."""
+"""Chat endpoints — per-session Q&A with RAG (streaming).
+
+Pipeline (each step skips when its predecessor short-circuits):
+    1. Page-direct lookup ("give me page 5") — bypasses retrieval entirely
+       when the user explicitly asks for a numbered page.
+    2. Chat cache — exact-match on a SHA256 cache_key, then semantic match on
+       cached question embeddings (only after we've embedded the question
+       anyway for retrieval).
+    3. Hybrid retrieval — dense (cosine) + sparse (tsvector) candidates fused
+       via Reciprocal Rank Fusion (RRF). Replaces the older weighted-sum
+       approach which was dominated by the dense score because the two scales
+       were so different.
+    4. Cross-encoder rerank — Vertex AI Ranking API picks top-K from the RRF
+       pool. Behind a feature flag (settings.reranker_enabled).
+    5. Gemini stream — final answer, streamed to the client over SSE.
+
+Storage: all retrieval is now over `report_chunks` (sub-page chunks ~500
+tokens each), not the previous `report_pages` table. Page-level features that
+the frontend still expects (e.g. "show me page 5 verbatim") are reconstructed
+by aggregating chunks for that page in chunk_index order.
+"""
 import asyncio
 import json
 import logging
@@ -13,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from psycopg import AsyncConnection
 
+from core.config import settings
 from core.db import conn_ctx, get_conn
 from models.chat import (
     CreateSessionRequest,
@@ -21,11 +42,10 @@ from models.chat import (
     SessionHistoryResponse,
     SessionMessage,
 )
+from services import chat_cache, reranker
 from services.gemini import chat_with_context_stream, embed_text
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-TOP_K = 5  # number of page chunks to retrieve per question
 
 # Recognises explicit page requests in either Arabic or English, accepting both
 # Western (0-9) and Arabic-Indic (٠-٩) digit forms.
@@ -107,6 +127,121 @@ async def get_session(
     )
 
 
+# ── Retrieval helpers ────────────────────────────────────────────────────────
+
+async def _fetch_page_chunks(
+    conn: AsyncConnection, report_id, page_number: int,
+) -> list[dict]:
+    """Return all chunks for an explicit page request, in chunk_index order."""
+    cur = await conn.execute(
+        """
+        SELECT "PageNumber", "Content", "ChunkIndex"
+        FROM report_chunks
+        WHERE "ReportId" = %s AND "PageNumber" = %s
+        ORDER BY "ChunkIndex"
+        """,
+        [str(report_id), page_number],
+    )
+    rows = await cur.fetchall()
+    return [
+        {"page_number": p, "content": c, "chunk_index": i}
+        for p, c, i in rows
+    ]
+
+
+async def _hybrid_rrf_retrieve(
+    conn: AsyncConnection,
+    report_id,
+    question: str,
+    question_vec: np.ndarray,
+    top_n: int,
+) -> list[dict]:
+    """Hybrid retrieval over report_chunks using Reciprocal Rank Fusion.
+
+    Why RRF instead of weighted-sum: the dense cosine score and the tsvector
+    rank live on completely different scales (cosine ∈ [0,1] tightly clustered
+    around 0.7-0.9 vs ts_rank unbounded but typically 0.001-0.1). A linear
+    combination is dominated by whichever scale has more dynamic range, which
+    in practice means the BM25 contribution is noise. RRF ignores raw scores
+    and uses ranks: rrf(d) = Σ 1/(k + rank_in_list_i). It's scale-invariant
+    and is what production engines (Elasticsearch, Vespa) ship as default.
+
+    `k = 60` is the canonical RRF constant; higher k flattens the curve, lower
+    k weights the very top of each list more aggressively. 60 has been
+    empirically robust across domains.
+    """
+    rrf_k = 60
+
+    cur = await conn.execute(
+        """
+        WITH dense AS (
+            SELECT "PageNumber", "Content", "ChunkIndex", metadata,
+                   ROW_NUMBER() OVER (ORDER BY embedding <=> %s) AS rnk
+            FROM report_chunks
+            WHERE "ReportId" = %s AND embedding IS NOT NULL
+            ORDER BY embedding <=> %s
+            LIMIT %s
+        ),
+        sparse AS (
+            SELECT "PageNumber", "Content", "ChunkIndex", metadata,
+                   ROW_NUMBER() OVER (
+                       ORDER BY ts_rank(search_vector,
+                                        plainto_tsquery('arabic', %s) ||
+                                        plainto_tsquery('english', %s)) DESC
+                   ) AS rnk
+            FROM report_chunks
+            WHERE "ReportId" = %s
+              AND search_vector @@ (plainto_tsquery('arabic', %s) ||
+                                    plainto_tsquery('english', %s))
+            LIMIT %s
+        )
+        SELECT COALESCE(d."PageNumber", s."PageNumber")  AS page_number,
+               COALESCE(d."Content",    s."Content")     AS content,
+               COALESCE(d."ChunkIndex", s."ChunkIndex")  AS chunk_index,
+               COALESCE(d.metadata,     s.metadata)      AS metadata,
+               COALESCE(1.0 / (%s + d.rnk), 0)
+             + COALESCE(1.0 / (%s + s.rnk), 0)           AS rrf_score
+        FROM dense d
+        FULL OUTER JOIN sparse s
+          ON  d."PageNumber" = s."PageNumber"
+          AND d."ChunkIndex" = s."ChunkIndex"
+        ORDER BY rrf_score DESC
+        LIMIT %s
+        """,
+        [
+            question_vec, str(report_id), question_vec, top_n,
+            question, question, str(report_id), question, question, top_n,
+            rrf_k, rrf_k,
+            top_n,
+        ],
+    )
+    rows = await cur.fetchall()
+    return [
+        {
+            "page_number": p,
+            "content": c,
+            "chunk_index": ci,
+            "metadata": m or {},
+            "rrf_score": float(s),
+        }
+        for p, c, ci, m, s in rows
+    ]
+
+
+def _dedupe_pages_in_order(chunks: list[dict]) -> list[int]:
+    """Return source page numbers, preserving rank order, no duplicates."""
+    seen: set[int] = set()
+    out: list[int] = []
+    for ch in chunks:
+        p = int(ch["page_number"])
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+# ── Streaming endpoint ───────────────────────────────────────────────────────
+
 @router.post("/sessions/{session_id}/messages")
 async def send_message(
     session_id: UUID,
@@ -117,6 +252,7 @@ async def send_message(
 
     Event format (one event per line, blank-line separated):
       data: {"type": "sources", "pages": [3, 7, 12]}      ← sent first
+      data: {"type": "cache_hit", "tier": "exact|semantic"}  ← only on cache hit
       data: {"type": "token", "text": "Hello"}            ← repeated
       data: {"type": "token", "text": " there"}
       data: {"type": "done"}                              ← sent last
@@ -158,68 +294,55 @@ async def send_message(
     history = [{"role": r, "content": c} for r, c in await hist_cur.fetchall()]
     t2 = _mark("load_history", t1)
 
-    # ─── Page-number short-circuit ─────────────────────────────────────────
-    requested_page = _detect_page_request(body.message)
-    direct_rows: list[tuple] = []
-    if requested_page is not None:
-        direct_cur = await conn.execute(
-            'SELECT "PageNumber", "Content" FROM report_pages '
-            'WHERE "ReportId" = %s AND "PageNumber" = %s',
-            [str(report_id), requested_page],
-        )
-        direct_rows = await direct_cur.fetchall()
+    # ─── Cache lookup (layer 1: exact match — no embedding cost) ────────────
+    # Only consult the cache for stateless questions: in a multi-turn chat,
+    # the same surface text can mean different things depending on context.
+    # Treating the first message of a session as cacheable is a safe default;
+    # later turns flow through retrieval.
+    cache_eligible = len(history) == 0
+    cache_hit = None
+    if cache_eligible:
+        cache_hit = await chat_cache.lookup(conn, report_id, body.message)
 
-    if direct_rows:
-        context_chunks = [c for _, c in direct_rows]
-        source_pages = [p for p, _ in direct_rows]
-        t3 = _mark("retrieval(direct_page=%d)" % requested_page, t2)
-    else:
-        # ─── Hybrid RAG retrieval (dense vector + sparse tsvector) ──────
+    # ─── Page-number short-circuit (skips retrieval entirely) ───────────────
+    requested_page = _detect_page_request(body.message)
+    direct_chunks: list[dict] = []
+    if cache_hit is None and requested_page is not None:
+        direct_chunks = await _fetch_page_chunks(conn, report_id, requested_page)
+
+    # ─── Hybrid RAG retrieval + rerank (only if no shortcut applied) ───────
+    retrieved_chunks: list[dict] = []
+    question_vec: np.ndarray | None = None
+    if cache_hit is None and not direct_chunks:
         t_embed_start = time.perf_counter()
         question_vec = np.array(embed_text(body.message), dtype=np.float32)
-        t_embed_done = _mark("embed_text", t_embed_start)
+        t_embed_done = _mark("embed_question", t_embed_start)
 
-        pages_cur = await conn.execute(
-            """
-            WITH dense AS (
-                SELECT "PageNumber", "Content",
-                       1 - (embedding <=> %s) AS score
-                FROM report_pages
-                WHERE "ReportId" = %s AND embedding IS NOT NULL
-                ORDER BY embedding <=> %s
-                LIMIT 20
-            ),
-            sparse AS (
-                SELECT "PageNumber", "Content",
-                       ts_rank(search_vector,
-                               plainto_tsquery('arabic', %s) ||
-                               plainto_tsquery('english', %s)) AS score
-                FROM report_pages
-                WHERE "ReportId" = %s
-                  AND search_vector @@ (plainto_tsquery('arabic', %s) ||
-                                        plainto_tsquery('english', %s))
-                ORDER BY score DESC
-                LIMIT 20
+        # Layer 2 cache lookup is cheap once we have the embedding — try it
+        # before paying for retrieval and the LLM.
+        if cache_eligible:
+            cache_hit = await chat_cache.lookup(
+                conn, report_id, body.message, question_embedding=question_vec,
             )
-            SELECT "PageNumber", "Content",
-                   COALESCE(d.score, 0) * 0.7 + COALESCE(s.score, 0) * 0.3 AS final_score
-            FROM dense d
-            FULL OUTER JOIN sparse s USING ("PageNumber", "Content")
-            ORDER BY final_score DESC
-            LIMIT %s
-            """,
-            [
-                question_vec, str(report_id), question_vec,
-                body.message, body.message, str(report_id),
-                body.message, body.message,
-                TOP_K,
-            ],
-        )
-        page_rows = await pages_cur.fetchall()
-        page_rows = [(p, c) for p, c, _ in page_rows]
-        context_chunks = [c for _, c in page_rows]
-        source_pages = [p for p, _ in page_rows]
-        t3 = _mark("hybrid_sql", t_embed_done)
+
+        if cache_hit is None:
+            candidate_pool = max(
+                settings.reranker_candidate_pool,
+                settings.reranker_top_k,
+            ) if settings.reranker_enabled else settings.reranker_top_k
+
+            candidates = await _hybrid_rrf_retrieve(
+                conn, report_id, body.message, question_vec, top_n=candidate_pool,
+            )
+            t_retrieve_done = _mark("hybrid_rrf", t_embed_done)
+
+            # Cross-encoder rerank picks the final top-K from the candidate pool.
+            # Falls back to retrieval order if Vertex Ranking is unavailable —
+            # the wrapper handles that internally so we don't need a try/except here.
+            retrieved_chunks = reranker.rerank(
+                body.message, candidates, top_k=settings.reranker_top_k,
+            )
+            _mark("rerank", t_retrieve_done)
 
     # ─── Persist the user message before streaming starts ───────────────────
     await conn.execute(
@@ -230,13 +353,53 @@ async def send_message(
         [str(session_id), body.message],
     )
     await conn.commit()
-    t4 = _mark("save_user_msg", t3)
+    t4 = _mark("save_user_msg", t2)
     logger.info("chat[%s] pre_stream_total: %.0f ms", str(session_id)[:8], (t4 - t0) * 1000)
+
+    # ─── Cache hit: return the stored answer as a synthetic stream ──────────
+    # Same SSE shape as a normal answer, plus a `cache_hit` event so the client
+    # / observability stack can tell them apart.
+    if cache_hit is not None:
+        sid_short = str(session_id)[:8]
+
+        async def cached_stream():
+            try:
+                yield f"data: {json.dumps({'type': 'cache_hit', 'tier': cache_hit.tier})}\n\n"
+                yield f"data: {json.dumps({'type': 'sources', 'pages': cache_hit.source_pages})}\n\n"
+                yield f"data: {json.dumps({'type': 'token', 'text': cache_hit.answer})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+                # Persist the cached answer as a real assistant message so
+                # session history stays consistent regardless of cache state.
+                async with conn_ctx() as save_conn:
+                    await save_conn.execute(
+                        """
+                        INSERT INTO chat_messages ("Id", "SessionId", "Role", "Content", "SourcePages", "CreatedAt")
+                        VALUES (gen_random_uuid(), %s, 'assistant', %s, %s, now())
+                        """,
+                        [str(session_id), cache_hit.answer, json.dumps(cache_hit.source_pages)],
+                    )
+                    await save_conn.commit()
+            except Exception as exc:
+                logger.error("chat[%s] cached_stream_error: %s", sid_short, exc)
+                yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+        return StreamingResponse(
+            cached_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ─── Build the context list passed to Gemini ────────────────────────────
+    context_chunks_objs = direct_chunks or retrieved_chunks
+    context_chunks = [c["content"] for c in context_chunks_objs]
+    source_pages = _dedupe_pages_in_order(context_chunks_objs)
 
     # ─── Streaming generator ────────────────────────────────────────────────
     user_message = body.message
     sid = str(session_id)
     sid_short = sid[:8]
+    cacheable = cache_eligible and question_vec is not None
 
     async def event_stream():
         full_answer = ""
@@ -306,6 +469,15 @@ async def send_message(
                     [sid, full_answer, json.dumps(source_pages)],
                 )
                 await save_conn.commit()
+
+                # Cache the answer so future asks for the same question on the
+                # same report short-circuit retrieval and Gemini. Skipped for
+                # follow-up turns (cache_eligible=False) and for empty answers.
+                if cacheable and full_answer.strip():
+                    await chat_cache.store(
+                        save_conn, report_id, user_message, full_answer,
+                        source_pages, question_embedding=question_vec,
+                    )
             logger.info(
                 "chat[%s] save_assistant_msg: %.0f ms",
                 sid_short, (time.perf_counter() - save_start) * 1000,

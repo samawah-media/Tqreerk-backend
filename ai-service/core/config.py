@@ -63,6 +63,47 @@ class Settings(BaseSettings):
     gemini_summary_model: str = "gemini-2.5-flash"        # full-report summarization (deeper analysis)
     gemini_embed_model: str   = "text-embedding-004"      # 768-dim embeddings — must match DB vector(768)
 
+    # ── Chat cache (Postgres-backed, two-tier) ───────────────────────────────
+    # Exact-match cache hits skip retrieval AND the LLM call; semantic-match hits
+    # also skip both, but require an embedding round-trip first. TTLs are in
+    # seconds. Set chat_cache_enabled=False to bypass the cache entirely (useful
+    # for A/B testing or debugging stale answers).
+    chat_cache_enabled: bool         = True
+    chat_cache_exact_ttl_seconds: int    = 86400   # 24 h
+    chat_cache_semantic_ttl_seconds: int = 3600    # 1 h
+    chat_cache_semantic_threshold: float = 0.95    # cosine similarity floor for semantic hit
+
+    # ── Reranker (Vertex AI Ranking API) ─────────────────────────────────────
+    # When enabled, retrieval pulls top-N candidates and the reranker prunes
+    # them to top-K before the LLM call. Behind a flag so we can A/B compare.
+    reranker_enabled: bool       = True
+    reranker_model: str          = "semantic-ranker-default-004"  # multilingual incl. Arabic
+    reranker_candidate_pool: int = 20    # how many to fetch from hybrid before rerank
+    reranker_top_k: int          = 5     # how many to keep after rerank
+
+    # ── Worker mode ──────────────────────────────────────────────────────────
+    # "api"    → FastAPI server (the default Cloud Run service)
+    # "worker" → background loop that polls ai_jobs and runs ingest/translate
+    # Set per-service in deployment so the same image can fan out into two
+    # Cloud Run services with separate autoscaling.
+    worker_mode: str               = "api"
+    worker_poll_interval_seconds: float = 3.0
+    worker_stale_job_minutes: int  = 30   # mark Processing > N min as Failed
+
+    # ── doc-processor (GPU pipeline) ─────────────────────────────────────────
+    # Optional alternative extractor for ingest. When enabled, ingest calls
+    # the doc-processor Cloud Run service for layout-aware extraction; on
+    # any failure we transparently fall back to Gemini Vision so chat is
+    # never blocked. Default is OFF — flip when the new pipeline is proven.
+    doc_processor_enabled: bool   = False
+    doc_processor_url: str        = ""    # e.g. https://doc-processor-xxx.run.app
+    doc_processor_token: str      = ""    # optional X-Internal-Token shared secret
+    doc_processor_timeout_seconds: float = 600.0  # full-PDF can take minutes
+    # Above this size we render pages individually instead of sending the
+    # whole PDF — Cloud Run's 32 MB request body limit applies, and base64
+    # adds ~33% overhead. 22 MB raw → ~29 MB on the wire, comfortably under.
+    doc_processor_max_pdf_mb: float = 22.0
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:

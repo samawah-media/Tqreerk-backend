@@ -12,7 +12,7 @@ Run each step in order. Verify after each one before moving on.
 
 ## Step 1 — Enable the `pgvector` extension
 
-The `report_pages.embedding` column uses `vector(768)`. The extension is built into Cloud SQL but must be activated per-database.
+The `report_chunks.embedding` and `chat_cache.question_emb` columns use `vector(768)`. The extension is built into Cloud SQL but must be activated per-database.
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -26,34 +26,41 @@ Expected: one row with `vector` and a version number.
 
 ---
 
-## Step 2 — Add the `embedding` column to `report_pages`
+## Step 2 — Apply the chunking migration (`ReplaceReportPagesWithReportChunks`)
 
-The `AddAiServiceTables` migration is supposed to add this, but on staging it didn't apply cleanly (the `CREATE EXTENSION` line ran without superuser the first time). To make production deterministic, add it manually:
+The EF migration `20260429000000_ReplaceReportPagesWithReportChunks` drops the legacy `report_pages` table and creates `report_chunks`. The vector / tsvector / metadata columns and the bilingual search-vector trigger live inside that migration via raw SQL, so you do not need to run them manually — `dotnet ef database update` handles them.
 
-```sql
-ALTER TABLE report_pages ADD COLUMN IF NOT EXISTS embedding vector(768);
-```
-
-### Verify
-```sql
-SELECT column_name, data_type, udt_name
-FROM information_schema.columns
-WHERE table_name = 'report_pages' AND column_name = 'embedding';
-```
-Expected: one row showing `embedding | USER-DEFINED | vector`.
-
----
-
-## Step 3 — Add `search_vector` (full-text search) + GIN index
-
-The `AddReportPagesFullTextSearch` migration adds bilingual (Arabic + English) full-text search to `report_pages.Content` so the chatbot can do hybrid retrieval (dense vector + keyword).
+If for any reason the migration cannot run as-is (e.g. the table already exists from an older manual run), apply the equivalent SQL by hand:
 
 ```sql
--- 3a. tsvector column
-ALTER TABLE report_pages ADD COLUMN IF NOT EXISTS search_vector tsvector;
+-- 2a. Drop the old report_pages table + its trigger / function
+DROP TRIGGER IF EXISTS report_pages_search_vector_trigger ON report_pages;
+DROP FUNCTION IF EXISTS report_pages_search_vector_update();
+DROP TABLE IF EXISTS report_pages;
 
--- 3b. Trigger function — bilingual (Arabic + English combined)
-CREATE OR REPLACE FUNCTION report_pages_search_vector_update()
+-- 2b. Create report_chunks
+CREATE TABLE report_chunks (
+    "Id"          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "ReportId"    uuid NOT NULL REFERENCES reports("Id") ON DELETE CASCADE,
+    "PageNumber"  integer NOT NULL,
+    "ChunkIndex"  integer NOT NULL,
+    "Content"     text NOT NULL,
+    "CreatedAt"   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX "IX_report_chunks_ReportId_PageNumber_ChunkIndex"
+    ON report_chunks ("ReportId", "PageNumber", "ChunkIndex");
+
+CREATE INDEX "IX_report_chunks_ReportId_PageNumber"
+    ON report_chunks ("ReportId", "PageNumber");
+
+-- 2c. DB-managed columns
+ALTER TABLE report_chunks ADD COLUMN embedding     vector(768);
+ALTER TABLE report_chunks ADD COLUMN metadata      jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE report_chunks ADD COLUMN search_vector tsvector;
+
+-- 2d. Bilingual search trigger
+CREATE OR REPLACE FUNCTION report_chunks_search_vector_update()
 RETURNS trigger AS $$
 BEGIN
     NEW.search_vector :=
@@ -63,50 +70,93 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 3c. Trigger
-DROP TRIGGER IF EXISTS report_pages_search_vector_trigger ON report_pages;
-CREATE TRIGGER report_pages_search_vector_trigger
-BEFORE INSERT OR UPDATE OF "Content" ON report_pages
-FOR EACH ROW EXECUTE FUNCTION report_pages_search_vector_update();
+DROP TRIGGER IF EXISTS report_chunks_search_vector_trigger ON report_chunks;
+CREATE TRIGGER report_chunks_search_vector_trigger
+BEFORE INSERT OR UPDATE OF "Content" ON report_chunks
+FOR EACH ROW EXECUTE FUNCTION report_chunks_search_vector_update();
 
--- 3d. Backfill any existing rows by triggering an UPDATE
-UPDATE report_pages SET "Content" = "Content";
-
--- 3e. GIN index for fast keyword lookup
-CREATE INDEX IF NOT EXISTS "IX_report_pages_search_vector"
-ON report_pages USING GIN (search_vector);
+-- 2e. GIN index on search_vector
+CREATE INDEX IF NOT EXISTS "IX_report_chunks_search_vector"
+    ON report_chunks USING GIN (search_vector);
 ```
 
 ### Verify
 ```sql
--- Column exists
-SELECT column_name FROM information_schema.columns
-WHERE table_name = 'report_pages' AND column_name = 'search_vector';
-
--- Index exists
-SELECT indexname FROM pg_indexes
-WHERE tablename = 'report_pages' AND indexname = 'IX_report_pages_search_vector';
-
--- Trigger exists
-SELECT tgname FROM pg_trigger WHERE tgname = 'report_pages_search_vector_trigger';
-
--- Existing rows have populated tsvectors
-SELECT COUNT(*) AS total,
-       COUNT(*) FILTER (WHERE search_vector IS NOT NULL) AS populated
-FROM report_pages;
+SELECT
+  EXISTS (SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'report_chunks' AND column_name = 'embedding')      AS embedding_column,
+  EXISTS (SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'report_chunks' AND column_name = 'metadata')       AS metadata_column,
+  EXISTS (SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'report_chunks' AND column_name = 'search_vector')  AS search_vector_column,
+  EXISTS (SELECT 1 FROM pg_indexes
+          WHERE indexname = 'IX_report_chunks_search_vector')                    AS gin_index,
+  EXISTS (SELECT 1 FROM pg_trigger
+          WHERE tgname   = 'report_chunks_search_vector_trigger')                AS trigger_active;
 ```
-Expected: `populated` should equal `total`.
+All five columns must be `true`.
 
 ---
 
-## Step 4 — Mark these migrations as applied in EF history
+## Step 3 — Apply the chat-cache migration (`AddChatCache`)
+
+The EF migration `20260429000100_AddChatCache` creates `chat_cache` for the two-tier semantic cache used by the chat endpoint. Same as Step 2, `dotnet ef database update` runs it for you.
+
+Manual fallback if needed:
+
+```sql
+CREATE TABLE chat_cache (
+    cache_key      text PRIMARY KEY,
+    report_id      uuid NOT NULL REFERENCES reports ("Id") ON DELETE CASCADE,
+    question       text NOT NULL,
+    question_emb   vector(768),
+    answer         text NOT NULL,
+    source_pages   jsonb NOT NULL DEFAULT '[]'::jsonb,
+    hit_count      integer NOT NULL DEFAULT 0,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    expires_at     timestamptz NOT NULL
+);
+
+CREATE INDEX "IX_chat_cache_report_expires"
+    ON chat_cache (report_id, expires_at);
+```
+
+### Verify
+```sql
+SELECT
+  EXISTS (SELECT 1 FROM information_schema.tables
+          WHERE table_name = 'chat_cache')                              AS table_exists,
+  EXISTS (SELECT 1 FROM pg_indexes
+          WHERE indexname = 'IX_chat_cache_report_expires')             AS index_exists;
+```
+Both must be `true`.
+
+---
+
+## Step 4 — Enable the Vertex AI Discovery Engine API (reranker)
+
+The chat endpoint reranks retrieval candidates through the Vertex AI Ranking API. Enable it once per project:
+
+```bash
+gcloud services enable discoveryengine.googleapis.com --project=<PROJECT_ID>
+```
+
+The ai-service's existing service account needs the role `roles/discoveryengine.viewer` (or a custom role granting `discoveryengine.servingConfigs.rank`). Grant it via IAM if the chat endpoint logs `permission denied` from `RankServiceClient`.
+
+If you need to disable the reranker for any reason, set `RERANKER_ENABLED=false` on the ai-service Cloud Run service — the chat endpoint falls back to RRF-ordered retrieval automatically.
+
+---
+
+## Step 5 — Mark these migrations as applied in EF history
 
 So EF Core's `dotnet ef database update` doesn't try to re-run these migrations and crash on "already exists" errors:
 
 ```sql
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion") VALUES
-  ('20260424000000_AddAiServiceTables',           '8.0.0'),
-  ('20260426000000_AddReportPagesFullTextSearch', '8.0.0')
+  ('20260424000000_AddAiServiceTables',                   '8.0.0'),
+  ('20260426000000_AddReportPagesFullTextSearch',         '8.0.0'),
+  ('20260429000000_ReplaceReportPagesWithReportChunks',   '8.0.0'),
+  ('20260429000100_AddChatCache',                         '8.0.0')
 ON CONFLICT DO NOTHING;
 ```
 
@@ -114,36 +164,54 @@ ON CONFLICT DO NOTHING;
 ```sql
 SELECT "MigrationId" FROM "__EFMigrationsHistory"
 WHERE "MigrationId" LIKE '%AiService%'
-   OR "MigrationId" LIKE '%FullTextSearch%';
+   OR "MigrationId" LIKE '%FullTextSearch%'
+   OR "MigrationId" LIKE '%ReportChunks%'
+   OR "MigrationId" LIKE '%ChatCache%';
 ```
-Expected: both migration IDs listed.
+Expected: all four migration IDs listed.
 
 ---
 
-## Step 5 — Final sanity check (full pipeline)
+## Step 6 — Deploy ai-service in two roles
 
-After all four steps, run this single query to confirm everything is in place:
+The same image now serves two Cloud Run services with different `WORKER_MODE` env values, so ingest/translate work no longer blocks the chat hot path.
+
+| Service           | `WORKER_MODE` | `min-instances` | Notes                                   |
+| ----------------- | ------------- | --------------- | --------------------------------------- |
+| ai-service        | `api`         | 1               | FastAPI; serves chat + REST.            |
+| ai-service-worker | `worker`      | 1               | Polls ai_jobs; runs ingest + translate. |
+
+Both services must have the same `DATABASE_URL`, `GCP_PROJECT_ID`, `GCS_BUCKET`, and Gemini credentials. The worker poll interval and stale-job threshold are tunable via `WORKER_POLL_INTERVAL_SECONDS` and `WORKER_STALE_JOB_MINUTES`.
+
+---
+
+## Step 7 — Final sanity check (full pipeline)
+
+After all six steps, run this single query to confirm everything is in place:
 
 ```sql
 SELECT
-  EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')                                AS pgvector_enabled,
+  EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')                              AS pgvector_enabled,
+  EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'report_chunks')       AS report_chunks_table,
   EXISTS (SELECT 1 FROM information_schema.columns
-          WHERE table_name = 'report_pages' AND column_name = 'embedding')                    AS embedding_column,
+          WHERE table_name = 'report_chunks' AND column_name = 'embedding')                 AS embedding_column,
   EXISTS (SELECT 1 FROM information_schema.columns
-          WHERE table_name = 'report_pages' AND column_name = 'search_vector')                AS search_vector_column,
+          WHERE table_name = 'report_chunks' AND column_name = 'metadata')                  AS metadata_column,
   EXISTS (SELECT 1 FROM pg_indexes
-          WHERE indexname = 'IX_report_pages_search_vector')                                  AS gin_index,
+          WHERE indexname = 'IX_report_chunks_search_vector')                               AS gin_index,
   EXISTS (SELECT 1 FROM pg_trigger
-          WHERE tgname = 'report_pages_search_vector_trigger')                                AS trigger_active;
+          WHERE tgname   = 'report_chunks_search_vector_trigger')                           AS chunk_trigger,
+  EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'chat_cache')          AS chat_cache_table,
+  EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'report_pages')        AS legacy_report_pages_present;
 ```
 
-All five columns must be `true`.
+All columns except the last must be `true`. `legacy_report_pages_present` should be `false` — if it's `true`, Step 2 didn't drop the old table.
 
 ---
 
 ## Notes
 
 - These steps require **superuser/`postgres` user** access. Your application user (the one in `DATABASE_URL_PRODUCTION`) typically does not have permission to `CREATE EXTENSION` or `CREATE TRIGGER`.
-- After the production database is set up, deploy the AI service to production by pushing to the `production` branch (auto-triggers the deploy workflow).
-- If the production deploy still fails on a migration, check the error — it's likely an EF "object already exists" message, fix by inserting the migration row in `__EFMigrationsHistory` (Step 4 pattern).
+- After the production database is set up, deploy the AI service to production by pushing to the `production` branch (auto-triggers the deploy workflow). Make sure both Cloud Run services (api + worker) are updated together.
+- If the production deploy still fails on a migration, check the error — it's likely an EF "object already exists" message, fix by inserting the migration row in `__EFMigrationsHistory` (Step 5 pattern).
 - **GitHub secrets** required for production AI service: `DATABASE_URL_PRODUCTION`, `GCP_PROJECT_ID`, `CLOUD_STORAGE_BUCKET`, `GEMINI_API_KEY` (optional — falls back to Vertex AI if absent).

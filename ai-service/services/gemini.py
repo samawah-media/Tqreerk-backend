@@ -48,8 +48,23 @@ class ReportSummary(BaseModel):
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def describe_page_image(png_bytes: bytes) -> str:
-    """Send a PDF page rendered as PNG to Gemini; returns combined text for embedding."""
+_VALID_PAGE_TYPES = {"cover", "toc", "text", "table", "chart", "mixed", "empty"}
+_VALID_LANGUAGES = {"ar", "en", "mixed"}
+
+
+def describe_page_image(png_bytes: bytes) -> dict:
+    """Send a PDF page rendered as PNG to Gemini.
+
+    Returns a dict shaped:
+        {
+          "content": str,               # combined text + visual descriptions
+          "metadata": {
+              "section_title": str,      # may be ""
+              "page_type":     str,      # cover|toc|text|table|chart|mixed|empty
+              "language":      str,      # ar|en|mixed
+          }
+        }
+    """
     _init()
     image_part = types.Part.from_bytes(data=png_bytes, mime_type="image/png")
     response = _client.models.generate_content(
@@ -63,7 +78,27 @@ def describe_page_image(png_bytes: bytes) -> str:
     )
     parsed = json.loads(response.text)
     parts = [parsed.get("text", "")] + parsed.get("visual_elements", [])
-    return "\n\n".join(p for p in parts if p)
+    content = "\n\n".join(p for p in parts if p)
+
+    # Coerce model-returned values to the schema we promised callers. If Gemini
+    # returns something off-list (e.g. "diagram"), we fall back to "mixed" rather
+    # than poisoning the index with arbitrary strings.
+    page_type = (parsed.get("page_type") or "").strip().lower()
+    if page_type not in _VALID_PAGE_TYPES:
+        page_type = "mixed"
+
+    language = (parsed.get("language") or "").strip().lower()
+    if language not in _VALID_LANGUAGES:
+        language = "mixed"
+
+    return {
+        "content": content,
+        "metadata": {
+            "section_title": (parsed.get("section_title") or "").strip(),
+            "page_type": page_type,
+            "language": language,
+        },
+    }
 
 
 def embed_text(text: str) -> list[float]:

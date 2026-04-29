@@ -1,0 +1,60 @@
+# GPU-enabled document processing service.
+#
+# Stack:
+#   • Docling      — layout, reading order, tables (TableFormer)
+#   • Florence-2   — figure captioning (transformers)
+#   • EasyOCR      — Arabic + English text recognition
+#   • pix2tex      — formula image → LaTeX
+#
+# Runs on Cloud Run with NVIDIA L4 (24 GB). All four models fit in VRAM at the
+# same time so we load them once at startup and keep them warm. With
+# min-instances=0, idle cost is zero; the trade-off is a 30-90 s cold start
+# while CUDA initialises and weights stream into VRAM.
+
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    TRANSFORMERS_OFFLINE=0 \
+    HF_HOME=/app/.hf-cache \
+    EASYOCR_MODULE_PATH=/app/.easyocr-cache
+
+# System deps: Python 3.11 (PyTorch 2.4 wheels), build tools for native libs,
+# and OpenCV runtime libs (libGL, libglib) that pip-installed opencv needs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-venv python3-pip \
+        build-essential git \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+        libmupdf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make python3.11 the default interpreter.
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && python -m pip install --upgrade pip setuptools wheel
+
+WORKDIR /app
+
+# Install Python deps first so the layer caches across code edits.
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# Pre-download weights at build time so cold start only pays for VRAM transfer,
+# not network. Skips on build with HF_HUB_OFFLINE if weights are vendored.
+# Florence-2 base-ft is small (~1 GB); Docling weights bundled with the wheel.
+RUN python -c "from transformers import AutoProcessor, AutoModelForCausalLM; \
+    AutoProcessor.from_pretrained('microsoft/Florence-2-base-ft', trust_remote_code=True); \
+    AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base-ft', trust_remote_code=True)" \
+    && python -c "import easyocr; easyocr.Reader(['ar', 'en'], gpu=False, download_enabled=True)" \
+    && python -c "from pix2tex.cli import LatexOCR; LatexOCR()"
+
+COPY . .
+
+EXPOSE 8080
+
+# Cloud Run injects $PORT (defaults to 8080). Single worker — model state in
+# VRAM is per-process, so multiple uvicorn workers would each load a copy.
+# concurrency on Cloud Run is set per-service (we deploy with concurrency=1).
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --timeout-keep-alive 120"]

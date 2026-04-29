@@ -1,0 +1,36 @@
+# ── Core web stack ───────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.18
+pydantic-settings==2.6.1
+sentry-sdk[fastapi]==2.18.0
+pillow==11.0.0
+httpx==0.28.0
+
+# ── PyTorch (CUDA 12.1 wheels — match the Dockerfile base image) ─────────────
+# Pin minor versions; the Hugging Face / Docling stack is sensitive to
+# torch/transformers compatibility.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.4.1
+torchvision==0.19.1
+
+# ── Document AI stack ────────────────────────────────────────────────────────
+# Docling = layout detection + reading order + table structure (TableFormer)
+# It bundles DocLayNet weights and TableFormer; no extra downloads.
+docling==2.5.2
+
+# Florence-2 / transformers — figure captioning
+transformers==4.45.2
+accelerate==1.0.1
+einops==0.8.0
+
+# EasyOCR — Arabic + English OCR fallback for low-quality / scanned regions
+easyocr==1.7.2
+
+# pix2tex — formula image -> LaTeX
+pix2tex==0.1.4
+
+# ── Image / PDF support ──────────────────────────────────────────────────────
+pymupdf==1.24.14
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
