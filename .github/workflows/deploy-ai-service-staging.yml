@@ -116,4 +116,4 @@ jobs:
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             ENVIRONMENT=staging
             DOC_PROCESSOR_ENABLED=true
-            DOC_PROCESSOR_URL="https://taqreerk-doc-processor-staging-bo6ogywxvq-ez.a.run.app/"
+            DOC_PROCESSOR_URL=https://taqreerk-doc-processor-staging-bo6ogywxvq-ez.a.run.app

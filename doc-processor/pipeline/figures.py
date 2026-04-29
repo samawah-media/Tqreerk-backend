@@ -41,6 +41,7 @@ _processor = None
 _model: Optional[torch.nn.Module] = None
 _device: Optional[str] = None
 _dtype: Optional[torch.dtype] = None
+_init_attempted: bool = False  # True once init() has run (success or failure)
 
 # Florence-2 task token that produces a richer description than the default
 # caption — useful for charts / diagrams in research reports.
@@ -50,9 +51,10 @@ _TASK_PROMPT = "<MORE_DETAILED_CAPTION>"
 def init() -> None:
     """Load Florence-2 processor + model. Weights are pre-cached at image
     build time so this is a CUDA-bound op (move to GPU + warmup)."""
-    global _processor, _model, _device, _dtype
-    if _model is not None:
+    global _processor, _model, _device, _dtype, _init_attempted
+    if _init_attempted:
         return
+    _init_attempted = True
 
     from transformers import AutoProcessor, AutoModelForCausalLM
 
@@ -82,7 +84,8 @@ def init() -> None:
 
 
 def is_ready() -> bool:
-    return _model is not None
+    # True once init has been attempted — failure is graceful (caption returns "")
+    return _init_attempted
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -94,8 +97,10 @@ def caption(img: bytes | np.ndarray | Image.Image) -> str:
     Returns "" on any failure (image decode, model error, OOM). The
     orchestrator can fall back to a generic placeholder + OCR'd text.
     """
-    if _model is None:
+    if not _init_attempted:
         init()
+    if _model is None:
+        return ""  # init ran but failed — no point retrying
 
     pil = _coerce_to_pil(img)
     if pil is None:
