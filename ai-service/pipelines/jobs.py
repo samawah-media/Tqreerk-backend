@@ -218,21 +218,59 @@ async def run_translate_job(
         prefix = output_prefix if output_prefix.endswith("/") else output_prefix + "/"
 
         async with conn_ctx() as conn:
+            # Pick a representative sample, NOT just the first chunk —
+            # page 1 is often a title page or English abstract that doesn't
+            # reflect the document's dominant language. We aggregate across
+            # the metadata.language tags ingest already wrote, then fall
+            # back to a longer text sample if metadata is missing/ambiguous.
             cur = await conn.execute(
                 """
-                SELECT "Content" FROM report_chunks
+                SELECT metadata->>'language' AS lang, COUNT(*) AS n
+                FROM report_chunks
                 WHERE "ReportId" = %s
-                ORDER BY "PageNumber", "ChunkIndex"
-                LIMIT 1
+                  AND metadata ? 'language'
+                GROUP BY metadata->>'language'
+                ORDER BY n DESC
                 """,
                 [str(report_id)],
             )
-            row = await cur.fetchone()
+            lang_counts = await cur.fetchall()
 
-        if not row:
-            raise RuntimeError("Report chunks not found — ingest first")
+            # Pick first non-"mixed" language with the highest count, if any.
+            metadata_lang: str | None = None
+            for lang, _ in lang_counts:
+                if lang and lang.lower() in ("ar", "en"):
+                    metadata_lang = lang.lower()
+                    break
 
-        source_language = detect_language(row[0])
+            if metadata_lang is not None:
+                source_language = metadata_lang
+                logger.info(
+                    "[job %s] source_language=%s from chunk metadata (counts=%s)",
+                    job_id, source_language, lang_counts,
+                )
+            else:
+                # No usable metadata — concat enough chunks to make detection
+                # reliable. 10 chunks ≈ 5000 chars covers cover-page bias.
+                cur = await conn.execute(
+                    """
+                    SELECT "Content" FROM report_chunks
+                    WHERE "ReportId" = %s
+                    ORDER BY "PageNumber", "ChunkIndex"
+                    LIMIT 10
+                    """,
+                    [str(report_id)],
+                )
+                rows = await cur.fetchall()
+                if not rows:
+                    raise RuntimeError("Report chunks not found — ingest first")
+                sample = " ".join(r[0] for r in rows if r[0])[:5000]
+                source_language = detect_language(sample)
+                logger.info(
+                    "[job %s] source_language=%s from text sample (%d chars)",
+                    job_id, source_language, len(sample),
+                )
+
         target_language = "en" if source_language == "ar" else "ar"
 
         logger.info(
