@@ -90,6 +90,55 @@ def _init():
     get_client()
 
 
+# ── Shared retry wrapper ────────────────────────────────────────────────────
+
+_CONN_ERROR_MARKERS = (
+    "ssl", "eof", "connection reset", "broken pipe",
+    "remote end closed", "connection aborted", "max retries",
+    "timed out", "timeout",
+)
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    err = str(exc).lower()
+    return any(m in err for m in _CONN_ERROR_MARKERS)
+
+
+def _call_with_retry(operation: str, fn):
+    """Run `fn(client)` with retry on connection-shaped errors.
+
+    Same pattern proven for embed_text:
+        - up to 5 attempts with backoff 1s, 2s, 4s, 8s
+        - on SSL/EOF/connection errors, atomically swap the cached client so
+          the next attempt opens a fresh TLS pool
+        - non-connection errors are logged and re-raised on the LAST attempt;
+          earlier attempts still retry in case the error is transient
+
+    `fn` receives the genai client snapshot for this attempt — use this exact
+    instance for the call AND for `_replace_if_same` on failure to avoid
+    racing other threads that may have already replaced it.
+    """
+    last_exc: Exception | None = None
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        client = get_client()
+        try:
+            return fn(client)
+        except Exception as exc:
+            last_exc = exc
+            connection_error = _is_connection_error(exc)
+            logger.warning(
+                "%s attempt %d/%d failed (connection_error=%s): %s",
+                operation, attempt + 1, max_attempts, connection_error, exc,
+            )
+            if connection_error:
+                _replace_if_same(client)
+            if attempt < max_attempts - 1:
+                time.sleep(2 ** attempt)
+    assert last_exc is not None
+    raise last_exc
+
+
 class ReportSummary(BaseModel):
     summary: str
     key_findings: list[str]
@@ -115,15 +164,17 @@ def describe_page_image(png_bytes: bytes) -> dict:
           }
         }
     """
-    _init()
     image_part = types.Part.from_bytes(data=png_bytes, mime_type="image/png")
-    response = _client.models.generate_content(
-        model=settings.gemini_vision_model,
-        contents=[prompts.PAGE_DESCRIPTION, image_part],
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_schema=prompts.PAGE_DESCRIPTION_SCHEMA,
+    response = _call_with_retry(
+        "describe_page_image",
+        lambda client: client.models.generate_content(
+            model=settings.gemini_vision_model,
+            contents=[prompts.PAGE_DESCRIPTION, image_part],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema=prompts.PAGE_DESCRIPTION_SCHEMA,
+            ),
         ),
     )
     parsed = json.loads(response.text)
@@ -154,45 +205,16 @@ def describe_page_image(png_bytes: bytes) -> dict:
 def embed_text(text: str) -> list[float]:
     """Return a 768-dimensional embedding for the given text.
 
-    Resilient to SSL EOF / connection-reset errors that happen when the
-    underlying HTTP keep-alive connection has gone stale (typically after a
-    multi-minute doc-processor extract sat between two embedding bursts).
-    On any connection-shaped error we drop the cached client so the next
-    attempt opens a fresh connection pool, then retry with backoff.
+    Resilient to SSL EOF / connection-reset errors via _call_with_retry.
     """
-    last_exc = None
-    max_attempts = 5
-    for attempt in range(max_attempts):
-        # Snapshot the current client. We pass this exact instance to the
-        # embed call AND to _replace_if_same on failure, so we never mutate
-        # state another thread already fixed.
-        client = get_client()
-        try:
-            response = client.models.embed_content(
-                model=settings.gemini_embed_model,
-                contents=text,
-            )
-            return response.embeddings[0].values
-        except Exception as exc:
-            last_exc = exc
-            err = str(exc).lower()
-            connection_error = any(s in err for s in (
-                "ssl", "eof", "connection reset", "broken pipe",
-                "remote end closed", "connection aborted", "max retries",
-            ))
-            logger.warning(
-                "embed_text attempt %d/%d failed (connection_error=%s): %s",
-                attempt + 1, max_attempts, connection_error, exc,
-            )
-            if connection_error:
-                # Atomically swap the stale client for a fresh one — but only
-                # if no other thread has already replaced it. This avoids the
-                # transient `_client = None` window that previously caused
-                # 'NoneType has no attribute models' in concurrent callers.
-                _replace_if_same(client)
-            if attempt < max_attempts - 1:
-                time.sleep(2 ** attempt)  # 1s, 2s, 4s, 8s
-    raise last_exc
+    response = _call_with_retry(
+        "embed_text",
+        lambda client: client.models.embed_content(
+            model=settings.gemini_embed_model,
+            contents=text,
+        ),
+    )
+    return response.embeddings[0].values
 
 
 def chat_with_context(
@@ -202,7 +224,6 @@ def chat_with_context(
     source_pages: list[int],
 ) -> tuple[str, list[int]]:
     """Answer a user question given retrieved page chunks (non-streaming)."""
-    _init()
     system_prompt = prompts.chat_system_prompt("\n\n---\n\n".join(context_chunks))
 
     contents = []
@@ -215,10 +236,13 @@ def chat_with_context(
         "parts": [{"text": prompts.chat_user_message(system_prompt, user_message)}],
     })
 
-    response = _client.models.generate_content(
-        model=settings.gemini_chat_model,
-        contents=contents,
-        config=types.GenerateContentConfig(temperature=0.2),
+    response = _call_with_retry(
+        "chat_with_context",
+        lambda client: client.models.generate_content(
+            model=settings.gemini_chat_model,
+            contents=contents,
+            config=types.GenerateContentConfig(temperature=0.2),
+        ),
     )
     return response.text.strip(), source_pages
 
@@ -232,8 +256,13 @@ def chat_with_context_stream(
 
     Use for streaming endpoints (SSE / WebSocket). Yields plain string deltas;
     join them to reconstruct the full answer.
+
+    Retry semantics: we retry only on connection failures that surface BEFORE
+    any tokens are emitted (i.e. the stream open itself failed). Once the
+    stream has yielded its first token we can't safely restart — partial
+    output would already be on the wire. Mid-stream connection drops are
+    surfaced to the caller as-is.
     """
-    _init()
     system_prompt = prompts.chat_system_prompt("\n\n---\n\n".join(context_chunks))
 
     contents = []
@@ -246,10 +275,13 @@ def chat_with_context_stream(
         "parts": [{"text": prompts.chat_user_message(system_prompt, user_message)}],
     })
 
-    stream = _client.models.generate_content_stream(
-        model=settings.gemini_chat_model,
-        contents=contents,
-        config=types.GenerateContentConfig(temperature=0.2),
+    stream = _call_with_retry(
+        "chat_with_context_stream.open",
+        lambda client: client.models.generate_content_stream(
+            model=settings.gemini_chat_model,
+            contents=contents,
+            config=types.GenerateContentConfig(temperature=0.2),
+        ),
     )
     for chunk in stream:
         if chunk.text:
@@ -269,7 +301,6 @@ def verify_translation(
     Returns False if the second PDF looks like a copy of the first (same source
     language, no real translation happened).
     """
-    _init()
     prompt = (
         "Two PDFs are attached. The first is the ORIGINAL document. The second is "
         f"supposed to be its translation into {target_language}.\n\n"
@@ -279,21 +310,24 @@ def verify_translation(
         "Otherwise answer true.\n\n"
         "Return ONLY a JSON object: {\"translated\": boolean}"
     )
-    response = _client.models.generate_content(
-        model=settings.gemini_summary_model,
-        contents=[
-            prompt,
-            types.Part.from_bytes(data=original_pdf, mime_type="application/pdf"),
-            types.Part.from_bytes(data=translated_pdf, mime_type="application/pdf"),
-        ],
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_schema={
-                "type": "object",
-                "properties": {"translated": {"type": "boolean"}},
-                "required": ["translated"],
-            },
+    response = _call_with_retry(
+        "verify_translation",
+        lambda client: client.models.generate_content(
+            model=settings.gemini_summary_model,
+            contents=[
+                prompt,
+                types.Part.from_bytes(data=original_pdf, mime_type="application/pdf"),
+                types.Part.from_bytes(data=translated_pdf, mime_type="application/pdf"),
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {"translated": {"type": "boolean"}},
+                    "required": ["translated"],
+                },
+            ),
         ),
     )
     parsed = json.loads(response.text)
@@ -306,7 +340,6 @@ def translate_pdf_content(pdf_bytes: bytes, target_language: str) -> list[str]:
     Used as a fallback when Google Translate's Document Translation produces
     a copy of the input (e.g. path-rendered Arabic forms with no real text layer).
     """
-    _init()
     pdf_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
     prompt = (
         f"Translate every page of this PDF to {target_language}. "
@@ -314,19 +347,22 @@ def translate_pdf_content(pdf_bytes: bytes, target_language: str) -> list[str]:
         "in original order. Preserve paragraph breaks within each page. "
         "Output the translation only — no commentary, no explanation."
     )
-    response = _client.models.generate_content(
-        model=settings.gemini_summary_model,
-        contents=[prompt, pdf_part],
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "pages": {"type": "array", "items": {"type": "string"}},
+    response = _call_with_retry(
+        "translate_pdf_content",
+        lambda client: client.models.generate_content(
+            model=settings.gemini_summary_model,
+            contents=[prompt, pdf_part],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "pages": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["pages"],
                 },
-                "required": ["pages"],
-            },
+            ),
         ),
     )
     parsed = json.loads(response.text)
@@ -339,15 +375,17 @@ def extract_insights(pages_content: list[str]) -> dict:
     Returns a dict with keys 'indicators' and 'trends'. Each is a list of dicts
     matching the schema in core/prompts.INSIGHTS_SCHEMA.
     """
-    _init()
     combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
-    response = _client.models.generate_content(
-        model=settings.gemini_summary_model,
-        contents=prompts.insights_prompt(combined),
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_schema=prompts.INSIGHTS_SCHEMA,
+    response = _call_with_retry(
+        "extract_insights",
+        lambda client: client.models.generate_content(
+            model=settings.gemini_summary_model,
+            contents=prompts.insights_prompt(combined),
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema=prompts.INSIGHTS_SCHEMA,
+            ),
         ),
     )
     return json.loads(response.text)
@@ -359,7 +397,6 @@ def compare_reports(reports: list[dict]) -> dict:
     `reports` is a list of {"report_id": "...", "summary": "...", "key_findings": [...]}.
     Returns a dict matching core/prompts.COMPARE_SCHEMA.
     """
-    _init()
     sections = []
     for i, rep in enumerate(reports, start=1):
         kf = rep.get("key_findings") or []
@@ -371,13 +408,16 @@ def compare_reports(reports: list[dict]) -> dict:
         )
     reports_section = "\n\n".join(sections)
 
-    response = _client.models.generate_content(
-        model=settings.gemini_summary_model,
-        contents=prompts.compare_prompt(reports_section),
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_schema=prompts.COMPARE_SCHEMA,
+    response = _call_with_retry(
+        "compare_reports",
+        lambda client: client.models.generate_content(
+            model=settings.gemini_summary_model,
+            contents=prompts.compare_prompt(reports_section),
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema=prompts.COMPARE_SCHEMA,
+            ),
         ),
     )
     return json.loads(response.text)
@@ -385,15 +425,17 @@ def compare_reports(reports: list[dict]) -> dict:
 
 def summarize_report(pages_content: list[str]) -> ReportSummary:
     """Generate a structured summary + key findings for a full report."""
-    _init()
     combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
-    response = _client.models.generate_content(
-        model=settings.gemini_summary_model,
-        contents=prompts.summarize_prompt(combined),
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_schema=prompts.REPORT_SUMMARY_SCHEMA,
+    response = _call_with_retry(
+        "summarize_report",
+        lambda client: client.models.generate_content(
+            model=settings.gemini_summary_model,
+            contents=prompts.summarize_prompt(combined),
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema=prompts.REPORT_SUMMARY_SCHEMA,
+            ),
         ),
     )
     return ReportSummary.model_validate_json(response.text)
