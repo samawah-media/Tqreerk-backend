@@ -150,6 +150,7 @@ def caption_crop(
     return caption(crop)
 
 
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _coerce_to_pil(img: bytes | np.ndarray | Image.Image) -> Image.Image | None:
