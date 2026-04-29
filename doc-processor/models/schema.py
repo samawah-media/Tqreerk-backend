@@ -191,6 +191,50 @@ class EmbedResponse(BaseModel):
     latency_ms: int
 
 
+# ── Reranker ──────────────────────────────────────────────────────────────────
+
+class RerankCandidate(BaseModel):
+    """A candidate passage to be scored against the query.
+
+    `id` is opaque to the reranker — the caller chooses it (typically the
+    original index in their candidate list, or a chunk_id) and gets it back
+    on the response so they can re-key after the rerank without sending the
+    full passage payload twice."""
+    id: str
+    text: str
+
+
+class RerankRequest(BaseModel):
+    """Request body for POST /v1/rerank."""
+    query: str = Field(..., description="The user question / search query.")
+    candidates: list[RerankCandidate] = Field(
+        ...,
+        description="Passages to score. Up to a few hundred is fine; we batch internally.",
+    )
+    top_k: int | None = Field(
+        default=None,
+        description="Truncate to top N by descending score. None = return all.",
+    )
+
+
+class RerankResult(BaseModel):
+    """One scored candidate. `score` is sigmoid-normalised to [0, 1] so
+    callers can use a fixed threshold across reranker model swaps."""
+    id: str
+    score: float
+    rank: int       # 0 = most relevant
+
+
+class RerankResponse(BaseModel):
+    """Response for POST /v1/rerank.
+
+    `results` are ordered by descending score (rank=0 first). `latency_ms`
+    is GPU-side only (excludes HTTP)."""
+    results: list[RerankResult]
+    model: str
+    latency_ms: int
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

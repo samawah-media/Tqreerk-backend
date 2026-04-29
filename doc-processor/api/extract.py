@@ -32,8 +32,11 @@ from models.schema import (
     ExtractDocumentResponse,
     ExtractRequest,
     ExtractResponse,
+    RerankRequest,
+    RerankResponse,
+    RerankResult,
 )
-from pipeline import embeddings
+from pipeline import embeddings, reranker
 from pipeline.orchestrator import process_document, process_page
 
 logger = logging.getLogger(__name__)
@@ -121,6 +124,56 @@ async def extract_document(
         response.total_latency_ms,
     )
     return response
+
+
+@router.post("/rerank", response_model=RerankResponse)
+async def rerank(
+    body: RerankRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> RerankResponse:
+    """Score (query, passage) pairs with the cross-encoder and return the
+    top-k by descending score.
+
+    Replaces the previous Vertex AI Ranking call from ai-service. Same
+    fail-soft contract — if the model isn't ready or scoring errors, the
+    caller will see 503 and can fall back to retrieval order."""
+    _check_token(x_internal_token)
+
+    if not body.candidates:
+        raise HTTPException(status_code=400, detail="candidates must be non-empty")
+    if not body.query.strip():
+        raise HTTPException(status_code=400, detail="query must be non-empty")
+    if not reranker.is_ready():
+        raise HTTPException(status_code=503, detail="reranker model is still loading")
+
+    started = time.perf_counter()
+    loop = asyncio.get_running_loop()
+    passages = [c.text for c in body.candidates]
+    ranked = await loop.run_in_executor(
+        None, reranker.rerank, body.query, passages, body.top_k,
+    )
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    if not ranked:
+        # is_ready() said yes but predict returned nothing — model crashed
+        # mid-flight (OOM, CUDA error). Surface 500 so the caller's fall-soft
+        # logic returns the retrieval order unchanged.
+        raise HTTPException(status_code=500, detail="reranker scoring failed")
+
+    results = [
+        RerankResult(id=body.candidates[idx].id, score=score, rank=rank)
+        for rank, (idx, score) in enumerate(ranked)
+    ]
+    logger.info(
+        "rerank: n=%d kept=%d top_score=%.3f latency=%dms",
+        len(body.candidates), len(results),
+        results[0].score if results else 0.0, elapsed_ms,
+    )
+    return RerankResponse(
+        results=results,
+        model=settings.rerank_model_id,
+        latency_ms=elapsed_ms,
+    )
 
 
 @router.post("/embed", response_model=EmbedResponse)

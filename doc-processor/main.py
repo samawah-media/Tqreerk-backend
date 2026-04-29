@@ -40,7 +40,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.extract import router as extract_router
 from models.schema import HealthResponse
-from pipeline import embeddings, figures, formulas, layout, ocr
+from pipeline import embeddings, figures, formulas, layout, ocr, reranker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,6 +67,7 @@ async def _warm_models() -> None:
         ("pix2tex",     formulas.init),
         ("florence-2",  figures.init),
         ("embeddings",  embeddings.init),
+        ("reranker",    reranker.init),
     ]:
         try:
             fn()
@@ -95,6 +96,7 @@ async def health() -> HealthResponse:
         "pix2tex":    formulas.is_ready(),
         "florence-2": figures.is_ready(),
         "embeddings": embeddings.is_ready(),
+        "reranker":   reranker.is_ready(),
     }
 
     if all(models_loaded.values()):

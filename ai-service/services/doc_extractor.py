@@ -299,15 +299,40 @@ def _build_headers() -> dict[str, str]:
 
 
 def _normalize_page_response(page_body: dict, extractor_tag: str) -> dict:
-    """Trim a doc-processor page response to the `{content, metadata}` shape
-    the ingest pipeline persists into report_chunks. Structured channels
-    (tables / figures / formulas / reading_order) are dropped here for now
-    — they're still in the wire response when we want to add them later.
+    """Trim a doc-processor page response to the shape the ingest pipeline
+    consumes. We now also preserve the structured `blocks` list so the
+    chunker can pack along block boundaries (heading-aware, never splitting
+    a table or figure) instead of doing blind character splits on `content`.
+
+    Per-block keys we keep:
+        type           — text / heading / table / figure / formula / footer
+        content        — the chunk-ready text the block emits
+        reading_order  — global ordinal so we can sort if anything reorders
+
+    The structured payloads (table.markdown, figure.caption, formula.latex)
+    are already inlined into block.content by the orchestrator, so we don't
+    re-flatten them here.
     """
     metadata_in = page_body.get("metadata") or {}
+
+    raw_blocks = page_body.get("blocks") or []
+    blocks: list[dict] = []
+    for b in raw_blocks:
+        if not isinstance(b, dict):
+            continue
+        text = (b.get("content") or "").strip()
+        if not text:
+            continue
+        blocks.append({
+            "type":          b.get("type") or "text",
+            "content":       text,
+            "reading_order": int(b.get("reading_order") or 0),
+        })
+
     return {
         "page_number":  page_body.get("page_number"),  # absent on /v1/extract; harmless
         "content":      page_body.get("content", "") or "",
+        "blocks":       blocks,                        # empty for non-doc-processor extractors
         "metadata": {
             "section_title": (metadata_in.get("section_title") or "")[:300],
             "page_type":     metadata_in.get("page_type") or "mixed",

@@ -35,7 +35,7 @@ import httpx
 import numpy as np
 from google.cloud import storage
 
-from core.chunking import chunk_text
+from core.chunking import chunk_blocks_with_meta, chunk_text
 from core.db import conn_ctx
 from services import doc_extractor
 
@@ -251,16 +251,33 @@ async def _chunk_and_embed(
     Returns rows sorted by (page_number, chunk_index) for deterministic insert.
     """
     # Step 1 — chunk locally, preserving (page_num, chunk_idx, metadata).
+    # When the extractor returned structured blocks (doc-processor path), use
+    # the structure-aware packer: never splits a table/figure/formula, keeps
+    # heading + body together, packs greedy up to ~500 tokens. Pure-text
+    # extractors (Gemini Vision) fall back to the recursive char splitter.
     pending: list[tuple[int, int, str, dict]] = []
     for page in page_results:
         page_num = int(page.get("page_number") or 0) or None
         content: str = page.get("content") or ""
         metadata: dict = dict(page.get("metadata") or {})
-        if page_num is None or not content.strip():
+        blocks = page.get("blocks") or []
+        if page_num is None:
             continue
-        chunks = chunk_text(content)
-        for idx, ch in enumerate(chunks):
-            pending.append((page_num, idx, ch, metadata))
+
+        if blocks:
+            chunked = chunk_blocks_with_meta(blocks)
+            for idx, ch in enumerate(chunked):
+                # Enrich per-chunk metadata so downstream filtering can
+                # narrow by block type or section without re-deriving it.
+                chunk_meta = dict(metadata)
+                chunk_meta["block_types"] = ch["block_types"]
+                if ch["section_title"]:
+                    chunk_meta["section_title"] = ch["section_title"]
+                pending.append((page_num, idx, ch["content"], chunk_meta))
+        elif content.strip():
+            # Vision-only path or empty-blocks fallback.
+            for idx, ch in enumerate(chunk_text(content)):
+                pending.append((page_num, idx, ch, metadata))
 
     if not pending:
         return []

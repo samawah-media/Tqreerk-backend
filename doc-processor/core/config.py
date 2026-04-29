@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     embed_max_seq_length: int = 8192       # bge-m3 supports up to 8k tokens; chunks are well under
     embed_batch_size: int = 16             # bge-m3 is bigger than e5; smaller batch keeps VRAM safe
 
+    # Cross-encoder reranker for /v1/rerank. Trained as a sibling to bge-m3
+    # so query and chunk vectors live in compatible representation spaces;
+    # joint scoring is meaningfully better than re-scoring with cosine.
+    # ~568M params, ~2.5 GB VRAM in fp16 alongside bge-m3 + Florence-2 +
+    # Docling + EasyOCR — total ~9 GB on the L4's 24 GB headroom.
+    rerank_model_id: str = "BAAI/bge-reranker-v2-m3"
+    rerank_max_seq_length: int = 1024      # 512 query + 512 passage is plenty for chunk-level rerank
+    rerank_batch_size: int = 8             # bge-reranker-v2-m3 is heavier than the embedder; smaller batch
+
     # Hardware / inference toggles.
     device: str = "cuda"                         # "cuda" | "cpu" — set "cpu" for local dev
     fp16: bool  = True                           # half-precision for VLM speed
