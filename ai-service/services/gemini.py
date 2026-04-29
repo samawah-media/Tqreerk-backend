@@ -103,12 +103,22 @@ def describe_page_image(png_bytes: bytes) -> dict:
 
 def embed_text(text: str) -> list[float]:
     """Return a 768-dimensional embedding for the given text."""
+    import time
     _init()
-    response = _client.models.embed_content(
-        model=settings.gemini_embed_model,
-        contents=text,
-    )
-    return response.embeddings[0].values
+    last_exc = None
+    for attempt in range(3):
+        try:
+            response = _client.models.embed_content(
+                model=settings.gemini_embed_model,
+                contents=text,
+            )
+            return response.embeddings[0].values
+        except Exception as exc:
+            last_exc = exc
+            # SSL EOF / connection reset after a long upstream wait — retry
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    raise last_exc
 
 
 def chat_with_context(
