@@ -23,9 +23,14 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.InterestField).HasMaxLength(150);
         builder.Property(u => u.PreferredLanguage).IsRequired().HasMaxLength(5).HasDefaultValue("ar");
         builder.Property(u => u.Status).HasConversion<string>().HasMaxLength(30);
+        builder.Property(u => u.IsPlatformStaff).HasDefaultValue(false);
         builder.Property(u => u.CreatedAt).HasDefaultValueSql("now()");
 
         builder.HasIndex(u => u.Email).IsUnique();
+        // Quick lookup for /api/admin/* gate. Partial index = nearly free; the
+        // staff table is tiny vs the user table.
+        builder.HasIndex(u => u.IsPlatformStaff)
+            .HasFilter("\"IsPlatformStaff\" = TRUE");
         builder.HasIndex(u => u.Phone).IsUnique().HasFilter("\"Phone\" IS NOT NULL");
 
         builder.HasOne(u => u.Country)

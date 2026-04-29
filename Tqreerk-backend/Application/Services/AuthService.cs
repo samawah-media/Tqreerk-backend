@@ -17,6 +17,7 @@ public class AuthService : IAuthService
     private readonly ITokenService _tokens;
     private readonly IRbacService _rbac;
     private readonly IEmailSender _email;
+    private readonly ITwoFactorService _twoFactor;
     private readonly JwtSettings _jwt;
     private readonly EmailSettings _emailSettings;
 
@@ -25,6 +26,7 @@ public class AuthService : IAuthService
         ITokenService tokens,
         IRbacService rbac,
         IEmailSender email,
+        ITwoFactorService twoFactor,
         IOptions<JwtSettings> jwt,
         IOptions<EmailSettings> emailSettings)
     {
@@ -32,6 +34,7 @@ public class AuthService : IAuthService
         _tokens = tokens;
         _rbac = rbac;
         _email = email;
+        _twoFactor = twoFactor;
         _jwt = jwt.Value;
         _emailSettings = emailSettings.Value;
     }
@@ -194,6 +197,85 @@ public class AuthService : IAuthService
             user.LockoutEndsAt = null;
             await _db.SaveChangesAsync(ct);
         }
+
+        return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
+    }
+
+    public async Task<LoginOutcome> LoginWithTwoFactorAsync(
+        LoginRequest req, string? ipAddress, string? deviceInfo, CancellationToken ct = default)
+    {
+        // Reuse the password + lockout flow from LoginAsync. We can't just
+        // call it directly because the regular path issues tokens at the
+        // end — so we duplicate the verification, then branch.
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == req.Email.ToLowerInvariant(), ct)
+            ?? throw new UnauthorizedAccessException("Invalid credentials.");
+
+        if (user.LockoutEndsAt is { } lockedUntil && lockedUntil > DateTime.UtcNow)
+        {
+            var minutes = (int)Math.Ceiling((lockedUntil - DateTime.UtcNow).TotalMinutes);
+            throw new UnauthorizedAccessException(
+                $"Too many failed attempts. Try again in {minutes} minute(s).");
+        }
+
+        if (!BCrypt.Net.BCrypt.Verify(req.Password, user.PasswordHash))
+        {
+            user.FailedLoginAttempts += 1;
+            if (user.FailedLoginAttempts >= MaxFailedLoginAttempts)
+            {
+                user.LockoutEndsAt = DateTime.UtcNow.Add(LockoutDuration);
+                user.FailedLoginAttempts = 0;
+            }
+            await _db.SaveChangesAsync(ct);
+            throw new UnauthorizedAccessException("Invalid credentials.");
+        }
+
+        if (user.Status == UserStatus.Suspended)
+            throw new UnauthorizedAccessException("Account is suspended.");
+
+        if (user.FailedLoginAttempts != 0 || user.LockoutEndsAt is not null)
+        {
+            user.FailedLoginAttempts = 0;
+            user.LockoutEndsAt = null;
+            await _db.SaveChangesAsync(ct);
+        }
+
+        // Branch: only platform staff are gated by 2FA. Everyone else logs
+        // in normally. Within staff, the gate fires only when 2FA is
+        // ALREADY active — staff who haven't set up yet get a normal
+        // token pair plus a flag in /me telling the SPA to push them
+        // through the setup wizard before they can do anything.
+        if (user.IsPlatformStaff
+            && await _twoFactor.RequiresVerificationAsync(user.Id, ct))
+        {
+            var challenge = _tokens.GenerateTwoFactorChallengeToken(user.Id);
+            return new LoginOutcome(
+                Tokens: null,
+                TwoFactorChallenge: new TwoFactorChallengeResult(challenge, user.Email));
+        }
+
+        var tokens = await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
+        return new LoginOutcome(Tokens: tokens, TwoFactorChallenge: null);
+    }
+
+    public async Task<AuthResult> CompleteTwoFactorLoginAsync(
+        string challengeToken, string code, string? ipAddress, string? deviceInfo, CancellationToken ct = default)
+    {
+        var userId = _tokens.ValidateTwoFactorChallengeToken(challengeToken)
+            ?? throw new UnauthorizedAccessException("Invalid or expired 2FA challenge.");
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+            ?? throw new UnauthorizedAccessException("User not found.");
+
+        if (user.Status == UserStatus.Suspended)
+            throw new UnauthorizedAccessException("Account is suspended.");
+
+        // Defence in depth — if 2FA somehow got disabled between step 1
+        // and step 2 (admin reset?) we don't accept the challenge.
+        if (!await _twoFactor.RequiresVerificationAsync(userId, ct))
+            throw new UnauthorizedAccessException("2FA is not active for this account.");
+
+        if (!await _twoFactor.VerifyAsync(userId, code, ct))
+            throw new UnauthorizedAccessException("Invalid verification code.");
 
         return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
     }

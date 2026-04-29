@@ -31,7 +31,24 @@ public class Report : SoftDeletableEntity
     public int RatingsCount { get; set; }
     public bool IsFeatured { get; set; }
     public ReportSourceType SourceType { get; set; } = ReportSourceType.Organization;
-    public ReportStatus Status { get; set; } = ReportStatus.Draft;
+    public ReportStatus Status { get; set; } = ReportStatus.PendingReview;
+
+    // ── Review workflow (admin moderation) ────────────────────────────────
+    /// When the org submitted the report for moderation. Null while Draft.
+    public DateTime? SubmittedForReviewAt { get; set; }
+
+    /// When the report transitioned to Published. Null until then. Distinct
+    /// from CreatedAt because the workflow can take days.
+    public DateTime? PublishedAt { get; set; }
+
+    /// Reviewer currently holding the claim lock; null when the report is
+    /// in PendingReview (back in the queue) or after a final decision.
+    public Guid? ClaimedByReviewerId { get; set; }
+
+    /// When the claim was taken. Used by the auto-release background job to
+    /// drop stale claims (>60 min) so the report returns to the queue.
+    public DateTime? ClaimedAt { get; set; }
+    public User? ClaimedByReviewer { get; set; }
 
     public Organization Organization { get; set; } = null!;
     public User UploadedByUser { get; set; } = null!;

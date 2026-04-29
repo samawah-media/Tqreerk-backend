@@ -29,7 +29,8 @@ public class ExceptionHandlingMiddleware
 
             // Report only unexpected errors to Sentry; expected 4xx cases below aren't bugs.
             if (ex is not (InvalidOperationException or UnauthorizedAccessException
-                or KeyNotFoundException or ArgumentException))
+                or KeyNotFoundException or ArgumentException
+                or Taqreerk.Application.Services.ForbiddenException))
             {
                 SentrySdk.CaptureException(ex);
             }
@@ -42,6 +43,7 @@ public class ExceptionHandlingMiddleware
     {
         var (status, title) = ex switch
         {
+            Taqreerk.Application.Services.ForbiddenException => (HttpStatusCode.Forbidden, ex.Message),
             InvalidOperationException => (HttpStatusCode.Conflict, ex.Message),
             UnauthorizedAccessException => (HttpStatusCode.Unauthorized, ex.Message),
             KeyNotFoundException => (HttpStatusCode.NotFound, ex.Message),

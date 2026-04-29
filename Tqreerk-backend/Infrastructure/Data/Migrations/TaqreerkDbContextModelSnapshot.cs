@@ -23,6 +23,104 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.Admin2faSecret", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("EncryptedBackupCodes")
+                        .IsRequired()
+                        .HasMaxLength(8000)
+                        .HasColumnType("character varying(8000)");
+
+                    b.Property<string>("EncryptedSecret")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique();
+
+                    b.ToTable("admin_2fa_secrets", (string)null);
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.AdminActionLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("ActionType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid?>("AdminUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AfterState")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("BeforeState")
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(45)
+                        .HasColumnType("character varying(45)");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("TargetEntityId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("TargetEntityType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AdminUserId", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("IX_admin_action_logs_AdminUserId_CreatedAt_desc")
+                        .HasFilter("\"AdminUserId\" IS NOT NULL");
+
+                    b.HasIndex("TargetEntityType", "TargetEntityId", "CreatedAt")
+                        .IsDescending(false, false, true)
+                        .HasDatabaseName("IX_admin_action_logs_Target_CreatedAt_desc");
+
+                    b.ToTable("admin_action_logs", (string)null);
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.AiJob", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1746,6 +1844,12 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasPrecision(3, 2)
                         .HasColumnType("numeric(3,2)");
 
+                    b.Property<DateTime?>("ClaimedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ClaimedByReviewerId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid?>("CountryId")
                         .HasColumnType("uuid");
 
@@ -1796,6 +1900,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Property<int?>("PublicationYear")
                         .HasColumnType("integer");
 
+                    b.Property<DateTime?>("PublishedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<int>("RatingsCount")
                         .HasColumnType("integer");
 
@@ -1825,6 +1932,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)");
 
+                    b.Property<DateTime?>("SubmittedForReviewAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasMaxLength(500)
@@ -1840,6 +1950,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ClaimedByReviewerId")
+                        .HasFilter("\"ClaimedByReviewerId\" IS NOT NULL");
 
                     b.HasIndex("CountryId");
 
@@ -2086,6 +2199,52 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("report_recommendations", (string)null);
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportReview", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("InternalNotes")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("ReviewDurationSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ReviewNotes")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ReviewerUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReviewerUserId");
+
+                    b.HasIndex("ReportId", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("IX_report_reviews_ReportId_CreatedAt_desc");
+
+                    b.ToTable("report_reviews", (string)null);
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportTranslation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2273,6 +2432,15 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                             Description = "Platform admin without RBAC mgmt",
                             IsSystem = true,
                             Name = "Admin",
+                            Scope = 0
+                        },
+                        new
+                        {
+                            Id = new Guid("30000000-0000-0000-0000-000000000003"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Reviews submitted reports",
+                            IsSystem = true,
+                            Name = "ContentReviewer",
                             Scope = 0
                         });
                 });
@@ -2800,6 +2968,18 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                             RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000b04"),
                             CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000003"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000201"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000003"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000203"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
                         });
                 });
 
@@ -3137,6 +3317,11 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasMaxLength(150)
                         .HasColumnType("character varying(150)");
 
+                    b.Property<bool>("IsPlatformStaff")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("JobTitle")
                         .HasMaxLength(150)
                         .HasColumnType("character varying(150)");
@@ -3184,6 +3369,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
                     b.HasIndex("Email")
                         .IsUnique();
+
+                    b.HasIndex("IsPlatformStaff")
+                        .HasFilter("\"IsPlatformStaff\" = TRUE");
 
                     b.HasIndex("Phone")
                         .IsUnique()
@@ -3245,6 +3433,27 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("RoleId");
 
                     b.ToTable("user_roles", (string)null);
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.Admin2faSecret", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.AdminActionLog", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.User", "AdminUser")
+                        .WithMany()
+                        .HasForeignKey("AdminUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("AdminUser");
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.AiJob", b =>
@@ -3495,6 +3704,11 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.Report", b =>
                 {
+                    b.HasOne("Taqreerk.Domain.Entities.User", "ClaimedByReviewer")
+                        .WithMany()
+                        .HasForeignKey("ClaimedByReviewerId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("Taqreerk.Domain.Entities.Country", "Country")
                         .WithMany("Reports")
                         .HasForeignKey("CountryId")
@@ -3516,6 +3730,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasForeignKey("UploadedByUserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("ClaimedByReviewer");
 
                     b.Navigation("Country");
 
@@ -3620,6 +3836,25 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Report");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportReview", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
+                        .WithMany()
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Taqreerk.Domain.Entities.User", "Reviewer")
+                        .WithMany()
+                        .HasForeignKey("ReviewerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Report");
+
+                    b.Navigation("Reviewer");
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportTranslation", b =>

@@ -34,8 +34,19 @@ public static class RbacSeedData
         public static readonly Guid Viewer         = Guid.Parse("00000000-0000-0000-0000-000000000003");
 
         // New platform roles.
-        public static readonly Guid SuperAdmin = Guid.Parse("30000000-0000-0000-0000-000000000001");
-        public static readonly Guid Admin      = Guid.Parse("30000000-0000-0000-0000-000000000002");
+        public static readonly Guid SuperAdmin      = Guid.Parse("30000000-0000-0000-0000-000000000001");
+        public static readonly Guid Admin           = Guid.Parse("30000000-0000-0000-0000-000000000002");
+        public static readonly Guid ContentReviewer = Guid.Parse("30000000-0000-0000-0000-000000000003");
+    }
+
+    /// Bootstrap SuperAdmin so the staging environment has a working admin
+    /// login the moment the migration runs. Password is fixed at seed time;
+    /// the bcrypt hash below corresponds to the literal string
+    /// `Taqreerk!Admin#2026`. Rotate via `/api/admin/auth/me/password` once
+    /// staff management ships in Feature 1.
+    public static class StaffUserIds
+    {
+        public static readonly Guid SuperAdmin = Guid.Parse("40000000-0000-0000-0000-000000000001");
     }
 
     private record PageSpec(Guid Id, string Key, string NameEn, string NameAr, int SortOrder);
@@ -98,11 +109,12 @@ public static class RbacSeedData
 
     public static IEnumerable<Role> Roles =>
     [
-        new Role { Id = RoleIds.OrgAdminLegacy, Name = "admin",      Description = "Organization administrator",      Scope = RoleScope.Organization, IsSystem = true, CreatedAt = SeedTime },
-        new Role { Id = RoleIds.Editor,         Name = "editor",     Description = "Can upload and edit reports",     Scope = RoleScope.Organization, IsSystem = true, CreatedAt = SeedTime },
-        new Role { Id = RoleIds.Viewer,         Name = "viewer",     Description = "Read-only access",                Scope = RoleScope.Organization, IsSystem = true, CreatedAt = SeedTime },
-        new Role { Id = RoleIds.SuperAdmin,     Name = "SuperAdmin", Description = "Full platform access",             Scope = RoleScope.Platform,     IsSystem = true, CreatedAt = SeedTime },
-        new Role { Id = RoleIds.Admin,          Name = "Admin",      Description = "Platform admin without RBAC mgmt", Scope = RoleScope.Platform,     IsSystem = true, CreatedAt = SeedTime },
+        new Role { Id = RoleIds.OrgAdminLegacy,   Name = "admin",            Description = "Organization administrator",      Scope = RoleScope.Organization, IsSystem = true, CreatedAt = SeedTime },
+        new Role { Id = RoleIds.Editor,           Name = "editor",           Description = "Can upload and edit reports",     Scope = RoleScope.Organization, IsSystem = true, CreatedAt = SeedTime },
+        new Role { Id = RoleIds.Viewer,           Name = "viewer",           Description = "Read-only access",                Scope = RoleScope.Organization, IsSystem = true, CreatedAt = SeedTime },
+        new Role { Id = RoleIds.SuperAdmin,       Name = "SuperAdmin",       Description = "Full platform access",             Scope = RoleScope.Platform,     IsSystem = true, CreatedAt = SeedTime },
+        new Role { Id = RoleIds.Admin,            Name = "Admin",            Description = "Platform admin without RBAC mgmt", Scope = RoleScope.Platform,     IsSystem = true, CreatedAt = SeedTime },
+        new Role { Id = RoleIds.ContentReviewer,  Name = "ContentReviewer",  Description = "Reviews submitted reports",        Scope = RoleScope.Platform,     IsSystem = true, CreatedAt = SeedTime },
     ];
 
     public static IEnumerable<RolePermission> RolePermissions
@@ -118,6 +130,15 @@ public static class RbacSeedData
             // Admin: everything except the RBAC page.
             foreach (var p in allPermissions.Where(p => p.PageId != PageIds.Rbac))
                 yield return new RolePermission { RoleId = RoleIds.Admin, PermissionId = p.Id, CreatedAt = SeedTime };
+
+            // ContentReviewer: view + edit on the Reports page only — they
+            // don't get to delete reports, they don't see other admin pages.
+            // The fine-grained workflow actions (claim/approve/reject) are
+            // gated by role name, not by these page-level permissions.
+            foreach (var p in allPermissions
+                         .Where(p => p.PageId == PageIds.Reports
+                                  && (p.Key == "view" || p.Key == "edit")))
+                yield return new RolePermission { RoleId = RoleIds.ContentReviewer, PermissionId = p.Id, CreatedAt = SeedTime };
         }
     }
 }
