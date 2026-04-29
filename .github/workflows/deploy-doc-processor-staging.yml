@@ -79,10 +79,11 @@ jobs:
             --concurrency=1 \
             --timeout=600 \
             --port=8080 \
-            --no-allow-unauthenticated \
+            --allow-unauthenticated \
             --execution-environment=gen2 \
             --set-env-vars=ENVIRONMENT=staging,SENTRY_DSN=${{ secrets.SENTRY_DSN }},INTERNAL_API_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
 
+          
       # Health check tolerates the extended cold-start window. We poll for up
       # to 5 minutes because a fully cold L4 instance loading 4 ML models can
       # legitimately take 60-120 s before /health flips from "loading" to
@@ -95,13 +96,11 @@ jobs:
             --format "value(status.url)")
           echo "Service URL: $SERVICE_URL"
 
-          TOKEN=$(gcloud auth print-identity-token --audiences="$SERVICE_URL")
           URL="$SERVICE_URL/health"
           echo "Polling $URL ..."
 
           for i in $(seq 1 30); do
-            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" \
-              -H "Authorization: Bearer $TOKEN" "$URL")
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
             BODY=$(cat /tmp/health.json)
             echo "Attempt $i → HTTP $RESPONSE: $BODY"
             if [ "$RESPONSE" = "200" ] && echo "$BODY" | grep -q '"status":"healthy"'; then
