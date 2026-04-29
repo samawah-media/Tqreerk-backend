@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     # Set per-service in deployment so the same image can fan out into two
     # Cloud Run services with separate autoscaling.
     worker_mode: str               = "api"
+    worker_url: str                = ""   # worker Cloud Run URL — used to wake scaled-to-zero instances
     worker_poll_interval_seconds: float = 3.0
     worker_stale_job_minutes: int  = 30   # mark Processing > N min as Failed
 

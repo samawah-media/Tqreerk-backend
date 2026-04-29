@@ -60,6 +60,22 @@ async def insert_job(
             json.dumps(input_data),
         ],
     )
+    # Wake the worker if it's scaled to zero. Fire-and-forget — a failure here
+    # just means the worker stays asleep until its next cold-start trigger.
+    asyncio.create_task(_wake_worker())
+
+
+async def _wake_worker() -> None:
+    """Ping the worker's /health endpoint to wake a scaled-to-zero instance."""
+    url = settings.worker_url
+    if not url:
+        return
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.get(url.rstrip("/") + "/health")
+    except Exception:
+        pass  # worker already running, or unreachable — poll will catch it
 
 
 async def mark_processing(job_id: UUID) -> None:

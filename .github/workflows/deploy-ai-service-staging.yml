@@ -4,6 +4,7 @@ on:
   push:
     branches: ["staging"]
     paths: ["ai-service/**"]
+  workflow_dispatch:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -65,6 +66,7 @@ jobs:
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             ENVIRONMENT=staging
+            WORKER_URL=${{ secrets.WORKER_URL_STAGING }}
 
       - name: Verify deployment
         run: |
@@ -87,7 +89,8 @@ jobs:
 
       # ── Worker service ──────────────────────────────────────────────────────
       # Same image, WORKER_MODE=worker. Polls ai_jobs with FOR UPDATE SKIP LOCKED.
-      # min-instances=1 so jobs are picked up immediately without a cold-start delay.
+      # min-instances=0 to save cost. The API wakes it via WORKER_URL ping on
+      # each new job insert — cold start is ~10s, acceptable for async ingest.
       - name: Deploy Worker to Cloud Run (Staging)
         uses: google-github-actions/deploy-cloudrun@v2
         with:
@@ -99,7 +102,7 @@ jobs:
             --port=8080
             --memory=1Gi
             --cpu=1
-            --min-instances=1
+            --min-instances=0
             --max-instances=1
             --timeout=900
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -113,4 +116,4 @@ jobs:
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             ENVIRONMENT=staging
             DOC_PROCESSOR_ENABLED=true
-            DOC_PROCESSOR_URL=${{ secrets.DOC_PROCESSOR_URL_STAGING }}
+            DOC_PROCESSOR_URL="https://taqreerk-doc-processor-staging-bo6ogywxvq-ez.a.run.app/"
