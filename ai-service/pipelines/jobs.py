@@ -66,14 +66,32 @@ async def insert_job(
 
 
 async def _wake_worker() -> None:
-    """Ping the worker's /health endpoint to wake a scaled-to-zero instance."""
+    """Ping the worker's /health endpoint to wake a scaled-to-zero instance.
+
+    The worker is deployed with --no-allow-unauthenticated so we attach a
+    Google-signed ID token (audience = worker URL). Cloud Run validates the
+    token at the load balancer; on auth failure the container never starts,
+    which would defeat the whole point of this wake-up.
+    """
     url = settings.worker_url
     if not url:
         return
     try:
+        # google.auth's fetch_id_token is sync; offload so we don't block
+        # the API request that scheduled this fire-and-forget task.
+        from google.auth.transport.requests import Request as AuthRequest
+        from google.oauth2 import id_token as oauth_id_token
+
+        loop = asyncio.get_running_loop()
+        token = await loop.run_in_executor(
+            None,
+            lambda: oauth_id_token.fetch_id_token(AuthRequest(), url),
+        )
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+
         import httpx
         async with httpx.AsyncClient(timeout=5) as client:
-            await client.get(url.rstrip("/") + "/health")
+            await client.get(url.rstrip("/") + "/health", headers=headers)
     except Exception:
         pass  # worker already running, or unreachable — poll will catch it
 
