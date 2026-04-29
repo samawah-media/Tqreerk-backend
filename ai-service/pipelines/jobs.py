@@ -75,6 +75,7 @@ async def _wake_worker() -> None:
     """
     url = settings.worker_url
     if not url:
+        logger.info("[wake] WORKER_URL not set, skipping wake-up")
         return
     try:
         # google.auth's fetch_id_token is sync; offload so we don't block
@@ -91,9 +92,10 @@ async def _wake_worker() -> None:
 
         import httpx
         async with httpx.AsyncClient(timeout=5) as client:
-            await client.get(url.rstrip("/") + "/health", headers=headers)
-    except Exception:
-        pass  # worker already running, or unreachable — poll will catch it
+            resp = await client.get(url.rstrip("/") + "/health", headers=headers)
+        logger.info("[wake] pinged %s -> %d", url, resp.status_code)
+    except Exception as exc:
+        logger.warning("[wake] failed pinging %s: %s", url, exc)
 
 
 async def mark_processing(job_id: UUID) -> None:
@@ -138,21 +140,28 @@ async def mark_failed(job_id: UUID, error: str) -> None:
 # never raise back to the caller.
 
 async def run_ingest_only_job(job_id: UUID, report_id: UUID, file_url: str) -> None:
+    logger.info("[job %s] ingest start report=%s file=%s", job_id, report_id, file_url)
     await mark_processing(job_id)
     try:
         result = await ingest_report(report_id, file_url)
+        logger.info("[job %s] ingest done %s", job_id, result)
         await mark_completed(job_id, result)
     except Exception as exc:
-        logger.exception("ingest job %s failed", job_id)
+        logger.exception("[job %s] ingest FAILED: %s", job_id, exc)
         await mark_failed(job_id, str(exc))
 
 
 async def run_ingest_summarize_job(
     job_id: UUID, report_id: UUID, file_url: str,
 ) -> None:
+    logger.info(
+        "[job %s] ingest+summarize start report=%s file=%s",
+        job_id, report_id, file_url,
+    )
     await mark_processing(job_id)
     try:
         ingest_result = await ingest_report(report_id, file_url)
+        logger.info("[job %s] ingest phase done: %s", job_id, ingest_result)
 
         # Aggregate chunks back to page-level text for the summary prompt.
         async with conn_ctx() as conn:
@@ -173,6 +182,10 @@ async def run_ingest_summarize_job(
             raise RuntimeError("Ingest produced no pages")
 
         summary = summarize_report([content for _, content in page_rows])
+        logger.info(
+            "[job %s] summarize done: %d findings, %d topics",
+            job_id, len(summary.key_findings), len(summary.topics),
+        )
         await mark_completed(job_id, {
             **ingest_result,
             "summary": summary.summary,
@@ -180,13 +193,17 @@ async def run_ingest_summarize_job(
             "topics": summary.topics,
         })
     except Exception as exc:
-        logger.exception("ingest+summarize job %s failed", job_id)
+        logger.exception("[job %s] ingest+summarize FAILED: %s", job_id, exc)
         await mark_failed(job_id, str(exc))
 
 
 async def run_translate_job(
     job_id: UUID, report_id: UUID, file_url: str, output_prefix: str,
 ) -> None:
+    logger.info(
+        "[job %s] translate start report=%s file=%s prefix=%s",
+        job_id, report_id, file_url, output_prefix,
+    )
     await mark_processing(job_id)
     try:
         if not output_prefix.startswith("gs://"):
@@ -211,19 +228,24 @@ async def run_translate_job(
         source_language = detect_language(row[0])
         target_language = "en" if source_language == "ar" else "ar"
 
+        logger.info(
+            "[job %s] translate %s -> %s, calling Cloud Translation",
+            job_id, source_language, target_language,
+        )
         translated_url = translate_pdf(
             gcs_input_uri=file_url,
             output_prefix=prefix,
             source_language=source_language,
             target_language=target_language,
         )
+        logger.info("[job %s] translate done -> %s", job_id, translated_url)
         await mark_completed(job_id, {
             "source_language": source_language,
             "target_language": target_language,
             "translated_file_url": translated_url,
         })
     except Exception as exc:
-        logger.exception("translate job %s failed", job_id)
+        logger.exception("[job %s] translate FAILED: %s", job_id, exc)
         await mark_failed(job_id, str(exc))
 
 

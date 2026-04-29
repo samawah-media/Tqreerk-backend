@@ -175,6 +175,10 @@ async def ingest(
     `output_data.chunks_inserted` will hold the counts.
     """
     job_id = uuid4()
+    logger.info(
+        "[ingest] enqueue job=%s report=%s file=%s",
+        job_id, body.report_id, body.file_url,
+    )
     await insert_job(
         conn,
         job_id=job_id,
@@ -183,6 +187,7 @@ async def ingest(
         input_data={"file_url": body.file_url, "step": "ingest"},
     )
     await conn.commit()
+    logger.info("[ingest] job=%s queued (Pending), worker will pick up", job_id)
     return IngestResponse(report_id=body.report_id, job_id=job_id)
 
 

@@ -49,6 +49,7 @@ public class ReportAiService : IReportAiService
 
     public async Task EnqueueIngestAsync(Guid reportId, CancellationToken ct = default)
     {
+        _logger.LogInformation("[ai] EnqueueIngest report={ReportId}", reportId);
         var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == reportId, ct)
             ?? throw new KeyNotFoundException("Report not found.");
         if (string.IsNullOrWhiteSpace(report.FileUrl))
@@ -60,7 +61,11 @@ public class ReportAiService : IReportAiService
               && j.JobType == AiJobType.Ingestion
               && (j.Status == AiJobStatus.Pending || j.Status == AiJobStatus.Processing),
             ct);
-        if (hasActive) return;
+        if (hasActive)
+        {
+            _logger.LogInformation("[ai] EnqueueIngest report={ReportId} skipped (active job exists)", reportId);
+            return;
+        }
 
         _db.AiJobs.Add(new AiJob
         {
@@ -71,6 +76,7 @@ public class ReportAiService : IReportAiService
         });
         report.Status = ReportStatus.PendingReview; // "Processing" — re-using the existing enum for now.
         await _db.SaveChangesAsync(ct);
+        _logger.LogInformation("[ai] EnqueueIngest report={ReportId} queued (Pending)", reportId);
     }
 
     public async Task RegenerateAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default)
@@ -391,10 +397,15 @@ public class ReportAiService : IReportAiService
     private string ToGcsUri(string objectKey)
     {
         if (objectKey.StartsWith("gs://", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation("[ai] ToGcsUri: already gs://, passthrough: {Uri}", objectKey);
             return objectKey;
+        }
         if (string.IsNullOrWhiteSpace(_storage.GcsBucketName))
             throw new InvalidOperationException("GcsBucketName is not configured — cannot construct gs:// URI for ai-service.");
-        return $"gs://{_storage.GcsBucketName}/{objectKey.TrimStart('/')}";
+        var uri = $"gs://{_storage.GcsBucketName}/{objectKey.TrimStart('/')}";
+        _logger.LogInformation("[ai] ToGcsUri: {Key} -> {Uri}", objectKey, uri);
+        return uri;
     }
 
     private string BuildTranslationOutputPrefix(Guid reportId, string targetLang)

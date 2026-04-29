@@ -79,16 +79,22 @@ public class AiServiceClient : IAiServiceClient
 
     private async Task<string> PostAsync<TBody>(string path, TBody body, CancellationToken ct)
     {
+        var startedAt = DateTimeOffset.UtcNow;
+        _logger.LogInformation("[ai-client] POST {BaseUrl}{Path}", _http.BaseAddress, path);
         using var resp = await _http.PostAsJsonAsync(path, body, Json, ct);
         var content = await resp.Content.ReadAsStringAsync(ct);
+        var elapsedMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
         if (!resp.IsSuccessStatusCode)
         {
             _logger.LogWarning(
-                "ai-service POST {Path} failed: {Status} {Body}",
-                path, (int)resp.StatusCode, content);
+                "[ai-client] POST {Path} -> {Status} ({Elapsed}ms) body={Body}",
+                path, (int)resp.StatusCode, elapsedMs, content);
             throw new InvalidOperationException(
                 $"ai-service POST /{path} failed with {(int)resp.StatusCode}: {content}");
         }
+        _logger.LogInformation(
+            "[ai-client] POST {Path} -> {Status} ({Elapsed}ms)",
+            path, (int)resp.StatusCode, elapsedMs);
         return content;
     }
 

@@ -38,7 +38,7 @@ from google.cloud import storage
 from core.chunking import chunk_text
 from core.db import conn_ctx
 from services import doc_extractor
-from services.gemini import embed_text
+from services.gemini import embed_text, reset_client as reset_gemini_client
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,7 @@ async def ingest_report(report_id: UUID, file_url: str) -> dict:
           "extractor":        str,  # which path produced the content
         }
     """
+    logger.info("[ingest %s] downloading %s", report_id, file_url)
     if file_url.startswith("gs://"):
         pdf_bytes = _download_from_gcs(file_url)
     else:
@@ -91,6 +92,10 @@ async def ingest_report(report_id: UUID, file_url: str) -> dict:
             resp = await client.get(file_url)
             resp.raise_for_status()
             pdf_bytes = resp.content
+    logger.info(
+        "[ingest %s] downloaded %.1f MB",
+        report_id, len(pdf_bytes) / (1024 * 1024),
+    )
 
     return await ingest_report_bytes(report_id, pdf_bytes)
 
@@ -100,6 +105,7 @@ async def ingest_report_bytes(report_id: UUID, pdf_bytes: bytes) -> dict:
     # even if extraction returns nothing.
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         pages_total = len(doc)
+    logger.info("[ingest %s] PDF has %d pages, trying full-PDF extractor", report_id, pages_total)
 
     # Step 1 — try the preferred full-PDF path. Returns None when disabled,
     # oversized, or when the GPU service errored.
@@ -108,18 +114,27 @@ async def ingest_report_bytes(report_id: UUID, pdf_bytes: bytes) -> dict:
     # Step 2 — per-page rendering fallback (with its own Gemini Vision fallback
     # inside extract_page()).
     if page_results is None:
+        logger.info("[ingest %s] full-PDF unavailable, falling back to per-page", report_id)
         page_results = await _extract_per_page(pdf_bytes)
+    else:
+        logger.info("[ingest %s] full-PDF returned %d pages", report_id, len(page_results))
 
     if not page_results:
         logger.warning(
-            "ingest report=%s: no pages were extracted (%d total in source PDF)",
+            "[ingest %s] no pages were extracted (%d total in source PDF)",
             report_id, pages_total,
         )
 
     # Step 3 — chunk + embed every page concurrently. We bound concurrency on
     # embedding calls to stay under Gemini RPM regardless of which extractor
     # produced the content.
+    # Reset the Gemini client first: the connection pool has been idle while
+    # doc-processor ran (often 1-5 min), and the GCLB times out idle keep-alive
+    # connections after ~10 min, returning SSL EOF on the next request.
+    reset_gemini_client()
+    logger.info("[ingest %s] chunk+embed phase starting (%d pages)", report_id, len(page_results))
     chunk_rows = await _chunk_and_embed(page_results)
+    logger.info("[ingest %s] chunk+embed produced %d rows", report_id, len(chunk_rows))
 
     # Step 4 — write to report_chunks atomically.
     await _persist_chunks(report_id, chunk_rows)
@@ -242,10 +257,11 @@ async def _persist_chunks(
     keeps re-ingest idempotent — safe to retry without producing duplicates.
     """
     async with conn_ctx() as conn:
-        await conn.execute(
+        cur = await conn.execute(
             'DELETE FROM report_chunks WHERE "ReportId" = %s',
             [str(report_id)],
         )
+        deleted = cur.rowcount or 0
         for page_num, chunk_idx, content, embedding_vec, metadata in rows:
             await conn.execute(
                 """
@@ -264,6 +280,10 @@ async def _persist_chunks(
                 ],
             )
         await conn.commit()
+    logger.info(
+        "[ingest %s] persist done: deleted %d old, inserted %d new",
+        report_id, deleted, len(rows),
+    )
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

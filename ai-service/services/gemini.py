@@ -10,6 +10,8 @@ Auth selection:
   - otherwise           → Vertex AI via ADC
 """
 import json
+import logging
+import time
 
 from google import genai
 from google.genai import types
@@ -18,9 +20,22 @@ from pydantic import BaseModel
 from core import prompts
 from core.config import settings
 
+logger = logging.getLogger(__name__)
+
 _initialized = False
 _client: genai.Client | None = None
 _mode: str = ""  # "api_key" | "vertex" — for diagnostics
+
+
+def reset_client() -> None:
+    """Drop the cached genai client. Next call to _init() rebuilds it.
+
+    Call this proactively when you know the connection pool is stale (e.g.
+    after a long-running doc-processor extract, where the keep-alive
+    connection would otherwise sit idle past the LB timeout)."""
+    global _initialized, _client
+    _initialized = False
+    _client = None
 
 
 def _init():
@@ -102,11 +117,19 @@ def describe_page_image(png_bytes: bytes) -> dict:
 
 
 def embed_text(text: str) -> list[float]:
-    """Return a 768-dimensional embedding for the given text."""
-    import time
+    """Return a 768-dimensional embedding for the given text.
+
+    Resilient to SSL EOF / connection-reset errors that happen when the
+    underlying HTTP keep-alive connection has gone stale (typically after a
+    multi-minute doc-processor extract sat between two embedding bursts).
+    On any connection-shaped error we drop the cached client so the next
+    attempt opens a fresh connection pool, then retry with backoff.
+    """
+    global _initialized, _client
     _init()
     last_exc = None
-    for attempt in range(3):
+    max_attempts = 5
+    for attempt in range(max_attempts):
         try:
             response = _client.models.embed_content(
                 model=settings.gemini_embed_model,
@@ -115,9 +138,22 @@ def embed_text(text: str) -> list[float]:
             return response.embeddings[0].values
         except Exception as exc:
             last_exc = exc
-            # SSL EOF / connection reset after a long upstream wait — retry
-            if attempt < 2:
-                time.sleep(2 ** attempt)
+            err = str(exc).lower()
+            connection_error = any(s in err for s in (
+                "ssl", "eof", "connection reset", "broken pipe",
+                "remote end closed", "connection aborted", "max retries",
+            ))
+            logger.warning(
+                "embed_text attempt %d/%d failed (connection_error=%s): %s",
+                attempt + 1, max_attempts, connection_error, exc,
+            )
+            if connection_error:
+                # Drop the stale client; next iteration's _init() rebuilds it.
+                _initialized = False
+                _client = None
+                _init()
+            if attempt < max_attempts - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s, 4s, 8s
     raise last_exc
 
 
