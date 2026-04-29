@@ -84,3 +84,31 @@ jobs:
           done
           echo "❌ AI service health check failed after 20 attempts."
           exit 1
+
+      # ── Worker service ──────────────────────────────────────────────────────
+      # Same image, WORKER_MODE=worker. Polls ai_jobs with FOR UPDATE SKIP LOCKED.
+      # min-instances=1 so jobs are picked up immediately without a cold-start delay.
+      - name: Deploy Worker to Cloud Run (Staging)
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: taqreerk-ai-worker-staging
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
+          flags: >-
+            --no-allow-unauthenticated
+            --port=8080
+            --memory=1Gi
+            --cpu=1
+            --min-instances=1
+            --max-instances=1
+            --timeout=900
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
+            --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
+          env_vars: |
+            WORKER_MODE=worker
+            DATABASE_URL=${{ secrets.DATABASE_URL_STAGING }}
+            GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
+            GCS_BUCKET=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+            ENVIRONMENT=staging
