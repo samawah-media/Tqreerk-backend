@@ -42,13 +42,15 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Pre-download weights at build time so cold start only pays for VRAM transfer,
-# not network. Skips on build with HF_HUB_OFFLINE if weights are vendored.
-# Florence-2 base-ft is small (~1 GB); Docling weights bundled with the wheel.
-RUN python -c "from transformers import AutoProcessor, AutoModelForCausalLM; \
-    AutoProcessor.from_pretrained('microsoft/Florence-2-base-ft', trust_remote_code=True); \
-    AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base-ft', trust_remote_code=True)" \
+# not network. Use snapshot_download for models with trust_remote_code — their
+# custom Python runs during from_pretrained() and segfaults on CPU-only build
+# machines (no CUDA driver). snapshot_download just fetches files; the actual
+# model init happens at container startup when the L4 GPU is present.
+RUN python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download(repo_id='microsoft/Florence-2-base-ft')" \
     && python -c "import easyocr; easyocr.Reader(['ar', 'en'], gpu=False, download_enabled=True)" \
-    && python -c "from pix2tex.cli import LatexOCR; LatexOCR()"
+    && python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download(repo_id='norm/nougat-latex-base')"
 
 COPY . .
 
