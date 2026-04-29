@@ -11,6 +11,7 @@ Auth selection:
 """
 import json
 import logging
+import threading
 import time
 
 from google import genai
@@ -25,34 +26,61 @@ logger = logging.getLogger(__name__)
 _initialized = False
 _client: genai.Client | None = None
 _mode: str = ""  # "api_key" | "vertex" — for diagnostics
+# Guards mutations to (_initialized, _client). Held only briefly; the actual
+# Gemini calls run outside the lock so concurrent embeddings don't serialise.
+_client_lock = threading.Lock()
+
+
+def _build_client() -> genai.Client:
+    """Construct a fresh genai client. Caller holds _client_lock."""
+    global _mode
+    if settings.gemini_api_key:
+        _mode = "api_key"
+        return genai.Client(api_key=settings.gemini_api_key)
+    _mode = "vertex"
+    return genai.Client(
+        vertexai=True,
+        project=settings.gcp_project_id,
+        location=settings.vertex_location,
+    )
 
 
 def reset_client() -> None:
-    """Drop the cached genai client. Next call to _init() rebuilds it.
+    """Drop the cached genai client. Next get_client() rebuilds it.
 
     Call this proactively when you know the connection pool is stale (e.g.
     after a long-running doc-processor extract, where the keep-alive
     connection would otherwise sit idle past the LB timeout)."""
     global _initialized, _client
-    _initialized = False
-    _client = None
+    with _client_lock:
+        _initialized = False
+        _client = None
+
+
+def get_client() -> genai.Client:
+    """Return a usable client. Thread-safe — never returns None."""
+    global _initialized, _client
+    with _client_lock:
+        if not _initialized or _client is None:
+            _client = _build_client()
+            _initialized = True
+        return _client
+
+
+def _replace_if_same(stale: genai.Client) -> None:
+    """If the current client is still `stale`, replace it. No-op if another
+    thread already replaced it. Avoids the (None) window that would let a
+    concurrent caller see `_client = None`."""
+    global _initialized, _client
+    with _client_lock:
+        if _client is stale:
+            _client = _build_client()
+            _initialized = True
 
 
 def _init():
-    global _initialized, _client, _mode
-    if _initialized:
-        return
-    if settings.gemini_api_key:
-        _client = genai.Client(api_key=settings.gemini_api_key)
-        _mode = "api_key"
-    else:
-        _client = genai.Client(
-            vertexai=True,
-            project=settings.gcp_project_id,
-            location=settings.vertex_location,
-        )
-        _mode = "vertex"
-    _initialized = True
+    """Back-compat wrapper around get_client() for code that still calls _init()."""
+    get_client()
 
 
 class ReportSummary(BaseModel):
@@ -125,13 +153,15 @@ def embed_text(text: str) -> list[float]:
     On any connection-shaped error we drop the cached client so the next
     attempt opens a fresh connection pool, then retry with backoff.
     """
-    global _initialized, _client
-    _init()
     last_exc = None
     max_attempts = 5
     for attempt in range(max_attempts):
+        # Snapshot the current client. We pass this exact instance to the
+        # embed call AND to _replace_if_same on failure, so we never mutate
+        # state another thread already fixed.
+        client = get_client()
         try:
-            response = _client.models.embed_content(
+            response = client.models.embed_content(
                 model=settings.gemini_embed_model,
                 contents=text,
             )
@@ -148,10 +178,11 @@ def embed_text(text: str) -> list[float]:
                 attempt + 1, max_attempts, connection_error, exc,
             )
             if connection_error:
-                # Drop the stale client; next iteration's _init() rebuilds it.
-                _initialized = False
-                _client = None
-                _init()
+                # Atomically swap the stale client for a fresh one — but only
+                # if no other thread has already replaced it. This avoids the
+                # transient `_client = None` window that previously caused
+                # 'NoneType has no attribute models' in concurrent callers.
+                _replace_if_same(client)
             if attempt < max_attempts - 1:
                 time.sleep(2 ** attempt)  # 1s, 2s, 4s, 8s
     raise last_exc
