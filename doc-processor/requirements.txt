@@ -4,7 +4,7 @@ uvicorn[standard]==0.32.1
 python-multipart==0.0.18
 pydantic-settings==2.6.1
 sentry-sdk[fastapi]==2.18.0
-pillow==11.0.0
+pillow==10.4.0
 httpx==0.28.0
 
 # ── PyTorch (CUDA 12.1 wheels — match the Dockerfile base image) ─────────────
