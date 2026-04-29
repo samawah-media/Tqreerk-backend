@@ -124,14 +124,23 @@ def extract_document(pdf_bytes: bytes) -> list[dict] | None:
         return None
 
 
-def extract_page(png_bytes: bytes, page_number: int) -> dict:
+def extract_page(
+    png_bytes: bytes, page_number: int, force_gemini: bool = False,
+) -> dict:
     """Return `{content, metadata}` for one rendered PDF page.
 
     Tries doc-processor /v1/extract when enabled, falls back to Gemini Vision
     on any failure. The shape is identical to gemini.describe_page_image()
     so the ingest pipeline can swap pipelines via a single env flag.
+
+    `force_gemini=True` skips doc-processor for this page — used by the
+    ingest extractor toggle to A/B compare against the GPU pipeline.
     """
-    if settings.doc_processor_enabled and settings.doc_processor_url:
+    if (
+        not force_gemini
+        and settings.doc_processor_enabled
+        and settings.doc_processor_url
+    ):
         try:
             return _call_doc_processor(png_bytes, page_number)
         except Exception as exc:

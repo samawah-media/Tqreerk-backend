@@ -72,8 +72,17 @@ def _download_from_gcs(gs_uri: str) -> bytes:
 
 # ── Public entry points ─────────────────────────────────────────────────────
 
-async def ingest_report(report_id: UUID, file_url: str) -> dict:
+async def ingest_report(
+    report_id: UUID, file_url: str, extractor: str = "auto",
+) -> dict:
     """Download a PDF (gs:// or https://) and populate report_chunks.
+
+    `extractor` selects the extraction path for A/B comparison:
+      - "auto"          (default): doc-processor full-PDF, fall back to per-page
+                                   (which itself falls back to Gemini Vision).
+      - "doc-processor": force doc-processor only; raise if it returns nothing.
+      - "gemini-vision": skip doc-processor entirely, render every page and
+                         use Gemini Vision only.
 
     Returns:
         {
@@ -96,27 +105,50 @@ async def ingest_report(report_id: UUID, file_url: str) -> dict:
         report_id, len(pdf_bytes) / (1024 * 1024),
     )
 
-    return await ingest_report_bytes(report_id, pdf_bytes)
+    return await ingest_report_bytes(report_id, pdf_bytes, extractor=extractor)
 
 
-async def ingest_report_bytes(report_id: UUID, pdf_bytes: bytes) -> dict:
+async def ingest_report_bytes(
+    report_id: UUID, pdf_bytes: bytes, extractor: str = "auto",
+) -> dict:
     # Count pages up-front so the response always reports `pages_total`,
     # even if extraction returns nothing.
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         pages_total = len(doc)
-    logger.info("[ingest %s] PDF has %d pages, trying full-PDF extractor", report_id, pages_total)
 
-    # Step 1 — try the preferred full-PDF path. Returns None when disabled,
-    # oversized, or when the GPU service errored.
-    page_results = await _extract_full_pdf(pdf_bytes)
+    logger.info(
+        "[ingest %s] PDF has %d pages, extractor=%s",
+        report_id, pages_total, extractor,
+    )
 
-    # Step 2 — per-page rendering fallback (with its own Gemini Vision fallback
-    # inside extract_page()).
-    if page_results is None:
-        logger.info("[ingest %s] full-PDF unavailable, falling back to per-page", report_id)
-        page_results = await _extract_per_page(pdf_bytes)
+    # Branch by extractor toggle.
+    page_results: list[dict] | None = None
+
+    if extractor == "gemini-vision":
+        # Force per-page rendering with Gemini Vision only — bypass doc-processor.
+        page_results = await _extract_per_page(pdf_bytes, force_gemini=True)
+    elif extractor == "doc-processor":
+        # Force the GPU pipeline; no Vision fallback. If it returns nothing,
+        # the job fails so the comparison run is unambiguous.
+        page_results = await _extract_full_pdf(pdf_bytes)
+        if page_results is None:
+            raise RuntimeError(
+                "extractor='doc-processor' was requested but doc-processor "
+                "returned nothing (disabled, oversized, or errored)"
+            )
+        logger.info(
+            "[ingest %s] doc-processor returned %d pages (forced)",
+            report_id, len(page_results),
+        )
     else:
-        logger.info("[ingest %s] full-PDF returned %d pages", report_id, len(page_results))
+        # "auto": current default — try doc-processor first, fall back per-page.
+        logger.info("[ingest %s] auto: trying full-PDF extractor", report_id)
+        page_results = await _extract_full_pdf(pdf_bytes)
+        if page_results is None:
+            logger.info("[ingest %s] full-PDF unavailable, falling back to per-page", report_id)
+            page_results = await _extract_per_page(pdf_bytes)
+        else:
+            logger.info("[ingest %s] full-PDF returned %d pages", report_id, len(page_results))
 
     if not page_results:
         logger.warning(
@@ -161,10 +193,17 @@ async def _extract_full_pdf(pdf_bytes: bytes) -> list[dict] | None:
     return await loop.run_in_executor(None, doc_extractor.extract_document, pdf_bytes)
 
 
-async def _extract_per_page(pdf_bytes: bytes) -> list[dict]:
+async def _extract_per_page(
+    pdf_bytes: bytes, force_gemini: bool = False,
+) -> list[dict]:
     """Render each page to PNG and run extract_page() with bounded
     concurrency. extract_page() itself tries doc-processor /v1/extract first
-    and falls back to Gemini Vision on any error."""
+    and falls back to Gemini Vision on any error.
+
+    When `force_gemini=True`, doc-processor is skipped per-page and every page
+    is sent to Gemini Vision directly. Used by the "gemini-vision" extractor
+    toggle for A/B comparison.
+    """
     page_pngs: list[tuple[int, bytes]] = []
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         for page_num, page in enumerate(doc, start=1):
@@ -172,8 +211,8 @@ async def _extract_per_page(pdf_bytes: bytes) -> list[dict]:
             page_pngs.append((page_num, pix.tobytes("png")))
 
     logger.info(
-        "ingest per-page: rendered %d pages, processing with parallelism=%d",
-        len(page_pngs), PARALLELISM,
+        "ingest per-page: rendered %d pages, parallelism=%d, force_gemini=%s",
+        len(page_pngs), PARALLELISM, force_gemini,
     )
 
     sem = asyncio.Semaphore(PARALLELISM)
@@ -182,7 +221,9 @@ async def _extract_per_page(pdf_bytes: bytes) -> list[dict]:
     async def _process(page_num: int, png_bytes: bytes) -> dict:
         async with sem:
             page = await loop.run_in_executor(
-                None, doc_extractor.extract_page, png_bytes, page_num,
+                None,
+                doc_extractor.extract_page,
+                png_bytes, page_num, force_gemini,
             )
             page = dict(page or {})
             page.setdefault("page_number", page_num)

@@ -139,11 +139,17 @@ async def mark_failed(job_id: UUID, error: str) -> None:
 # in-process task — i.e. they always mark Processing → Completed/Failed and
 # never raise back to the caller.
 
-async def run_ingest_only_job(job_id: UUID, report_id: UUID, file_url: str) -> None:
-    logger.info("[job %s] ingest start report=%s file=%s", job_id, report_id, file_url)
+async def run_ingest_only_job(
+    job_id: UUID, report_id: UUID, file_url: str,
+    extractor: str = "auto",
+) -> None:
+    logger.info(
+        "[job %s] ingest start report=%s file=%s extractor=%s",
+        job_id, report_id, file_url, extractor,
+    )
     await mark_processing(job_id)
     try:
-        result = await ingest_report(report_id, file_url)
+        result = await ingest_report(report_id, file_url, extractor=extractor)
         logger.info("[job %s] ingest done %s", job_id, result)
         await mark_completed(job_id, result)
     except Exception as exc:
@@ -153,14 +159,15 @@ async def run_ingest_only_job(job_id: UUID, report_id: UUID, file_url: str) -> N
 
 async def run_ingest_summarize_job(
     job_id: UUID, report_id: UUID, file_url: str,
+    extractor: str = "auto",
 ) -> None:
     logger.info(
-        "[job %s] ingest+summarize start report=%s file=%s",
-        job_id, report_id, file_url,
+        "[job %s] ingest+summarize start report=%s file=%s extractor=%s",
+        job_id, report_id, file_url, extractor,
     )
     await mark_processing(job_id)
     try:
-        ingest_result = await ingest_report(report_id, file_url)
+        ingest_result = await ingest_report(report_id, file_url, extractor=extractor)
         logger.info("[job %s] ingest phase done: %s", job_id, ingest_result)
 
         # Aggregate chunks back to page-level text for the summary prompt.
@@ -270,15 +277,16 @@ async def dispatch(job: dict) -> None:
     job_type = job.get("job_type", "")
     step = (raw_input.get("step") or "").lower()
     file_url = raw_input.get("file_url")
+    extractor = (raw_input.get("extractor") or "auto").lower()
 
     if job_type == "Ingestion":
         if not file_url:
             await mark_failed(job_id, "Ingestion job missing file_url in input_data")
             return
         if step == "ingest+summarize":
-            await run_ingest_summarize_job(job_id, report_id, file_url)
+            await run_ingest_summarize_job(job_id, report_id, file_url, extractor=extractor)
         else:
-            await run_ingest_only_job(job_id, report_id, file_url)
+            await run_ingest_only_job(job_id, report_id, file_url, extractor=extractor)
         return
 
     if job_type == "Translation":

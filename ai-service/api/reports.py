@@ -176,15 +176,19 @@ async def ingest(
     """
     job_id = uuid4()
     logger.info(
-        "[ingest] enqueue job=%s report=%s file=%s",
-        job_id, body.report_id, body.file_url,
+        "[ingest] enqueue job=%s report=%s file=%s extractor=%s",
+        job_id, body.report_id, body.file_url, body.extractor,
     )
     await insert_job(
         conn,
         job_id=job_id,
         job_type="Ingestion",
         report_id=body.report_id,
-        input_data={"file_url": body.file_url, "step": "ingest"},
+        input_data={
+            "file_url": body.file_url,
+            "step": "ingest",
+            "extractor": body.extractor,
+        },
     )
     await conn.commit()
     logger.info("[ingest] job=%s queued (Pending), worker will pick up", job_id)
