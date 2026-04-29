@@ -183,10 +183,10 @@ class EmbedRequest(BaseModel):
 
 
 class EmbedResponse(BaseModel):
-    """One 768-dim vector per input, in the same order. `dim` lets clients
+    """One 1024-dim vector per input, in the same order. `dim` lets clients
     sanity-check against their stored schema before persisting."""
     embeddings: list[list[float]]
-    dim: int = 768
+    dim: int = 1024
     model: str
     latency_ms: int
 

@@ -242,11 +242,14 @@ def _call_doc_processor(png_bytes: bytes, page_number: int) -> dict:
 
 def embed_texts(texts: list[str], kind: str = "passage") -> list[list[float]]:
     """POST a list of strings to doc-processor /v1/embed and return one
-    768-dim vector per input.
+    1024-dim vector per input.
 
     Replaces services.gemini.embed_text — embeddings now run on the GPU
     service alongside extraction, so we don't pay a Vertex round-trip per
-    chunk and we don't depend on cross-region Vertex availability.
+    chunk and we don't depend on cross-region Vertex availability. Backed
+    by BAAI/bge-m3 in the doc-processor; it uses raw text for both queries
+    and passages so the `kind` parameter is reserved for future embedder
+    swaps but currently has no effect on output.
 
     Raises on any HTTP / network error so the caller's existing retry logic
     kicks in. Returns [] only if `texts` is empty.

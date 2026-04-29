@@ -34,7 +34,7 @@ Schema (created by EF migration AddChatCache):
         cache_key text PK,
         report_id uuid,
         question text,
-        question_emb vector(768),
+        question_emb vector(1024),
         answer text,
         source_pages jsonb,
         hit_count int,

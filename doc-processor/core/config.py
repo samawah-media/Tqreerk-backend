@@ -19,13 +19,14 @@ class Settings(BaseSettings):
     # run. Add more via env (CSV) without rebuilding the image.
     ocr_languages: str = "ar,en"
 
-    # Multilingual sentence-transformer for /v1/embed. 768 dims matches the
-    # existing report_chunks.embedding pgvector column (vector(768)) so we
-    # don't need a schema migration when swapping from text-embedding-004.
-    # multilingual-e5-base supports Arabic, English, and 100 other languages.
-    embed_model_id: str = "intfloat/multilingual-e5-base"
-    embed_max_seq_length: int = 512        # tokens per chunk; longer is truncated
-    embed_batch_size: int = 32             # batch on GPU; bigger if VRAM allows
+    # Multilingual sentence-transformer for /v1/embed.
+    # BAAI/bge-m3 — 1024 dims, ~2.5 GB VRAM, top-of-class on Arabic retrieval
+    # (MIRACL ~75 vs e5-base ~51) and strong cross-lingual AR↔EN. Unlike E5
+    # it does NOT require "query: " / "passage: " prefixes — raw text is
+    # what it was trained on. Schema column is vector(1024) accordingly.
+    embed_model_id: str = "BAAI/bge-m3"
+    embed_max_seq_length: int = 8192       # bge-m3 supports up to 8k tokens; chunks are well under
+    embed_batch_size: int = 16             # bge-m3 is bigger than e5; smaller batch keeps VRAM safe
 
     # Hardware / inference toggles.
     device: str = "cuda"                         # "cuda" | "cpu" — set "cpu" for local dev

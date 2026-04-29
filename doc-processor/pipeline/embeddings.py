@@ -1,4 +1,4 @@
-"""sentence-transformers wrapper — text → 768-dim embedding on GPU.
+"""sentence-transformers wrapper — text → 1024-dim embedding on GPU.
 
 Why this exists
 ===============
@@ -10,14 +10,12 @@ embed) into one and removes Vertex from the request path entirely.
 
 Model contract
 ==============
-- 768-dim float vectors (matches `report_chunks.embedding vector(768)`).
-- Multilingual — Arabic and English share the same embedding space, so a
-  query in either language can retrieve chunks in either.
-- E5 family expects task-prefixed inputs:
-    "query: <text>"     for retrieval queries
-    "passage: <text>"   for stored passages
-  We accept a `kind` parameter so callers (ingest vs. chat) pass the right
-  prefix without leaking E5-specific knowledge into ai-service.
+- 1024-dim float vectors (matches `report_chunks.embedding vector(1024)`).
+- Multilingual, Arabic-first — bge-m3 leads on MIRACL Arabic and supports
+  symmetric cross-lingual retrieval (Arabic query ↔ English passage).
+- bge-m3 is trained on raw text — no E5-style "query: " / "passage: "
+  prefixes. We still accept a `kind` parameter so the ai-service wire
+  format is stable across embedder swaps; it's a no-op for bge-m3.
 
 Failure model
 =============
@@ -46,10 +44,11 @@ _device: Optional[str] = None
 _init_attempted: bool = False
 
 
-# E5-family prefixes. Other multilingual embedders (BGE, etc.) ignore unknown
-# prefixes harmlessly, so we apply them unconditionally for portability.
+# bge-m3 doesn't use task prefixes — same input format for queries and
+# passages. The `kind` parameter is kept on the public API so the wire
+# protocol can stay stable across future embedder swaps (e.g. if we ever
+# move back to an E5-family model that needs prefixes).
 EmbedKind = Literal["query", "passage"]
-_PREFIX = {"query": "query: ", "passage": "passage: "}
 
 
 def init() -> None:
@@ -98,17 +97,18 @@ def is_ready() -> bool:
 
 @torch.inference_mode()
 def embed(texts: list[str], kind: EmbedKind = "passage") -> list[list[float]]:
-    """Return one 768-dim vector per input string.
+    """Return one 1024-dim vector per input string.
 
     Args:
         texts: list of UTF-8 strings, possibly empty. Empty strings produce a
                zero vector rather than being skipped, so the output length
                always equals the input length (callers can zip safely).
-        kind:  E5 task prefix — "passage" for ingest-time chunks, "query"
-               for chat-time questions.
+        kind:  Reserved for backwards compatibility with E5-style callers.
+               bge-m3 uses raw text identically for queries and passages,
+               so this parameter has no effect on output.
 
     Returns:
-        List of 768-dim Python lists (json-serialisable). Empty list if the
+        List of 1024-dim Python lists (json-serialisable). Empty list if the
         model failed to load — caller should surface that as an error.
     """
     if not is_ready():
@@ -117,8 +117,8 @@ def embed(texts: list[str], kind: EmbedKind = "passage") -> list[list[float]]:
     if not texts:
         return []
 
-    prefix = _PREFIX.get(kind, "passage: ")
-    inputs = [prefix + (t or "") for t in texts]
+    # bge-m3 takes raw text — no prefix transformation needed.
+    inputs = [t or "" for t in texts]
 
     try:
         # normalize_embeddings=True gives unit vectors so cosine similarity
