@@ -34,21 +34,12 @@ _model: Optional["LatexOCR"] = None  # type: ignore[name-defined]
 
 
 def init() -> None:
-    """Lazily build the pix2tex model. ~200MB weights pre-downloaded in the
-    Dockerfile, so this is a CPU-side init plus a CUDA warmup."""
-    global _model
-    if _model is not None:
-        return
-
-    from pix2tex.cli import LatexOCR
-
-    logger.info("pix2tex: initialising")
-    _model = LatexOCR()
-    logger.info("pix2tex: ready")
+    """pix2tex is currently disabled — see requirements.txt for reason."""
+    logger.info("pix2tex: disabled (stubbed out), skipping")
 
 
 def is_ready() -> bool:
-    return _model is not None
+    return True  # stubbed — don't block /health from going healthy
 
 
 # ── Public API ──────────────────────────────────────────────────────────────

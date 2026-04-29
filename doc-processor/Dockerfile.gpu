@@ -48,9 +48,9 @@ RUN pip install -r requirements.txt
 # model init happens at container startup when the L4 GPU is present.
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download(repo_id='microsoft/Florence-2-base-ft')" \
-    && python -c "import easyocr; easyocr.Reader(['ar', 'en'], gpu=False, download_enabled=True)" \
-    && python -c "from huggingface_hub import snapshot_download; \
-    snapshot_download(repo_id='norm/nougat-latex-base')"
+    && python -c "import easyocr; easyocr.Reader(['ar', 'en'], gpu=False, download_enabled=True)"
+# pix2tex weight pre-download removed — pix2tex is disabled until a version
+# compatible with transformers>=4.42 is available.
 
 COPY . .
 
