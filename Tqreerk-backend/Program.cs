@@ -60,6 +60,7 @@ if (!app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 
+
 // Serve files from the local-storage root when the LocalFileStorage provider is in use.
 // In dev this lets the frontend access uploaded files via /uploads/* without GCS.
 var fileStorage = app.Configuration.GetSection(FileStorageSettings.Section).Get<FileStorageSettings>()
