@@ -129,6 +129,17 @@ class Settings(BaseSettings):
     # Per-metric timeout — protects the worker from a stuck judge LLM call.
     eval_metric_timeout_seconds: float = 60.0
 
+    # ── Per-org daily quotas (cost protection) ───────────────────────────────
+    # Counts rolling 24-hour windows over ai_jobs (and chat_messages for the
+    # chat cap). When an org goes over, the relevant API endpoint returns 429.
+    # A value of 0 disables that specific cap. Tune via env var without
+    # redeploy. Defaults err on the side of "generous for real users, blocks
+    # only obvious abuse loops."
+    quota_enabled: bool                = True
+    quota_daily_ingest_per_org: int    = 20      # /reports/ingest, EnqueueIngest
+    quota_daily_translate_per_org: int = 10      # /reports/translate
+    quota_daily_chat_per_org: int      = 500     # /chat/.../messages
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:

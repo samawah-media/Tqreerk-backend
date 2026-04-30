@@ -45,17 +45,48 @@ async def insert_job(
     job_type: str,
     report_id: UUID,
     input_data: dict,
+    organization_id: UUID | str | None = None,
 ) -> None:
-    """Add a Pending row to ai_jobs. Caller commits."""
+    """Add a Pending row to ai_jobs. Caller commits.
+
+    `organization_id` is used for per-org daily quota enforcement and is
+    written onto the row (matching .NET's EnqueueIngestAsync behaviour).
+    When omitted, we derive it from the report so callers don't have to
+    plumb it through. Internal jobs (Evaluation) explicitly pass
+    organization_id=None to skip the quota check — they're not user-
+    initiated and gated upstream by the chat quota.
+    """
+    # Derive org_id when the caller didn't pass one. Cheap one-row PK lookup.
+    if organization_id is None and job_type != "Evaluation":
+        try:
+            cur = await conn.execute(
+                'SELECT "OrganizationId" FROM reports WHERE "Id" = %s',
+                [str(report_id)],
+            )
+            row = await cur.fetchone()
+            if row and row[0] is not None:
+                organization_id = row[0]
+        except Exception as exc:
+            logger.warning(
+                "[quota] could not look up org_id for report=%s: %s",
+                report_id, exc,
+            )
+
+    # Quota gate — raises HTTPException(429) if the org has hit its cap.
+    # No-op when org_id is unknown (e.g. Evaluation) or quotas disabled.
+    from services.quota import assert_under_job_quota
+    await assert_under_job_quota(conn, organization_id, job_type)
+
     await conn.execute(
         """
-        INSERT INTO ai_jobs ("Id", "ReportId", "JobType", "Status",
-                             "TokensUsed", "InputData", "CreatedAt")
-        VALUES (%s, %s, %s, 'Pending', 0, %s, now())
+        INSERT INTO ai_jobs ("Id", "ReportId", "OrganizationId", "JobType",
+                             "Status", "TokensUsed", "InputData", "CreatedAt")
+        VALUES (%s, %s, %s, %s, 'Pending', 0, %s, now())
         """,
         [
             str(job_id),
             str(report_id),
+            str(organization_id) if organization_id else None,
             job_type,
             json.dumps(input_data),
         ],

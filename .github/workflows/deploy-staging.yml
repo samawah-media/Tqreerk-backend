@@ -132,6 +132,10 @@ jobs:
             Sentry__Environment=Staging
             FileStorage__Provider=gcs
             FileStorage__GcsBucketName=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            Quota__Enabled=true
+            Quota__DailyIngestPerOrg=20
+            Quota__DailyTranslatePerOrg=10
+            Quota__DailyChatPerOrg=500
 
       - name: Show staging URL
         run: echo "Staging deployed → ${{ steps.deploy.outputs.url }}"

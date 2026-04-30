@@ -62,6 +62,7 @@ public static class ServiceExtensions
         services.Configure<FileStorageSettings>(config.GetSection(FileStorageSettings.Section));
         services.Configure<AiServiceSettings>(config.GetSection(AiServiceSettings.Section));
         services.Configure<AdminWorkerSettings>(config.GetSection(AdminWorkerSettings.Section));
+        services.Configure<QuotaSettings>(config.GetSection(QuotaSettings.Section));
 
         services.AddMemoryCache();
 
@@ -92,6 +93,7 @@ public static class ServiceExtensions
         services.AddScoped<IPublicReportService, PublicReportService>();
         services.AddScoped<IReportAiService, ReportAiService>();
         services.AddScoped<IReviewService, ReviewService>();
+        services.AddScoped<IQuotaService, QuotaService>();
 
         // Typed HttpClient for the external Python ai-service. Each call is a
         // long-running RPC (ingest can take minutes); the per-call timeout is

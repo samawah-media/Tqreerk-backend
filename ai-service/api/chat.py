@@ -47,6 +47,7 @@ from pipelines.jobs import insert_job
 from services import chat_cache, observability as obs, reranker
 from services.doc_extractor import embed_texts as embed_via_gpu
 from services.gemini import chat_with_context_stream
+from services.quota import assert_under_chat_quota
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -281,17 +282,33 @@ async def send_message(
     )
 
     # ─── Validate session ───────────────────────────────────────────────────
+    # Pull report_id AND its organization in one round-trip so we can run
+    # the per-org chat quota check immediately after.
     with obs.span(chat_trace, name="validate_session"):
         row = await conn.execute(
-            'SELECT "ReportId" FROM chat_sessions WHERE "Id" = %s',
+            """
+            SELECT s."ReportId", r."OrganizationId"
+            FROM chat_sessions s
+            JOIN reports r ON r."Id" = s."ReportId"
+            WHERE s."Id" = %s
+            """,
             [str(session_id)],
         )
         session = await row.fetchone()
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        report_id = session[0]
-    chat_trace.update(metadata={"report_id": str(report_id)})
+        report_id, organization_id = session[0], session[1]
+    chat_trace.update(metadata={
+        "report_id": str(report_id),
+        "organization_id": str(organization_id) if organization_id else None,
+    })
     t1 = _mark("validate_session", t0)
+
+    # ─── Quota gate (per-org daily chat cap) ────────────────────────────────
+    # Runs BEFORE we touch retrieval / Gemini / Ragas. A 429 here means the
+    # caller's org has sent ≥ quota_daily_chat_per_org user messages in the
+    # last 24h. Cheap insurance against runaway cost from one chatty user.
+    await assert_under_chat_quota(conn, organization_id)
 
     # ─── Load conversation history (last 10 messages → 5 turns) ────────────
     with obs.span(chat_trace, name="load_history") as sp:

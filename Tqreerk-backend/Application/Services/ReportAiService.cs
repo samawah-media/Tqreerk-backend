@@ -29,6 +29,7 @@ public class ReportAiService : IReportAiService
     private readonly IFileStorage _files;
     private readonly FileStorageSettings _storage;
     private readonly AiServiceSettings _settings;
+    private readonly IQuotaService _quota;
     private readonly ILogger<ReportAiService> _logger;
 
     public ReportAiService(
@@ -37,6 +38,7 @@ public class ReportAiService : IReportAiService
         IFileStorage files,
         IOptions<FileStorageSettings> storage,
         IOptions<AiServiceSettings> settings,
+        IQuotaService quota,
         ILogger<ReportAiService> logger)
     {
         _db = db;
@@ -44,6 +46,7 @@ public class ReportAiService : IReportAiService
         _files = files;
         _storage = storage.Value;
         _settings = settings.Value;
+        _quota = quota;
         _logger = logger;
     }
 
@@ -66,6 +69,11 @@ public class ReportAiService : IReportAiService
             _logger.LogInformation("[ai] EnqueueIngest report={ReportId} skipped (active job exists)", reportId);
             return;
         }
+
+        // Per-org daily ingest cap — runs AFTER the idempotency check so a
+        // duplicate request doesn't burn a quota slot. Throws
+        // QuotaExceededException; controller layer maps it to HTTP 429.
+        await _quota.AssertUnderJobQuotaAsync(report.OrganizationId, AiJobType.Ingestion, ct);
 
         _db.AiJobs.Add(new AiJob
         {

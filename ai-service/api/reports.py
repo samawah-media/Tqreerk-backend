@@ -47,6 +47,7 @@ from models.ingest import (
 )
 from pipelines.jobs import insert_job
 from services.gemini import compare_reports, extract_insights, summarize_report
+from services.quota import assert_under_job_quota
 from services.translate import detect_source_language, translate_pdf
 
 logger = logging.getLogger(__name__)
@@ -405,6 +406,17 @@ async def translate(
     not_ready = await _ensure_ingested(body.report_id, conn)
     if not_ready:
         raise HTTPException(status_code=202, detail=not_ready)
+
+    # Per-org daily translation quota — Google Translate is per-character
+    # paid, so a chatty caller can run up real bills here. Look up org via
+    # the report and gate before we hit the Translation API.
+    org_cur = await conn.execute(
+        'SELECT "OrganizationId" FROM reports WHERE "Id" = %s',
+        [str(body.report_id)],
+    )
+    org_row = await org_cur.fetchone()
+    organization_id = org_row[0] if org_row else None
+    await assert_under_job_quota(conn, organization_id, "Translation")
 
     output_prefix = body.output_prefix
     if not output_prefix.startswith("gs://"):
