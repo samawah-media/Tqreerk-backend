@@ -270,6 +270,58 @@ async def run_translate_job(
         await mark_failed(job_id, str(exc))
 
 
+async def run_eval_job(
+    job_id: UUID, report_id: UUID, raw_input: dict,
+) -> None:
+    """Run Ragas metrics on a finished chat and post Langfuse scores.
+
+    InputData shape produced by api/chat.py at end-of-stream:
+        {
+          "trace_id":  str,             # Langfuse trace to score
+          "question":  str,
+          "contexts":  list[str],        # the rerank-survivor chunks
+          "answer":    str,
+          "session_id": str,             # optional, for log context
+        }
+
+    The job never raises — eval is advisory. Failures are logged, marked
+    Failed in ai_jobs (so retries don't auto-fire), and a single
+    `eval_error` score is posted to Langfuse so dashboards see the gap.
+    """
+    trace_id = raw_input.get("trace_id") or ""
+    question = raw_input.get("question") or ""
+    contexts = raw_input.get("contexts") or []
+    answer = raw_input.get("answer") or ""
+
+    logger.info(
+        "[job %s] eval start report=%s trace=%s n_ctx=%d",
+        job_id, report_id, trace_id, len(contexts),
+    )
+
+    if not (question and contexts and answer):
+        await mark_failed(job_id, "eval job missing question/contexts/answer")
+        return
+
+    await mark_processing(job_id)
+    try:
+        from pipelines.eval import run_eval
+
+        scores = await run_eval(
+            question=question,
+            contexts=list(contexts),
+            answer=answer,
+            trace_id=trace_id or None,
+        )
+        logger.info("[job %s] eval done scores=%s", job_id, scores)
+        await mark_completed(job_id, {
+            "scores": scores,
+            "trace_id": trace_id,
+        })
+    except Exception as exc:
+        logger.exception("[job %s] eval FAILED: %s", job_id, exc)
+        await mark_failed(job_id, str(exc))
+
+
 # ── Dispatch — picks a runner based on the ai_jobs row ───────────────────────
 
 async def dispatch(job: dict) -> None:
@@ -312,6 +364,13 @@ async def dispatch(job: dict) -> None:
             )
             return
         await run_translate_job(job_id, report_id, file_url, output_prefix)
+        return
+
+    if job_type == "Evaluation":
+        # Online RAG eval — runs Ragas metrics on a finished chat and posts
+        # the scores back onto its Langfuse trace. Best-effort by design;
+        # never retried, never blocks anything.
+        await run_eval_job(job_id, report_id, raw_input)
         return
 
     await mark_failed(job_id, f"Unknown JobType '{job_type}'")

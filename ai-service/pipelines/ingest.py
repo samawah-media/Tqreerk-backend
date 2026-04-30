@@ -37,7 +37,7 @@ from google.cloud import storage
 
 from core.chunking import chunk_blocks_with_meta, chunk_text
 from core.db import conn_ctx
-from services import doc_extractor
+from services import doc_extractor, observability as obs
 
 logger = logging.getLogger(__name__)
 
@@ -92,25 +92,54 @@ async def ingest_report(
           "extractor":        str,  # which path produced the content
         }
     """
-    logger.info("[ingest %s] downloading %s", report_id, file_url)
-    if file_url.startswith("gs://"):
-        pdf_bytes = _download_from_gcs(file_url)
-    else:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.get(file_url)
-            resp.raise_for_status()
-            pdf_bytes = resp.content
-    logger.info(
-        "[ingest %s] downloaded %.1f MB",
-        report_id, len(pdf_bytes) / (1024 * 1024),
+    # One trace per ingest call. Reused by ingest_report_bytes via the
+    # `_ingest_trace` argument so spans nest under the same trace tree.
+    trace = obs.trace(
+        name="ingest",
+        input={"file_url": file_url, "extractor": extractor},
+        metadata={"report_id": str(report_id)},
+        tags=["ingest", f"extractor:{extractor}"],
     )
 
-    return await ingest_report_bytes(report_id, pdf_bytes, extractor=extractor)
+    with obs.span(trace, name="download", input={"file_url": file_url}) as sp:
+        logger.info("[ingest %s] downloading %s", report_id, file_url)
+        if file_url.startswith("gs://"):
+            pdf_bytes = _download_from_gcs(file_url)
+        else:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.get(file_url)
+                resp.raise_for_status()
+                pdf_bytes = resp.content
+        logger.info(
+            "[ingest %s] downloaded %.1f MB",
+            report_id, len(pdf_bytes) / (1024 * 1024),
+        )
+        sp.update(output={"bytes": len(pdf_bytes)})
+
+    result = await ingest_report_bytes(
+        report_id, pdf_bytes, extractor=extractor, _ingest_trace=trace,
+    )
+    try:
+        trace.update(output=result)
+        obs.flush()
+    except Exception:
+        pass
+    return result
 
 
 async def ingest_report_bytes(
     report_id: UUID, pdf_bytes: bytes, extractor: str = "auto",
+    _ingest_trace=None,
 ) -> dict:
+    # If called directly (without going through ingest_report) make a trace
+    # of our own so spans below still nest under something. The trace is a
+    # no-op stub when Langfuse is disabled.
+    trace = _ingest_trace or obs.trace(
+        name="ingest_bytes",
+        metadata={"report_id": str(report_id), "extractor": extractor},
+        tags=["ingest"],
+    )
+
     # Count pages up-front so the response always reports `pages_total`,
     # even if extraction returns nothing.
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -121,34 +150,37 @@ async def ingest_report_bytes(
         report_id, pages_total, extractor,
     )
 
-    # Branch by extractor toggle.
+    # Branch by extractor toggle, wrapped in a single "extract" span so the
+    # trace tree shows extraction time regardless of which path won.
     page_results: list[dict] | None = None
-
-    if extractor == "gemini-vision":
-        # Force per-page rendering with Gemini Vision only — bypass doc-processor.
-        page_results = await _extract_per_page(pdf_bytes, force_gemini=True)
-    elif extractor == "doc-processor":
-        # Force the GPU pipeline; no Vision fallback. If it returns nothing,
-        # the job fails so the comparison run is unambiguous.
-        page_results = await _extract_full_pdf(pdf_bytes)
-        if page_results is None:
-            raise RuntimeError(
-                "extractor='doc-processor' was requested but doc-processor "
-                "returned nothing (disabled, oversized, or errored)"
+    with obs.span(trace, name="extract",
+                  input={"extractor": extractor, "pages_total": pages_total}) as sp:
+        if extractor == "gemini-vision":
+            page_results = await _extract_per_page(pdf_bytes, force_gemini=True)
+        elif extractor == "doc-processor":
+            page_results = await _extract_full_pdf(pdf_bytes)
+            if page_results is None:
+                raise RuntimeError(
+                    "extractor='doc-processor' was requested but doc-processor "
+                    "returned nothing (disabled, oversized, or errored)"
+                )
+            logger.info(
+                "[ingest %s] doc-processor returned %d pages (forced)",
+                report_id, len(page_results),
             )
-        logger.info(
-            "[ingest %s] doc-processor returned %d pages (forced)",
-            report_id, len(page_results),
-        )
-    else:
-        # "auto": current default — try doc-processor first, fall back per-page.
-        logger.info("[ingest %s] auto: trying full-PDF extractor", report_id)
-        page_results = await _extract_full_pdf(pdf_bytes)
-        if page_results is None:
-            logger.info("[ingest %s] full-PDF unavailable, falling back to per-page", report_id)
-            page_results = await _extract_per_page(pdf_bytes)
         else:
-            logger.info("[ingest %s] full-PDF returned %d pages", report_id, len(page_results))
+            logger.info("[ingest %s] auto: trying full-PDF extractor", report_id)
+            page_results = await _extract_full_pdf(pdf_bytes)
+            if page_results is None:
+                logger.info("[ingest %s] full-PDF unavailable, falling back to per-page", report_id)
+                page_results = await _extract_per_page(pdf_bytes)
+            else:
+                logger.info("[ingest %s] full-PDF returned %d pages", report_id, len(page_results))
+
+        sp.update(output={
+            "n_pages": len(page_results),
+            "extractor_used": _dominant_extractor(page_results),
+        })
 
     if not page_results:
         logger.warning(
@@ -160,11 +192,15 @@ async def ingest_report_bytes(
     # doc-processor /v1/embed. Single round-trip replaces N Vertex calls and
     # keeps inference inside the same Cloud Run network as extraction.
     logger.info("[ingest %s] chunk+embed phase starting (%d pages)", report_id, len(page_results))
-    chunk_rows = await _chunk_and_embed(page_results)
+    with obs.span(trace, name="chunk_and_embed",
+                  input={"n_pages": len(page_results)}) as sp:
+        chunk_rows = await _chunk_and_embed(page_results)
+        sp.update(output={"n_chunks": len(chunk_rows)})
     logger.info("[ingest %s] chunk+embed produced %d rows", report_id, len(chunk_rows))
 
     # Step 4 — write to report_chunks atomically.
-    await _persist_chunks(report_id, chunk_rows)
+    with obs.span(trace, name="persist", input={"n_rows": len(chunk_rows)}):
+        await _persist_chunks(report_id, chunk_rows)
 
     pages_with_chunks = len({row[0] for row in chunk_rows})
     extractor_tag = _dominant_extractor(page_results)

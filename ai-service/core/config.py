@@ -105,6 +105,30 @@ class Settings(BaseSettings):
     # adds ~33% overhead. 22 MB raw → ~29 MB on the wire, comfortably under.
     doc_processor_max_pdf_mb: float = 22.0
 
+    # ── Langfuse (self-hosted observability) ─────────────────────────────────
+    # When `langfuse_enabled` is on AND keys are present, every chat / ingest
+    # request emits a trace tree with spans for each phase and a generation
+    # event for the LLM call. Async-flushed in batches; failure to reach the
+    # Langfuse server never breaks the user request.
+    langfuse_enabled: bool        = True
+    langfuse_host: str            = ""    # e.g. https://langfuse.taqreerk.internal
+    langfuse_public_key: str      = ""    # pk-lf-xxx
+    langfuse_secret_key: str      = ""    # sk-lf-xxx
+    # Trace sampling — fraction in [0.0, 1.0]. 1.0 = trace every request.
+    # Tune down in production once we're confident the volume justifies it.
+    langfuse_trace_sample_rate: float = 1.0
+
+    # ── Ragas (online RAG eval) ──────────────────────────────────────────────
+    # After each chat, an Evaluation job is enqueued and the worker runs
+    # reference-free Ragas metrics, posting one Langfuse score per metric back
+    # onto the chat trace. Judge LLM = Gemini Flash; embeddings = bge-m3 via
+    # the doc-processor. EVAL_SAMPLE_RATE gates how many chats we evaluate
+    # (1.0 = all). Disable with eval_enabled=False to skip eval entirely.
+    eval_enabled: bool            = True
+    eval_sample_rate: float       = 1.0
+    # Per-metric timeout — protects the worker from a stuck judge LLM call.
+    eval_metric_timeout_seconds: float = 60.0
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:

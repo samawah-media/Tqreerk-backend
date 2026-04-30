@@ -145,6 +145,23 @@ class ReportSummary(BaseModel):
     topics: list[str]
 
 
+# ── Plain text completion (used by Ragas judge) ─────────────────────────────
+
+def simple_completion(prompt: str, temperature: float = 0.0) -> str:
+    """One-shot prompt → completion text. Goes through `_call_with_retry`
+    so SSL EOFs and connection resets are handled the same as everywhere
+    else. Used by the Ragas eval wrapper to avoid duplicating retry logic."""
+    response = _call_with_retry(
+        "simple_completion",
+        lambda client: client.models.generate_content(
+            model=settings.gemini_chat_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=temperature),
+        ),
+    )
+    return (response.text or "").strip()
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 _VALID_PAGE_TYPES = {"cover", "toc", "text", "table", "chart", "mixed", "empty"}
