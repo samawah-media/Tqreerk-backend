@@ -162,6 +162,17 @@ public class AuthService : IAuthService
     private const int MaxFailedLoginAttempts = 5;
     private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
 
+    /// True when the user belongs to at least one organization that is
+    /// currently suspended. Used to block login until the admin lifts the
+    /// suspension. We only care about active memberships — historical/
+    /// deactivated rows shouldn't keep the user out of the platform.
+    private async Task<bool> IsMemberOfSuspendedOrgAsync(Guid userId, CancellationToken ct)
+        => await _db.OrganizationMembers
+            .AsNoTracking()
+            .AnyAsync(m => m.UserId == userId
+                        && m.IsActive
+                        && m.Organization.Status == OrganizationStatus.Suspended, ct);
+
     public async Task<AuthResult> LoginAsync(LoginRequest req, string? ipAddress, string? deviceInfo, CancellationToken ct = default)
     {
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == req.Email.ToLowerInvariant(), ct)
@@ -189,6 +200,14 @@ public class AuthService : IAuthService
 
         if (user.Status == UserStatus.Suspended)
             throw new UnauthorizedAccessException("Account is suspended.");
+
+        // An org member whose org is suspended can't log in either. Platform
+        // staff are exempt — they need to keep working even if some org they
+        // (rarely) belong to is suspended. The check is a single indexed
+        // join against organization_members + organizations.
+        if (!user.IsPlatformStaff && await IsMemberOfSuspendedOrgAsync(user.Id, ct))
+            throw new UnauthorizedAccessException(
+                "Your organization is currently suspended. Contact platform support.");
 
         // Successful login clears the failure counter and any expired lockout.
         if (user.FailedLoginAttempts != 0 || user.LockoutEndsAt is not null)
@@ -232,6 +251,14 @@ public class AuthService : IAuthService
         if (user.Status == UserStatus.Suspended)
             throw new UnauthorizedAccessException("Account is suspended.");
 
+        // An org member whose org is suspended can't log in either. Platform
+        // staff are exempt — they need to keep working even if some org they
+        // (rarely) belong to is suspended. The check is a single indexed
+        // join against organization_members + organizations.
+        if (!user.IsPlatformStaff && await IsMemberOfSuspendedOrgAsync(user.Id, ct))
+            throw new UnauthorizedAccessException(
+                "Your organization is currently suspended. Contact platform support.");
+
         if (user.FailedLoginAttempts != 0 || user.LockoutEndsAt is not null)
         {
             user.FailedLoginAttempts = 0;
@@ -268,6 +295,14 @@ public class AuthService : IAuthService
 
         if (user.Status == UserStatus.Suspended)
             throw new UnauthorizedAccessException("Account is suspended.");
+
+        // An org member whose org is suspended can't log in either. Platform
+        // staff are exempt — they need to keep working even if some org they
+        // (rarely) belong to is suspended. The check is a single indexed
+        // join against organization_members + organizations.
+        if (!user.IsPlatformStaff && await IsMemberOfSuspendedOrgAsync(user.Id, ct))
+            throw new UnauthorizedAccessException(
+                "Your organization is currently suspended. Contact platform support.");
 
         // Defence in depth — if 2FA somehow got disabled between step 1
         // and step 2 (admin reset?) we don't accept the challenge.

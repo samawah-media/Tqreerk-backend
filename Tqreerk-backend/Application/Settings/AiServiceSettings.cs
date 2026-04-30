@@ -19,4 +19,11 @@ public class AiServiceSettings
     /// here; we store the returned URL in ReportTranslation.TranslatedFileUrl.
     /// Example: gs://taqreerk-uploads/taqreerk-uploads-dev/translations
     public string TranslationOutputPrefix { get; set; } = string.Empty;
+
+    /// /reports/ingest is fire-and-forget on the AI service — the .NET worker
+    /// polls /reports/jobs/{job_id} until the job reaches Completed/Failed.
+    /// These two knobs control that polling loop. A 50-page Arabic PDF takes
+    /// 3–10 min, so the default ceiling is generous.
+    public int IngestPollSeconds { get; set; } = 5;
+    public int IngestPollMaxMinutes { get; set; } = 30;
 }

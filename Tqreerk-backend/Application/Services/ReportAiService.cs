@@ -214,13 +214,104 @@ public class ReportAiService : IReportAiService
         var report = await LoadReportAsync(job, ct);
         var gsUri = ToGcsUri(report.FileUrl!);
 
-        var result = await _ai.IngestAsync(report.Id, gsUri, ct);
+        // Ingest is fire-and-forget on the AI service — the call returns 202
+        // with a job_id and the actual extraction runs in the background. We
+        // record the AI service's job_id on our AiJob row so the operation can
+        // be debugged across services, then poll until it finishes.
+        var enqueued = await _ai.IngestAsync(report.Id, gsUri, ct);
+        job.InputData = JsonSerializer.Serialize(new
+        {
+            file_url = gsUri,
+            ai_service_job_id = enqueued.JobId,
+        });
+        await _db.SaveChangesAsync(ct);
 
-        report.PageCount = result.PagesProcessed;
-        job.OutputData = JsonSerializer.Serialize(new { pages_processed = result.PagesProcessed });
+        var snapshot = await PollAiJobAsync(enqueued.JobId, ct);
+
+        if (string.Equals(snapshot.Status, "Failed", StringComparison.OrdinalIgnoreCase))
+        {
+            // Surface the AI-service error verbatim so MarkFailedAsync stores it.
+            throw new InvalidOperationException(
+                $"ai-service ingest failed: {snapshot.ErrorMessage ?? "(no error message)"}");
+        }
+        if (!string.Equals(snapshot.Status, "Completed", StringComparison.OrdinalIgnoreCase))
+        {
+            // PollAiJobAsync only returns on terminal status or timeout — anything
+            // else is a contract bug worth flagging loudly.
+            throw new InvalidOperationException(
+                $"ai-service ingest job {enqueued.JobId} ended in unexpected status '{snapshot.Status}'");
+        }
+
+        // OutputData carries the ingest counters when the job succeeds: the
+        // page-extraction count and the number of chunks persisted for vector
+        // search. Older jobs (before the fire-and-forget switch) returned
+        // pages_processed inline; new ones surface both via /reports/jobs/{id}.
+        // Be tolerant of either shape.
+        var pagesProcessed = TryReadInt(snapshot.OutputData, "pages_processed") ?? 0;
+        var chunksInserted = TryReadInt(snapshot.OutputData, "chunks_inserted") ?? 0;
+        report.PageCount = pagesProcessed;
+        job.OutputData = JsonSerializer.Serialize(new
+        {
+            pages_processed = pagesProcessed,
+            chunks_inserted = chunksInserted,
+            ai_service_job_id = enqueued.JobId,
+        });
 
         // Chain: Summarize next.
         EnqueueChild(report, AiJobType.Summarization);
+    }
+
+    /// Block until the AI service reports the job as Completed or Failed (or we
+    /// hit our overall timeout). Polls at AiServiceSettings.IngestPollSeconds.
+    /// Returns the final snapshot — caller branches on Status.
+    private async Task<AiJobStatusSnapshot> PollAiJobAsync(Guid aiJobId, CancellationToken ct)
+    {
+        var pollEvery = TimeSpan.FromSeconds(Math.Max(1, _settings.IngestPollSeconds));
+        var deadline = DateTime.UtcNow.Add(TimeSpan.FromMinutes(Math.Max(1, _settings.IngestPollMaxMinutes)));
+
+        AiJobStatusSnapshot? last = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                last = await _ai.GetJobStatusAsync(aiJobId, ct);
+            }
+            catch (Exception ex)
+            {
+                // A single failed poll shouldn't kill the whole job — the AI
+                // service might be briefly restarting. Log and try again next tick.
+                _logger.LogWarning(ex, "Polling AI job {JobId} failed; will retry", aiJobId);
+                await Task.Delay(pollEvery, ct);
+                continue;
+            }
+
+            if (string.Equals(last.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(last.Status, "Failed", StringComparison.OrdinalIgnoreCase))
+            {
+                return last;
+            }
+
+            await Task.Delay(pollEvery, ct);
+        }
+
+        throw new TimeoutException(
+            $"ai-service job {aiJobId} did not finish within {_settings.IngestPollMaxMinutes} minutes " +
+            $"(last status: {last?.Status ?? "unknown"})");
+    }
+
+    private static int? TryReadInt(IReadOnlyDictionary<string, object?>? data, string key)
+    {
+        if (data is null) return null;
+        if (!data.TryGetValue(key, out var raw) || raw is null) return null;
+        return raw switch
+        {
+            int i => i,
+            long l => (int)l,
+            double d => (int)d,
+            string s when int.TryParse(s, out var p) => p,
+            _ => null,
+        };
     }
 
     private async Task ProcessSummarizeAsync(AiJob job, CancellationToken ct)
@@ -268,6 +359,10 @@ public class ReportAiService : IReportAiService
     {
         var report = await LoadReportAsync(job, ct);
 
+        // The AI service auto-detects source language from already-ingested
+        // pages and picks the target (ar↔en). We compute the same pair locally
+        // only to address the right ReportTranslation row up-front so the UI
+        // can show "translating" before the request even returns.
         var sourceLang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
         var targetLang = sourceLang == "ar" ? DefaultTargetTranslationLanguage : "ar";
 
@@ -306,7 +401,7 @@ public class ReportAiService : IReportAiService
         TranslateResult result;
         try
         {
-            result = await _ai.TranslateAsync(report.Id, gsUri, outputPrefix, targetLang, sourceLang, ct);
+            result = await _ai.TranslateAsync(report.Id, gsUri, outputPrefix, ct);
         }
         catch
         {
@@ -315,6 +410,11 @@ public class ReportAiService : IReportAiService
             throw;
         }
 
+        // The AI service is the source of truth for the actual detected source +
+        // target. If it disagreed with our local guess, prefer its values for
+        // anything we persist on the translation row.
+        var detectedTarget = string.IsNullOrWhiteSpace(result.TargetLanguage) ? targetLang : result.TargetLanguage;
+        existing.Language = detectedTarget;
         existing.TranslatedFileUrl = result.TranslatedFileUrl;
         existing.TranslationStatus = TranslationStatus.Completed;
         existing.TranslatedAt = DateTime.UtcNow;
@@ -322,7 +422,8 @@ public class ReportAiService : IReportAiService
         job.OutputData = JsonSerializer.Serialize(new
         {
             translated_file_url = result.TranslatedFileUrl,
-            target = targetLang,
+            target = detectedTarget,
+            source = result.SourceLanguage,
         });
 
         await PublishAsync(report);

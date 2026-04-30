@@ -85,6 +85,9 @@ public static class ServiceExtensions
         services.AddScoped<ITwoFactorService, TwoFactorService>();
         services.AddSingleton<IEncryptionService, DataProtectorEncryptionService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
+        services.AddScoped<IAdminOrganizationsService, AdminOrganizationsService>();
+        services.AddScoped<IAdminUsersService, AdminUsersService>();
+        services.AddScoped<IAdminCategoriesService, AdminCategoriesService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IOrganizationService, OrganizationService>();
         services.AddScoped<IDashboardService, DashboardService>();
