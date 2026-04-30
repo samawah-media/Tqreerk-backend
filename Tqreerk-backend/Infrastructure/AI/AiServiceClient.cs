@@ -31,13 +31,49 @@ public class AiServiceClient : IAiServiceClient
         _http.Timeout = TimeSpan.FromSeconds(settings.Value.TimeoutSeconds);
     }
 
-    public async Task<IngestResult> IngestAsync(Guid reportId, string fileUrl, CancellationToken ct = default)
+    public async Task<IngestEnqueueResult> IngestAsync(Guid reportId, string fileUrl, CancellationToken ct = default)
     {
         var body = new { report_id = reportId, file_url = fileUrl };
+        // Ingest now returns 202 with a job_id and runs in the background. We treat
+        // 202 as a normal success and read the body for the job_id.
         var raw = await PostAsync("reports/ingest", body, ct);
-        var dto = JsonSerializer.Deserialize<IngestResponseDto>(raw, Json)
+        var dto = JsonSerializer.Deserialize<IngestEnqueueResponseDto>(raw, Json)
             ?? throw new InvalidOperationException("ai-service returned empty ingest response");
-        return new IngestResult(dto.report_id, dto.pages_processed, dto.status ?? "ok");
+        if (dto.job_id == Guid.Empty)
+            throw new InvalidOperationException("ai-service ingest response did not include a job_id");
+        return new IngestEnqueueResult(dto.report_id, dto.job_id, dto.status ?? "Pending");
+    }
+
+    public async Task<AiJobStatusSnapshot> GetJobStatusAsync(Guid jobId, CancellationToken ct = default)
+    {
+        using var resp = await _http.GetAsync($"reports/jobs/{jobId}", ct);
+        var content = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            _logger.LogWarning(
+                "ai-service GET /reports/jobs/{JobId} failed: {Status} {Body}",
+                jobId, (int)resp.StatusCode, content);
+            throw new InvalidOperationException(
+                $"ai-service GET /reports/jobs/{jobId} failed with {(int)resp.StatusCode}: {content}");
+        }
+
+        var dto = JsonSerializer.Deserialize<JobStatusResponseDto>(content, Json)
+            ?? throw new InvalidOperationException("ai-service returned empty job-status response");
+
+        // output_data comes through as a JsonElement (jsonb on the wire). Flatten to
+        // a dictionary so callers can pull "pages_processed" without re-parsing.
+        IReadOnlyDictionary<string, object?>? outputData = null;
+        if (dto.output_data.HasValue && dto.output_data.Value.ValueKind == JsonValueKind.Object)
+        {
+            var dict = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var p in dto.output_data.Value.EnumerateObject())
+                dict[p.Name] = JsonElementToObject(p.Value);
+            outputData = dict;
+        }
+
+        return new AiJobStatusSnapshot(
+            dto.job_id, dto.report_id, dto.job_type ?? string.Empty,
+            dto.status ?? string.Empty, dto.error_message, outputData);
     }
 
     public async Task<SummarizeResult> SummarizeAsync(Guid reportId, CancellationToken ct = default)
@@ -55,24 +91,25 @@ public class AiServiceClient : IAiServiceClient
     }
 
     public async Task<TranslateResult> TranslateAsync(
-        Guid reportId, string fileUrl, string outputPrefix,
-        string targetLanguage, string sourceLanguage, CancellationToken ct = default)
+        Guid reportId, string fileUrl, string outputPrefix, CancellationToken ct = default)
     {
+        // Body shape matches the new Python TranslateRequest exactly: just the
+        // three fields. The service auto-detects the source language from
+        // already-ingested page content and picks the target (Arabic ↔ English),
+        // returning both on the response so we still get them.
         var body = new
         {
             report_id = reportId,
             file_url = fileUrl,
             output_prefix = outputPrefix,
-            target_language = targetLanguage,
-            source_language = sourceLanguage,
         };
         var raw = await PostAsync("reports/translate", body, ct);
         var dto = JsonSerializer.Deserialize<TranslateResponseDto>(raw, Json)
             ?? throw new InvalidOperationException("ai-service returned empty translate response");
         return new TranslateResult(
             dto.report_id,
-            dto.target_language ?? targetLanguage,
-            dto.source_language ?? sourceLanguage,
+            dto.target_language ?? string.Empty,
+            dto.source_language ?? string.Empty,
             dto.translated_file_url ?? string.Empty
         );
     }
@@ -98,12 +135,37 @@ public class AiServiceClient : IAiServiceClient
         return content;
     }
 
+    /// Convert a JsonElement to a CLR primitive / nested structure suitable for
+    /// stuffing into a Dictionary<string, object?>. Used to flatten the AI
+    /// service's output_data payload (which is jsonb on the wire).
+    private static object? JsonElementToObject(JsonElement el) => el.ValueKind switch
+    {
+        JsonValueKind.String => el.GetString(),
+        JsonValueKind.Number => el.TryGetInt64(out var l) ? l : el.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Null => null,
+        JsonValueKind.Array => el.EnumerateArray().Select(JsonElementToObject).ToList(),
+        JsonValueKind.Object => el.EnumerateObject().ToDictionary(p => p.Name, p => JsonElementToObject(p.Value)),
+        _ => null,
+    };
+
     // The DTOs use snake_case property names (matching the JSON wire format) and
     // are intentionally permissive — fields stay nullable so an extra/missing
     // field on either end doesn't crash deserialisation.
 
 #pragma warning disable IDE1006 // suppress lowercase naming for wire-DTOs
-    private sealed record IngestResponseDto(Guid report_id, int pages_processed, string? status);
+    private sealed record IngestEnqueueResponseDto(Guid report_id, Guid job_id, string? status);
+
+    private sealed record JobStatusResponseDto(
+        Guid job_id,
+        Guid? report_id,
+        string? job_type,
+        string? status,
+        string? error_message,
+        JsonElement? output_data,
+        string? started_at,
+        string? completed_at);
 
     private sealed record SummarizeResponseDto(
         Guid report_id, string? summary, List<string>? key_findings, List<string>? topics);

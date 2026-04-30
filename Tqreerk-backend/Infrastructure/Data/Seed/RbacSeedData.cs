@@ -24,6 +24,7 @@ public static class RbacSeedData
         public static readonly Guid AuditLogs      = Guid.Parse("10000000-0000-0000-0000-000000000009");
         public static readonly Guid Rbac           = Guid.Parse("10000000-0000-0000-0000-00000000000a");
         public static readonly Guid Settings       = Guid.Parse("10000000-0000-0000-0000-00000000000b");
+        public static readonly Guid Categories     = Guid.Parse("10000000-0000-0000-0000-00000000000c");
     }
 
     public static class RoleIds
@@ -65,6 +66,7 @@ public static class RbacSeedData
         new(PageIds.AuditLogs,     "audit_logs",    "Audit Logs",    "سجلات التدقيق", 9),
         new(PageIds.Rbac,          "rbac",          "Access Control","التحكم بالوصول",10),
         new(PageIds.Settings,      "settings",      "Settings",      "الإعدادات",      11),
+        new(PageIds.Categories,    "categories",    "Categories",    "التصنيفات",      12),
     ];
 
     private static readonly PermissionSpec[] DefaultPermissions =
@@ -127,8 +129,11 @@ public static class RbacSeedData
             foreach (var p in allPermissions)
                 yield return new RolePermission { RoleId = RoleIds.SuperAdmin, PermissionId = p.Id, CreatedAt = SeedTime };
 
-            // Admin: everything except the RBAC page.
-            foreach (var p in allPermissions.Where(p => p.PageId != PageIds.Rbac))
+            // Admin: everything except the RBAC and Categories pages —
+            // those two are SuperAdmin-class platform configuration.
+            foreach (var p in allPermissions
+                         .Where(p => p.PageId != PageIds.Rbac
+                                  && p.PageId != PageIds.Categories))
                 yield return new RolePermission { RoleId = RoleIds.Admin, PermissionId = p.Id, CreatedAt = SeedTime };
 
             // ContentReviewer: view + edit on the Reports page only — they

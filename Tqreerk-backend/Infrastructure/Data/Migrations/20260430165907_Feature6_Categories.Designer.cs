@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using NpgsqlTypes;
@@ -12,9 +13,11 @@ using Taqreerk.Infrastructure.Data;
 namespace Taqreerk.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(TaqreerkDbContext))]
-    partial class TaqreerkDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260430165907_Feature6_Categories")]
+    partial class Feature6_Categories
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2180,15 +2183,12 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("report_keywords", (string)null);
                 });
 
-            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportChunk", b =>
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportPage", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasDefaultValueSql("gen_random_uuid()");
-
-                    b.Property<int>("ChunkIndex")
-                        .HasColumnType("integer");
 
                     b.Property<string>("Content")
                         .IsRequired()
@@ -2207,12 +2207,10 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ReportId", "PageNumber");
-
-                    b.HasIndex("ReportId", "PageNumber", "ChunkIndex")
+                    b.HasIndex("ReportId", "PageNumber")
                         .IsUnique();
 
-                    b.ToTable("report_chunks", (string)null);
+                    b.ToTable("report_pages", (string)null);
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportRating", b =>
@@ -3912,10 +3910,10 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Report");
                 });
 
-            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportChunk", b =>
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportPage", b =>
                 {
                     b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
-                        .WithMany("Chunks")
+                        .WithMany("Pages")
                         .HasForeignKey("ReportId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -4206,11 +4204,11 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
                     b.Navigation("ChatSessions");
 
-                    b.Navigation("Chunks");
-
                     b.Navigation("Infographics");
 
                     b.Navigation("Keywords");
+
+                    b.Navigation("Pages");
 
                     b.Navigation("Ratings");
 
