@@ -37,7 +37,7 @@ from google.cloud import storage
 
 from core.chunking import chunk_blocks_with_meta, chunk_text
 from core.db import conn_ctx
-from services import doc_extractor, observability as obs
+from services import doc_extractor, embed, observability as obs
 
 logger = logging.getLogger(__name__)
 
@@ -320,16 +320,17 @@ async def _chunk_and_embed(
 
     texts = [p[2] for p in pending]
     logger.info(
-        "[ingest] embedding %d chunks via doc-processor /v1/embed (one batch)",
+        "[ingest] embedding %d chunks via Vertex gemini-embedding-001 (RETRIEVAL_DOCUMENT)",
         len(texts),
     )
 
-    # Step 2 — embed all chunks in one GPU batch. The doc-processor handles
-    # internal batching so we send the entire list and get one response back.
+    # Step 2 — embed all chunks via the managed embedding API. The genai
+    # SDK batches server-side; we send one HTTP call. _call_with_retry inside
+    # the wrapper handles SSL EOFs and connection resets the same way as
+    # every other Gemini call.
     loop = asyncio.get_running_loop()
     vectors = await loop.run_in_executor(
-        None,
-        lambda: doc_extractor.embed_texts(texts, "passage"),
+        None, embed.embed_passages, texts,
     )
 
     if len(vectors) != len(pending):

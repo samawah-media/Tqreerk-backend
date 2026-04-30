@@ -24,3 +24,12 @@ langfuse==2.60.5
 # self-consistent with the production retrieval stack.
 ragas==0.2.6
 datasets==3.1.0
+
+# ── Agent framework (LangGraph) ──────────────────────────────────────────────
+# StateGraph + ToolNode for the production chat agent. We use Vertex AI's
+# Gemini through langchain-google-vertexai (NOT langchain-google-genai)
+# because runtime auth is service-account ADC — same path as every other
+# Google call in the system. The `langchain-core` it pulls in is already a
+# transitive dep of ragas.
+langgraph==0.2.55
+langchain-google-vertexai==2.0.13

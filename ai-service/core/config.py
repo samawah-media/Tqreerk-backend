@@ -61,7 +61,19 @@ class Settings(BaseSettings):
     gemini_vision_model: str  = "gemini-2.5-flash"        # PDF page → text + chart descriptions
     gemini_chat_model: str    = "gemini-2.5-flash"        # RAG chat answers (fast, small context)
     gemini_summary_model: str = "gemini-2.5-flash"        # full-report summarization (deeper analysis)
-    gemini_embed_model: str   = "text-embedding-004"      # 768-dim embeddings — must match DB vector(768)
+    gemini_embed_model: str   = "gemini-embedding-001"    # multilingual embedder via Vertex/AI Studio
+    # Output dimension. gemini-embedding-001 supports Matryoshka so we can
+    # request 768/1536/3072 natively. 768 keeps DB storage compact and matches
+    # the report_chunks.embedding vector(768) column. Bump only with a schema
+    # migration.
+    gemini_embed_dim: int     = 768
+
+    # ── Reranker (Vertex AI Ranking API) ─────────────────────────────────────
+    # Replaces the doc-processor /v1/rerank path; cross-encoder over the same
+    # candidate pool returned by hybrid retrieval. Multilingual (incl. Arabic)
+    # and ~150ms warm. Behind a flag so we can A/B compare or disable on
+    # outage; the chat path falls back to retrieval order on errors.
+    reranker_vertex_model: str = "semantic-ranker-default-004"
 
     # ── Chat cache (Postgres-backed, two-tier) ───────────────────────────────
     # Exact-match cache hits skip retrieval AND the LLM call; semantic-match hits
@@ -129,16 +141,22 @@ class Settings(BaseSettings):
     # Per-metric timeout — protects the worker from a stuck judge LLM call.
     eval_metric_timeout_seconds: float = 60.0
 
-    # ── Per-org daily quotas (cost protection) ───────────────────────────────
-    # Counts rolling 24-hour windows over ai_jobs (and chat_messages for the
-    # chat cap). When an org goes over, the relevant API endpoint returns 429.
-    # A value of 0 disables that specific cap. Tune via env var without
-    # redeploy. Defaults err on the side of "generous for real users, blocks
-    # only obvious abuse loops."
-    quota_enabled: bool                = True
-    quota_daily_ingest_per_org: int    = 20      # /reports/ingest, EnqueueIngest
-    quota_daily_translate_per_org: int = 10      # /reports/translate
-    quota_daily_chat_per_org: int      = 500     # /chat/.../messages
+    # ── Daily quotas (cost protection) ───────────────────────────────────────
+    # Counts rolling 24-hour windows over ai_jobs (per-org) and chat_messages
+    # (per-user — the chat path is owned by an individual, not an org). When
+    # the cap is hit, the relevant API endpoint returns 429. A value of 0
+    # disables that specific cap. Tune via env var without redeploy. Defaults
+    # err on the side of "generous for real users, blocks only obvious abuse
+    # loops."
+    #
+    # Why chat is per-user: chat sessions are bound to a single UserId, and
+    # the agent's accessible-report scope is computed per-user (Published OR
+    # own-org membership). Capping chat per-org would punish quiet orgs whose
+    # one chatty user overwhelmed everyone else's allowance.
+    quota_enabled: bool                 = True
+    quota_daily_ingest_per_org: int     = 20      # /reports/ingest, EnqueueIngest
+    quota_daily_translate_per_org: int  = 10      # /reports/translate
+    quota_daily_chat_per_user: int      = 200     # /chat/.../messages
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

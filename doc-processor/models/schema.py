@@ -183,10 +183,15 @@ class EmbedRequest(BaseModel):
 
 
 class EmbedResponse(BaseModel):
-    """One 1024-dim vector per input, in the same order. `dim` lets clients
-    sanity-check against their stored schema before persisting."""
+    """One vector per input, in the same order. `dim` lets clients
+    sanity-check against their stored schema before persisting.
+
+    Note (2026-04-30): /v1/embed is in legacy mode — production now uses
+    Vertex gemini-embedding-001 directly from ai-service. This endpoint
+    remains for ad-hoc tooling but its embeddings live in a different
+    vector space than the production index, so don't mix them."""
     embeddings: list[list[float]]
-    dim: int = 1024
+    dim: int = 768
     model: str
     latency_ms: int
 

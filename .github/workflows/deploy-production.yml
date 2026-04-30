@@ -132,7 +132,7 @@ jobs:
             Quota__Enabled=true
             Quota__DailyIngestPerOrg=50
             Quota__DailyTranslatePerOrg=25
-            Quota__DailyChatPerOrg=1000
+            Quota__DailyChatPerUser=300
 
       - name: Show production URL
         run: echo "Production deployed → ${{ steps.deploy.outputs.url }}"

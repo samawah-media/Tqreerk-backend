@@ -35,7 +35,7 @@ from ragas.llms.base import BaseRagasLLM
 from ragas.run_config import RunConfig
 
 from core.config import settings
-from services.doc_extractor import embed_texts as embed_via_gpu
+from services import embed as gemini_embed
 from services.gemini import simple_completion
 
 logger = logging.getLogger(__name__)
@@ -106,12 +106,15 @@ class _DocProcessorEmbeddings(Embeddings):
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        return embed_via_gpu(list(texts), kind="passage")
+        # Same RETRIEVAL_DOCUMENT task type as production ingest — keeps
+        # Ragas's similarity-based metrics in the same vector space as
+        # what we actually serve.
+        return gemini_embed.embed_passages(list(texts))
 
     def embed_query(self, text: str) -> list[float]:
         if not text:
             return []
-        return embed_via_gpu([text], kind="query")[0]
+        return gemini_embed.embed_query(text)
 
 
 class DocProcessorRagasEmbeddings(BaseRagasEmbeddings):

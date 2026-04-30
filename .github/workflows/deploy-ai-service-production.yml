@@ -73,7 +73,7 @@ jobs:
             QUOTA_ENABLED=true
             QUOTA_DAILY_INGEST_PER_ORG=50
             QUOTA_DAILY_TRANSLATE_PER_ORG=25
-            QUOTA_DAILY_CHAT_PER_ORG=1000
+            QUOTA_DAILY_CHAT_PER_USER=300
 
       - name: Verify deployment
         run: |
@@ -130,4 +130,4 @@ jobs:
             QUOTA_ENABLED=true
             QUOTA_DAILY_INGEST_PER_ORG=50
             QUOTA_DAILY_TRANSLATE_PER_ORG=25
-            QUOTA_DAILY_CHAT_PER_ORG=1000
+            QUOTA_DAILY_CHAT_PER_USER=300

@@ -66,8 +66,14 @@ async def _warm_models() -> None:
         ("easyocr",     ocr.init),
         ("pix2tex",     formulas.init),
         ("florence-2",  figures.init),
-        ("embeddings",  embeddings.init),
-        ("reranker",    reranker.init),
+        # bge-m3 and bge-reranker-v2-m3 dropped 2026-04-30 — embedding /
+        # reranking moved to managed APIs (Vertex). The /v1/embed and
+        # /v1/rerank endpoints stay deployed but their model weights are
+        # no longer pre-cached in the image, so loading would require a
+        # network download at cold start. Skip the warmup; is_ready()
+        # returns False; the endpoints respond 503 if anyone calls them.
+        # ("embeddings",  embeddings.init),
+        # ("reranker",    reranker.init),
     ]:
         try:
             fn()
