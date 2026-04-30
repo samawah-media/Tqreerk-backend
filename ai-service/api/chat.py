@@ -256,22 +256,44 @@ async def send_message(
     # ── Resolve the user's accessible report set (Published OR own org) ───
     accessible_ids = await accessible_report_ids(conn, user_id)
     _mark("accessible_report_ids", t2)
+
+    # Two short-circuit paths, each producing a single user-visible token
+    # and a `done` event so the client UI handles them like any normal
+    # answer instead of crashing on a missing stream.
+    early_msg: str | None = None
     if not accessible_ids:
-        # No accessible reports = nothing the agent can answer from.
-        # Bail early with a polite SSE stream instead of running the model.
-        empty_msg = (
+        early_msg = (
             "You don't have access to any reports yet. Sign in or wait for "
             "your organization to publish reports, then try again."
         )
-        empty_token_evt = "data: " + json.dumps(
-            {"type": "token", "text": empty_msg}, ensure_ascii=False
-        ) + "\n\n"
-        empty_done_evt = "data: " + json.dumps({"type": "done"}) + "\n\n"
+    elif report_id is not None and str(report_id) not in accessible_ids:
+        # The session was created against a report this user can no longer
+        # read — either the report was un-Published, the user was removed
+        # from the org, or the session was created without an access check
+        # in place. Fail fast: handing this to the agent would cause every
+        # report-scoped tool to return "outside accessible scope" and the
+        # model to flail.
+        logger.warning(
+            "chat[%s] session report=%s is not in user=%s accessible scope "
+            "(accessible_count=%d) — aborting before agent",
+            sid_short, report_id, user_id, len(accessible_ids),
+        )
+        early_msg = (
+            "Your access to this report has changed and you can no longer "
+            "view it in this chat. Please open a new chat from a report "
+            "you currently have access to."
+        )
 
-        async def empty_stream():
-            yield empty_token_evt
-            yield empty_done_evt
-        return StreamingResponse(empty_stream(), media_type="text/event-stream")
+    if early_msg is not None:
+        early_token_evt = "data: " + json.dumps(
+            {"type": "token", "text": early_msg}, ensure_ascii=False
+        ) + "\n\n"
+        early_done_evt = "data: " + json.dumps({"type": "done"}) + "\n\n"
+
+        async def early_stream():
+            yield early_token_evt
+            yield early_done_evt
+        return StreamingResponse(early_stream(), media_type="text/event-stream")
 
     # ── Persist user message before streaming starts ───────────────────────
     await conn.execute(

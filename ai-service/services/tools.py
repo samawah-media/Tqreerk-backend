@@ -38,6 +38,7 @@ get_session_history      — previous turns in the current chat session
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -49,8 +50,9 @@ from psycopg import AsyncConnection
 from pydantic import BaseModel, Field
 
 from core.chunking import DEFAULT_CHUNK_CHARS  # for size hints
+from core.config import settings
 from core.db import conn_ctx
-from services import embed
+from services import embed, reranker
 from services.access import accessible_report_ids
 
 logger = logging.getLogger(__name__)
@@ -124,13 +126,33 @@ class SearchChunksArgs(BaseModel):
 
 
 async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
+    """Hybrid retrieval over `report_chunks` (dense + sparse fused via RRF)
+    optionally reranked by the Vertex AI Ranking API.
+
+    This is the agent's **only** retrieval tool, so it must reproduce the
+    full quality of the legacy single-shot pipeline:
+
+      1. Embed the query into the same vector space as the stored chunks
+         (`gemini-embedding-001`, `task=RETRIEVAL_QUERY`, 768-d).
+      2. Fetch top-N candidates by both:
+           • dense cosine over `embedding`           (semantic match)
+           • BM25 over `search_vector`               (Arabic + English
+                                                       ts_rank, exact-keyword)
+      3. Fuse via Reciprocal Rank Fusion (k=60). Scale-invariant — won't
+         be dominated by whichever scoring scale has more dynamic range,
+         which is what kills naive weighted-sum hybrids.
+      4. If `reranker_enabled`, hand the candidate pool to the Vertex
+         Ranking cross-encoder for the final top-K. Falls back to RRF
+         order if Vertex returns an error (handled inside the wrapper).
+
+    Why all three layers: dense alone misses exact-string queries (Arabic
+    proper nouns, KPI names); BM25 alone misses paraphrases; cross-encoder
+    rerank fixes the fact that ANN retrieval is "approximately right" —
+    the right chunk is usually in the top-20 but rarely the literal top-1.
+    Dropping any of these layers measurably hurts answer quality.
+    """
     if not ctx.accessible_ids:
         return _no_results("user has no accessible reports")
-
-    # Embed the query in the same vector space as stored chunks.
-    qvec = embed.embed_query(args.query)
-    if not qvec:
-        return _no_results("embedding failed")
 
     target_ids = ctx.accessible_ids
     if args.report_id:
@@ -138,32 +160,120 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
             return _no_results("report_id is outside accessible scope")
         target_ids = [args.report_id]
 
+    # Embed the query. `embed.embed_query` is a sync Vertex call (~150 ms
+    # warm); offload to a thread so we don't stall the event loop while
+    # the RPC is in flight.
+    qvec = await asyncio.to_thread(embed.embed_query, args.query)
+    if not qvec:
+        return _no_results("embedding failed")
+
+    # Pull a wider candidate pool when reranking is on, so the cross-
+    # encoder has room to shuffle. When rerank is off, the pool == top_k
+    # and we trust RRF directly.
+    pool = (
+        max(settings.reranker_candidate_pool, args.top_k)
+        if settings.reranker_enabled else args.top_k
+    )
+    rrf_k = 60  # canonical RRF constant — see legacy api/chat.py for rationale
+
     async with conn_ctx() as conn:
-        # Dense top-K via pgvector cosine.
         cur = await conn.execute(
             """
-            SELECT rc."ReportId", rc."PageNumber", rc."ChunkIndex",
-                   rc."Content", r."Title"
-            FROM report_chunks rc
-            JOIN reports r ON r."Id" = rc."ReportId"
-            WHERE rc."ReportId" = ANY(%s)
-              AND rc.embedding IS NOT NULL
-            ORDER BY rc.embedding <=> %s::vector
+            WITH dense AS (
+                SELECT rc."ReportId", rc."PageNumber", rc."ChunkIndex",
+                       rc."Content",
+                       ROW_NUMBER() OVER (ORDER BY rc.embedding <=> %s::vector) AS rnk
+                FROM report_chunks rc
+                WHERE rc."ReportId" = ANY(%s)
+                  AND rc.embedding IS NOT NULL
+                ORDER BY rc.embedding <=> %s::vector
+                LIMIT %s
+            ),
+            sparse AS (
+                SELECT rc."ReportId", rc."PageNumber", rc."ChunkIndex",
+                       rc."Content",
+                       ROW_NUMBER() OVER (
+                           ORDER BY ts_rank(
+                               rc.search_vector,
+                               plainto_tsquery('arabic',  %s) ||
+                               plainto_tsquery('english', %s)
+                           ) DESC
+                       ) AS rnk
+                FROM report_chunks rc
+                WHERE rc."ReportId" = ANY(%s)
+                  AND rc.search_vector @@ (
+                      plainto_tsquery('arabic',  %s) ||
+                      plainto_tsquery('english', %s)
+                  )
+                LIMIT %s
+            ),
+            fused AS (
+                SELECT COALESCE(d."ReportId",   s."ReportId")   AS report_id,
+                       COALESCE(d."PageNumber", s."PageNumber") AS page_number,
+                       COALESCE(d."ChunkIndex", s."ChunkIndex") AS chunk_index,
+                       COALESCE(d."Content",    s."Content")    AS content,
+                       COALESCE(1.0 / (%s + d.rnk), 0)
+                     + COALESCE(1.0 / (%s + s.rnk), 0)          AS rrf_score
+                FROM dense d
+                FULL OUTER JOIN sparse s
+                  ON  d."ReportId"   = s."ReportId"
+                  AND d."PageNumber" = s."PageNumber"
+                  AND d."ChunkIndex" = s."ChunkIndex"
+            )
+            SELECT f.report_id, f.page_number, f.chunk_index, f.content,
+                   r."Title" AS report_title, f.rrf_score
+            FROM fused f
+            JOIN reports r ON r."Id" = f.report_id
+            ORDER BY f.rrf_score DESC
             LIMIT %s
             """,
-            [target_ids, qvec, args.top_k],
+            [
+                # dense
+                qvec, target_ids, qvec, pool,
+                # sparse
+                args.query, args.query, target_ids,
+                args.query, args.query, pool,
+                # rrf
+                rrf_k, rrf_k,
+                # final pool size
+                pool,
+            ],
         )
         rows = await cur.fetchall()
 
-    results = [
+    candidates = [
         {
-            "report_id":   str(r[0]),
+            "report_id":    str(r[0]),
+            "page_number":  int(r[1]) if r[1] is not None else None,
+            "chunk_index":  int(r[2]) if r[2] is not None else None,
+            "content":      r[3],
             "report_title": r[4],
-            "page":        int(r[1]) if r[1] is not None else None,
-            "chunk_index": int(r[2]) if r[2] is not None else None,
-            "content":     r[3],
+            "rrf_score":    float(r[5]),
         }
         for r in rows
+    ]
+    if not candidates:
+        return _no_results("no matching chunks")
+
+    # Cross-encoder rerank — Vertex Ranking API. Sync client, so offload.
+    # On Vertex error the wrapper falls back to RRF order, so we never
+    # worsen quality below the hybrid baseline.
+    final = candidates
+    if settings.reranker_enabled and len(candidates) > args.top_k:
+        final = await asyncio.to_thread(
+            reranker.rerank, args.query, candidates, args.top_k,
+        )
+    final = final[: args.top_k]
+
+    results = [
+        {
+            "report_id":    c["report_id"],
+            "report_title": c.get("report_title"),
+            "page":         c.get("page_number"),
+            "chunk_index":  c.get("chunk_index"),
+            "content":      c.get("content"),
+        }
+        for c in final
     ]
     return _serialize({"results": results})
 
@@ -276,7 +386,10 @@ async def _list_reports_impl(ctx: ToolContext, args: ListReportsArgs) -> str:
         }
         for r in rows
     ]
-    return _serialize({"count": len(results), "results": results})
+    payload: dict[str, Any] = {"count": len(results), "results": results}
+    if not results:
+        payload["reason"] = "no reports match these filters"
+    return _serialize(payload)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -408,6 +521,8 @@ async def _get_report_keywords_impl(ctx: ToolContext, args: GetKeywordsArgs) -> 
         )
         rows = await cur.fetchall()
 
+    if not rows:
+        return _no_results("no keywords have been generated for this report yet")
     return _serialize({
         "keywords": [{"keyword": r[0], "language": r[1]} for r in rows],
     })
@@ -485,7 +600,7 @@ async def _list_saved_reports_impl(ctx: ToolContext, args: ListSavedReportsArgs)
         )
         rows = await cur.fetchall()
 
-    return _serialize({
+    payload: dict[str, Any] = {
         "count": len(rows),
         "results": [
             {
@@ -498,7 +613,10 @@ async def _list_saved_reports_impl(ctx: ToolContext, args: ListSavedReportsArgs)
             }
             for r in rows
         ],
-    })
+    }
+    if not rows:
+        payload["reason"] = "you have no saved reports yet"
+    return _serialize(payload)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -526,7 +644,7 @@ async def _list_user_interests_impl(ctx: ToolContext, _: ListUserInterestsArgs) 
         )
         rows = await cur.fetchall()
 
-    return _serialize({
+    payload: dict[str, Any] = {
         "interests": [
             {
                 "sector":       (r[0] or r[1]) if (r[0] or r[1]) else None,
@@ -535,7 +653,10 @@ async def _list_user_interests_impl(ctx: ToolContext, _: ListUserInterestsArgs) 
             }
             for r in rows
         ],
-    })
+    }
+    if not rows:
+        payload["reason"] = "you haven't set any sector / country / organization interests yet"
+    return _serialize(payload)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -585,6 +706,12 @@ async def _find_similar_reports_impl(ctx: ToolContext, args: FindSimilarReportsA
         )
         rows = await cur.fetchall()
 
+    if not rows:
+        return _no_results(
+            "no similar reports found — the source report may not have any "
+            "embedded chunks yet, or no other accessible reports overlap "
+            "topically."
+        )
     return _serialize({
         "results": [
             {
@@ -622,12 +749,15 @@ async def _get_session_history_impl(ctx: ToolContext, args: GetSessionHistoryArg
         rows = await cur.fetchall()
 
     # Reverse so the oldest message comes first — natural reading order.
-    return _serialize({
+    payload: dict[str, Any] = {
         "messages": [
             {"role": r[0], "content": r[1], "at": str(r[2])}
             for r in reversed(rows)
         ],
-    })
+    }
+    if not rows:
+        payload["reason"] = "no prior messages in this session"
+    return _serialize(payload)
 
 
 # ── Tool registry — used by the agent to bind to ChatVertexAI ──────────────
@@ -636,91 +766,158 @@ async def _get_session_history_impl(ctx: ToolContext, args: GetSessionHistoryArg
 def build_tools(ctx: ToolContext) -> list[StructuredTool]:
     """Return the 14 tools bound to a per-turn ToolContext.
 
-    The wrapper shape (`async def fn(args) -> str`) is what LangGraph's
-    ToolNode expects: each tool sees its typed Pydantic args, returns a
-    string the agent can read. Auth identity is captured in the closure
-    over `ctx` — never an arg the LLM controls.
-    """
+    Two boundary concerns are handled here so the inner `_xxx_impl(ctx, args)`
+    bodies can stay simple:
 
-    # Each tuple: (tool name, description, args schema, impl, [optional extra])
+      1. **Kwargs ↔ Pydantic adapter.** langchain-core's StructuredTool
+         validates the LLM input against `args_schema` and then invokes
+         the coroutine via `await coroutine(**validated_fields)`. Without
+         the adapter, an inner function signed `(ctx, args)` would crash
+         with "got unexpected keyword argument 'report_id'" on every
+         call — symptom we hit in production was the agent retrying the
+         same tool 3× before giving up.
+
+      2. **Per-turn dedup guard.** Even with valid signatures an agent can
+         loop on a legitimately empty result. We track `(name, args_sig)`
+         in a closure-scoped cache and short-circuit a second identical
+         call with a stop-message. The cache lives for one ToolContext
+         (one chat turn); next turn starts fresh.
+
+    Auth identity stays captured in the closure over `ctx` — never an arg
+    the LLM controls.
+    """
+    # Per-turn dedup cache. Key: (tool_name, json-serialised args).
+    call_cache: dict[tuple[str, str], str] = {}
+
+    def _wrap(name: str, schema_cls: type[BaseModel], impl_async):
+        """Adapter coroutine called by StructuredTool's _arun."""
+
+        async def wrapped(**kwargs: Any) -> str:
+            try:
+                args = schema_cls(**kwargs)
+            except Exception as exc:
+                # StructuredTool already runs Pydantic validation upstream,
+                # so this branch only fires on truly malformed input. Return
+                # a stable shape rather than letting the exception propagate
+                # as an opaque "Error: …" string.
+                logger.warning("[tool] %s args repack failed: %s", name, exc)
+                return _serialize({
+                    "results": [],
+                    "reason": f"invalid arguments to {name}: {exc}",
+                })
+
+            sig = (name, json.dumps(
+                args.model_dump(mode="json"),
+                sort_keys=True, ensure_ascii=False, default=str,
+            ))
+            if sig in call_cache:
+                logger.info("[tool] %s dedup hit — short-circuiting retry", name)
+                return _serialize({
+                    "results": [],
+                    "reason": (
+                        f"You already called {name} with these arguments in "
+                        "this turn — the result is unchanged. Do not call "
+                        "again. Try different arguments, a different tool, "
+                        "or answer with what you already have."
+                    ),
+                })
+
+            try:
+                result = await impl_async(ctx, args)
+            except Exception as exc:
+                logger.exception("[tool] %s raised: %s", name, exc)
+                result = _serialize({
+                    "results": [],
+                    "reason": f"{name} failed with an internal error: {exc}",
+                })
+            call_cache[sig] = result
+            return result
+
+        return wrapped
+
+    # (name, description, args schema, async impl(ctx, args) → str)
     table: list[tuple[str, str, type[BaseModel], Any]] = [
         ("search_chunks",
-         "Semantic + keyword retrieval over a single report (or all accessible reports if report_id is omitted). Use this when the user asks about content or facts.",
+         "Hybrid (dense + BM25) retrieval over a single report — or all "
+         "accessible reports if report_id is omitted — with cross-encoder "
+         "rerank for top-1 accuracy. Use this for any content or factual "
+         "question that isn't covered by the structured tools (summary, "
+         "indicators, trends, recommendations).",
          SearchChunksArgs,
-         lambda a: _search_chunks_impl(ctx, a)),
+         _search_chunks_impl),
 
         ("get_page",
          "Fetch one PDF page's full text from a report. Use when the user asks for a specific page.",
          GetPageArgs,
-         lambda a: _get_page_impl(ctx, a)),
+         _get_page_impl),
 
         ("list_reports",
          "Filtered metadata search across reports the user can access. Use for 'list all', 'show me', 'how many' questions or to find report ids before asking content questions.",
          ListReportsArgs,
-         lambda a: _list_reports_impl(ctx, a)),
+         _list_reports_impl),
 
         ("get_report_metadata",
          "Title, organization, sector, country, year, page count, ratings, and status of one report. Use to answer 'what is this report about?' at a structural level.",
          GetReportMetadataArgs,
-         lambda a: _get_report_metadata_impl(ctx, a)),
+         _get_report_metadata_impl),
 
         ("get_report_summary",
          "AI-generated executive summary + key findings for a report (per-language).",
          GetAiContentArgs,
-         lambda a: _get_ai_content_field(ctx, a, "Summary")),
+         lambda c, a: _get_ai_content_field(c, a, "Summary")),
 
         ("get_report_indicators",
          "AI-extracted structured KPIs / indicators (numbers, percentages, ratios) for a report.",
          GetAiContentArgs,
-         lambda a: _get_ai_content_field(ctx, a, "Indicators")),
+         lambda c, a: _get_ai_content_field(c, a, "Indicators")),
 
         ("get_report_trends",
          "AI-extracted trends (rising / falling topics) for a report.",
          GetAiContentArgs,
-         lambda a: _get_ai_content_field(ctx, a, "Trends")),
+         lambda c, a: _get_ai_content_field(c, a, "Trends")),
 
         ("get_report_recommendations",
          "AI-extracted recommendations / action items for a report.",
          GetAiContentArgs,
-         lambda a: _get_ai_content_field(ctx, a, "Recommendations")),
+         lambda c, a: _get_ai_content_field(c, a, "Recommendations")),
 
         ("get_report_keywords",
          "Auto-tagged keywords (Arabic + English) for a report.",
          GetKeywordsArgs,
-         lambda a: _get_report_keywords_impl(ctx, a)),
+         _get_report_keywords_impl),
 
         ("get_translation",
          "Translated title / description / AI summary for a report. RETURNS TEXT ONLY — never a download link.",
          GetTranslationArgs,
-         lambda a: _get_translation_impl(ctx, a)),
+         _get_translation_impl),
 
         ("list_saved_reports",
          "Reports the current user has bookmarked (Published only).",
          ListSavedReportsArgs,
-         lambda a: _list_saved_reports_impl(ctx, a)),
+         _list_saved_reports_impl),
 
         ("list_user_interests",
          "The current user's followed sectors / organizations / countries.",
          ListUserInterestsArgs,
-         lambda a: _list_user_interests_impl(ctx, a)),
+         _list_user_interests_impl),
 
         ("find_similar_reports",
          "Reports semantically similar to the given one, ranked by chunk-embedding centroid cosine. Use to recommend follow-up reading.",
          FindSimilarReportsArgs,
-         lambda a: _find_similar_reports_impl(ctx, a)),
+         _find_similar_reports_impl),
 
         ("get_session_history",
          "Recent messages in the current chat session, oldest-first. Use to recall earlier context the user is referring back to.",
          GetSessionHistoryArgs,
-         lambda a: _get_session_history_impl(ctx, a)),
+         _get_session_history_impl),
     ]
 
     return [
         StructuredTool.from_function(
-            coroutine=impl,
+            coroutine=_wrap(name, schema, impl_async),
             name=name,
             description=desc,
             args_schema=schema,
         )
-        for (name, desc, schema, impl) in table
+        for (name, desc, schema, impl_async) in table
     ]
