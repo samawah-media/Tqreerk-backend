@@ -127,6 +127,12 @@ jobs:
             JwtSettings__RefreshTokenExpiryDays=7
             Sentry__Dsn=${{ secrets.SENTRY_DSN }}
             Sentry__Environment=Production
+            FileStorage__Provider=gcs
+            FileStorage__GcsBucketName=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            Quota__Enabled=true
+            Quota__DailyIngestPerOrg=50
+            Quota__DailyTranslatePerOrg=25
+            Quota__DailyChatPerOrg=1000
 
       - name: Show production URL
         run: echo "Production deployed → ${{ steps.deploy.outputs.url }}"

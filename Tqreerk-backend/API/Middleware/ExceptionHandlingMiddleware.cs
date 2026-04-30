@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Sentry;
+using Taqreerk.Application.Interfaces;
 
 namespace Taqreerk.API.Middleware;
 
@@ -30,6 +31,7 @@ public class ExceptionHandlingMiddleware
             // Report only unexpected errors to Sentry; expected 4xx cases below aren't bugs.
             if (ex is not (InvalidOperationException or UnauthorizedAccessException
                 or KeyNotFoundException or ArgumentException
+                or QuotaExceededException
                 or Taqreerk.Application.Services.ForbiddenException))
             {
                 SentrySdk.CaptureException(ex);
@@ -44,6 +46,7 @@ public class ExceptionHandlingMiddleware
         var (status, title) = ex switch
         {
             Taqreerk.Application.Services.ForbiddenException => (HttpStatusCode.Forbidden, ex.Message),
+            QuotaExceededException => (HttpStatusCode.TooManyRequests, ex.Message),
             InvalidOperationException => (HttpStatusCode.Conflict, ex.Message),
             UnauthorizedAccessException => (HttpStatusCode.Unauthorized, ex.Message),
             KeyNotFoundException => (HttpStatusCode.NotFound, ex.Message),
@@ -53,6 +56,12 @@ public class ExceptionHandlingMiddleware
 
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = (int)status;
+        // Hint clients to back off until midnight UTC (cap reset). Coarse
+        // value but sets the right shape for any retry-after-aware client.
+        if (status == HttpStatusCode.TooManyRequests)
+        {
+            context.Response.Headers["Retry-After"] = "3600";
+        }
 
         object body = isDevelopment && status == HttpStatusCode.InternalServerError
             ? new

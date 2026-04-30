@@ -1,0 +1,48 @@
+# Cloud Build config — builds the doc-processor GPU image.
+#
+# Why we use Cloud Build instead of building on the GitHub-hosted runner:
+#   • The image is ~12 GB (CUDA + PyTorch + pre-downloaded model weights).
+#     GitHub runners only have ~14 GB free disk and frequently OOM during
+#     the build phase.
+#   • Cloud Build runs on GCP's own VPC, so the push back to Artifact
+#     Registry is internal and free.
+#   • The 32-vCPU machine type slices the wheel install + weight download
+#     time roughly in half compared to a 4-vCPU runner.
+#
+# Substitutions are passed in by the GitHub workflow:
+#   _TAG           commit SHA, used as the immutable image tag
+#   _LATEST_TAG    moving tag (staging-latest / prod-latest)
+#   _REGION        Artifact Registry region (e.g. europe-west4)
+#   _REPO          Artifact Registry repository name
+#   _IMAGE         image name (taqreerk-doc-processor)
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.gpu'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_TAG}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_LATEST_TAG}'
+      - '.'
+
+# Both tags are pushed together so we always have a stable rollback target
+# (the SHA tag) plus a moving "latest for this env" pointer.
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_TAG}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_LATEST_TAG}'
+
+options:
+  # The default e2-medium would build for ~50 min and risk Docker layer-cache
+  # OOM. E2_HIGHCPU_32 cuts build time to ~15-25 min on a cold cache.
+  machineType: 'E2_HIGHCPU_32'
+  # CUDA + PyTorch + weights need real disk headroom during layer assembly.
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+# Long timeout for the first cold-cache build. Subsequent builds with layer
+# caching usually finish in 5-10 min and are well under this cap.
+timeout: 3600s

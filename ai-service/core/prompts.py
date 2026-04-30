@@ -13,21 +13,32 @@ runtime data are exposed as small builder functions.
 
 PAGE_DESCRIPTION = (
     "You are processing a page from a research report.\n"
-    "Return a JSON object with two fields:\n"
+    "Return a JSON object with these fields:\n"
     "  text: full transcription of ALL visible text, preserving the original "
     "language and script.\n"
     "  visual_elements: list of detailed descriptions for every chart, graph, "
     "table, or image (capture data, trends, labels, key takeaways). "
-    "Empty list if none."
+    "Empty list if none.\n"
+    "  section_title: the most prominent heading on the page (e.g. chapter or "
+    "section title), or an empty string if none is visible.\n"
+    "  page_type: one of 'cover', 'toc', 'text', 'table', 'chart', 'mixed', "
+    "or 'empty'. Pick the dominant content type.\n"
+    "  language: BCP-47 short tag for the dominant text language: 'ar', 'en', "
+    "or 'mixed'."
 )
 
+# JSON schema for Gemini's structured output. Required fields keep the response
+# stable so downstream code can index without defensive checks.
 PAGE_DESCRIPTION_SCHEMA = {
     "type": "object",
     "properties": {
         "text": {"type": "string"},
         "visual_elements": {"type": "array", "items": {"type": "string"}},
+        "section_title": {"type": "string"},
+        "page_type": {"type": "string"},
+        "language": {"type": "string"},
     },
-    "required": ["text", "visual_elements"],
+    "required": ["text", "visual_elements", "section_title", "page_type", "language"],
 }
 
 

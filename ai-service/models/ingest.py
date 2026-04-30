@@ -1,3 +1,4 @@
+from typing import Literal
 from uuid import UUID
 from pydantic import BaseModel
 
@@ -5,6 +6,11 @@ from pydantic import BaseModel
 class IngestRequest(BaseModel):
     report_id: UUID
     file_url: str
+    # "auto"          → current behaviour: try doc-processor full-PDF, fall back per-page (Gemini Vision).
+    # "doc-processor" → force doc-processor only; if it returns nothing, the job fails.
+    # "gemini-vision" → bypass doc-processor entirely, render every page and use Gemini Vision only.
+    # Use "doc-processor" and "gemini-vision" on the same report to A/B compare extractor quality.
+    extractor: Literal["auto", "doc-processor", "gemini-vision"] = "auto"
 
 
 class IngestResponse(BaseModel):
@@ -41,6 +47,11 @@ class TranslateRequest(BaseModel):
     file_url: str           # gs://bucket/reports/{report_id}/original.pdf  — input from GCS
     output_prefix: str      # gs://bucket/reports/{report_id}/translated/  — .NET-owned base path (must end with /)
                             # Python appends "{detected_target_lang}/" before calling Google Translate.
+    # Optional language overrides. When omitted, the worker auto-detects
+    # source_language from the report's stored chunks and flips it for
+    # target_language ("ar" → "en", anything else → "ar").
+    source_language: str | None = None
+    target_language: str | None = None
 
 
 class TranslateResponse(BaseModel):

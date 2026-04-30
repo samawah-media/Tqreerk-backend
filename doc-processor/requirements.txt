@@ -1,0 +1,50 @@
+# ── Core web stack ───────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.18
+pydantic-settings==2.6.1
+sentry-sdk[fastapi]==2.18.0
+pillow==10.4.0
+httpx==0.28.0
+
+# ── PyTorch (CUDA 12.1 wheels — match the Dockerfile base image) ─────────────
+# Pin minor versions; the Hugging Face / Docling stack is sensitive to
+# torch/transformers compatibility.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.4.1
+torchvision==0.19.1
+
+# ── Document AI stack ────────────────────────────────────────────────────────
+# Docling = layout detection + reading order + table structure (TableFormer)
+# It bundles DocLayNet weights and TableFormer; no extra downloads.
+docling==2.5.2
+
+# Florence-2 / transformers — figure captioning
+transformers==4.45.2
+accelerate==1.0.1
+einops==0.8.0
+# Florence-2 loads its DaViT vision backbone via trust_remote_code, which
+# imports timm at runtime. Not declared by the transformers wheel, so we
+# pin it explicitly here.
+timm==1.0.11
+
+# EasyOCR — Arabic + English OCR fallback for low-quality / scanned regions
+easyocr==1.7.2
+
+# sentence-transformers — multilingual text embedding (replaces Vertex AI text-embedding-004).
+# `intfloat/multilingual-e5-base` is 768-dim (matches DB schema), ~1GB VRAM,
+# strong on Arabic + English retrieval. Loads alongside Florence-2 with room
+# to spare on the L4. Keeping all inference on the GPU service eliminates the
+# Vertex network egress that was SSL-EOF'ing on Cloud Run.
+sentence-transformers==3.2.1
+
+# pix2tex — formula image -> LaTeX
+# DISABLED: pix2tex 0.1.4 pins x-transformers==0.15.0 which segfaults when
+# combined with transformers>=4.42 at import time. Re-enable once a compatible
+# version is available.
+# pix2tex==0.1.4
+
+# ── Image / PDF support ──────────────────────────────────────────────────────
+pymupdf==1.24.14
+opencv-python-headless==4.10.0.84
+numpy==1.26.4

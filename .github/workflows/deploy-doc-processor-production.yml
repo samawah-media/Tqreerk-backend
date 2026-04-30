@@ -1,0 +1,99 @@
+name: Deploy Doc Processor — Production
+
+on:
+  push:
+    branches: ["production"]
+    paths: ["doc-processor/**"]
+  # Manual trigger so we can redeploy without a code change.
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  # GPU region — see the staging workflow for why this is a separate secret
+  # from the CPU services' region.
+  REGION: ${{ secrets.GCP_GPU_REGION }}
+  REPO: ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+  SERVICE: taqreerk-doc-processor-prod
+  IMAGE: taqreerk-doc-processor
+
+jobs:
+  build-and-deploy:
+    name: Build, Push & Deploy Doc Processor to Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build & push image via Cloud Build
+        run: |
+          gcloud builds submit ./doc-processor \
+            --config=./doc-processor/cloudbuild.yaml \
+            --substitutions=_TAG=${{ github.sha }},_LATEST_TAG=prod-latest,_REGION=${{ env.REGION }},_REPO=${{ env.REPO }},_IMAGE=${{ env.IMAGE }} \
+            --project=${{ env.PROJECT_ID }}
+
+      # Production differs from staging on three knobs:
+      #   --min-instances=1   → keep one instance warm so the first chat-time
+      #                         ingest never pays a 60-90 s cold start. Costs
+      #                         ~$360/mo for an idle L4 — switch to 0 if cost
+      #                         matters more than first-request latency for
+      #                         your traffic pattern.
+      #   --max-instances=10  → headroom for a bulk ingest spike.
+      #   ENVIRONMENT=production → tags Sentry events; production-grade
+      #                         models can be swapped via the FLORENCE_MODEL_ID
+      #                         env (defaults to base-ft).
+      - name: Deploy to Cloud Run (Production)
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --service-account=${{ secrets.GCP_DOC_PROCESSOR_SA }} \
+            --gpu=1 \
+            --gpu-type=nvidia-l4 \
+            --no-gpu-zonal-redundancy \
+            --cpu=4 \
+            --memory=16Gi \
+            --min-instances=1 \
+            --max-instances=2 \
+            --concurrency=1 \
+            --timeout=600 \
+            --port=8080 \
+            --no-allow-unauthenticated \
+            --execution-environment=gen2 \
+            --set-env-vars=ENVIRONMENT=production,SENTRY_DSN=${{ secrets.SENTRY_DSN }},INTERNAL_API_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
+
+      - name: Verify deployment
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --format "value(status.url)")
+          echo "Service URL: $SERVICE_URL"
+
+          TOKEN=$(gcloud auth print-identity-token --audiences="$SERVICE_URL")
+          URL="$SERVICE_URL/health"
+          echo "Polling $URL ..."
+
+          for i in $(seq 1 30); do
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" "$URL")
+            BODY=$(cat /tmp/health.json)
+            echo "Attempt $i → HTTP $RESPONSE: $BODY"
+            if [ "$RESPONSE" = "200" ] && echo "$BODY" | grep -q '"status":"healthy"'; then
+              echo "✅ Doc-processor healthy at $SERVICE_URL"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "❌ Doc-processor health check failed after 5 minutes."
+          echo "Last body: $(cat /tmp/health.json)"
+          exit 1

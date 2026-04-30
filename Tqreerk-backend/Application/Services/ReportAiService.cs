@@ -29,6 +29,7 @@ public class ReportAiService : IReportAiService
     private readonly IFileStorage _files;
     private readonly FileStorageSettings _storage;
     private readonly AiServiceSettings _settings;
+    private readonly IQuotaService _quota;
     private readonly ILogger<ReportAiService> _logger;
 
     public ReportAiService(
@@ -37,6 +38,7 @@ public class ReportAiService : IReportAiService
         IFileStorage files,
         IOptions<FileStorageSettings> storage,
         IOptions<AiServiceSettings> settings,
+        IQuotaService quota,
         ILogger<ReportAiService> logger)
     {
         _db = db;
@@ -44,11 +46,13 @@ public class ReportAiService : IReportAiService
         _files = files;
         _storage = storage.Value;
         _settings = settings.Value;
+        _quota = quota;
         _logger = logger;
     }
 
     public async Task EnqueueIngestAsync(Guid reportId, CancellationToken ct = default)
     {
+        _logger.LogInformation("[ai] EnqueueIngest report={ReportId}", reportId);
         var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == reportId, ct)
             ?? throw new KeyNotFoundException("Report not found.");
         if (string.IsNullOrWhiteSpace(report.FileUrl))
@@ -60,7 +64,16 @@ public class ReportAiService : IReportAiService
               && j.JobType == AiJobType.Ingestion
               && (j.Status == AiJobStatus.Pending || j.Status == AiJobStatus.Processing),
             ct);
-        if (hasActive) return;
+        if (hasActive)
+        {
+            _logger.LogInformation("[ai] EnqueueIngest report={ReportId} skipped (active job exists)", reportId);
+            return;
+        }
+
+        // Per-org daily ingest cap — runs AFTER the idempotency check so a
+        // duplicate request doesn't burn a quota slot. Throws
+        // QuotaExceededException; controller layer maps it to HTTP 429.
+        await _quota.AssertUnderJobQuotaAsync(report.OrganizationId, AiJobType.Ingestion, ct);
 
         _db.AiJobs.Add(new AiJob
         {
@@ -71,6 +84,7 @@ public class ReportAiService : IReportAiService
         });
         report.Status = ReportStatus.PendingReview; // "Processing" — re-using the existing enum for now.
         await _db.SaveChangesAsync(ct);
+        _logger.LogInformation("[ai] EnqueueIngest report={ReportId} queued (Pending)", reportId);
     }
 
     public async Task RegenerateAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default)
@@ -492,10 +506,15 @@ public class ReportAiService : IReportAiService
     private string ToGcsUri(string objectKey)
     {
         if (objectKey.StartsWith("gs://", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation("[ai] ToGcsUri: already gs://, passthrough: {Uri}", objectKey);
             return objectKey;
+        }
         if (string.IsNullOrWhiteSpace(_storage.GcsBucketName))
             throw new InvalidOperationException("GcsBucketName is not configured — cannot construct gs:// URI for ai-service.");
-        return $"gs://{_storage.GcsBucketName}/{objectKey.TrimStart('/')}";
+        var uri = $"gs://{_storage.GcsBucketName}/{objectKey.TrimStart('/')}";
+        _logger.LogInformation("[ai] ToGcsUri: {Key} -> {Uri}", objectKey, uri);
+        return uri;
     }
 
     private string BuildTranslationOutputPrefix(Guid reportId, string targetLang)
