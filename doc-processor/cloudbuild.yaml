@@ -9,6 +9,16 @@
 #   • The 32-vCPU machine type slices the wheel install + weight download
 #     time roughly in half compared to a 4-vCPU runner.
 #
+# Layer caching strategy:
+#   Cloud Build runners are ephemeral — they boot with an empty Docker cache.
+#   Without `--cache-from`, every build re-downloads ~3.5 GB of pip wheels
+#   and ~1.4 GB of HuggingFace weights, plus re-runs apt-get. We pull the
+#   previous staging-latest / prod-latest image first and feed it back as
+#   the cache source via BuildKit's inline-cache mechanism. Subsequent
+#   builds where requirements.txt and the weight-download RUN line haven't
+#   changed reuse those layers verbatim and finish in 5-10 min instead of
+#   25-30 min.
+#
 # Substitutions are passed in by the GitHub workflow:
 #   _TAG           commit SHA, used as the immutable image tag
 #   _LATEST_TAG    moving tag (staging-latest / prod-latest)
@@ -17,12 +27,35 @@
 #   _IMAGE         image name (taqreerk-doc-processor)
 
 steps:
+  # Pull the previous "latest" image so Docker has cached layers to reuse.
+  # `|| true` tolerates the first-ever build for a new env where the tag
+  # doesn't exist yet — we'd rather pay the cold-cache penalty once than
+  # fail the whole build because the cache target is missing.
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'pull-cache'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_LATEST_TAG} \
+          || echo "no previous image at ${_LATEST_TAG} — first cold build, no cache reuse"
+
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build'
+    # BUILDKIT_INLINE_CACHE=1 makes Docker embed cache metadata inside the
+    # pushed image so the next build can do `--cache-from <image>` and have
+    # everything it needs to reuse layers. Without this, --cache-from sees
+    # the image but can't extract usable cache info from it.
+    env:
+      - 'DOCKER_BUILDKIT=1'
     args:
       - 'build'
       - '-f'
       - 'Dockerfile.gpu'
+      - '--cache-from'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_LATEST_TAG}'
+      - '--build-arg'
+      - 'BUILDKIT_INLINE_CACHE=1'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_TAG}'
       - '-t'
@@ -30,19 +63,22 @@ steps:
       - '.'
 
 # Both tags are pushed together so we always have a stable rollback target
-# (the SHA tag) plus a moving "latest for this env" pointer.
+# (the SHA tag) plus a moving "latest for this env" pointer that the next
+# build's --cache-from can target.
 images:
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_TAG}'
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_IMAGE}:${_LATEST_TAG}'
 
 options:
   # The default e2-medium would build for ~50 min and risk Docker layer-cache
-  # OOM. E2_HIGHCPU_32 cuts build time to ~15-25 min on a cold cache.
+  # OOM. E2_HIGHCPU_32 cuts cold build time to ~15-25 min; warm-cache builds
+  # are ~5-10 min thanks to the --cache-from above.
   machineType: 'E2_HIGHCPU_32'
-  # CUDA + PyTorch + weights need real disk headroom during layer assembly.
+  # CUDA + PyTorch + weights need real disk headroom during layer assembly,
+  # plus the cached image we pull at the start.
   diskSizeGb: 100
   logging: CLOUD_LOGGING_ONLY
 
-# Long timeout for the first cold-cache build. Subsequent builds with layer
-# caching usually finish in 5-10 min and are well under this cap.
+# Long timeout for the first cold-cache build. Warm-cache builds finish well
+# under this cap.
 timeout: 3600s
