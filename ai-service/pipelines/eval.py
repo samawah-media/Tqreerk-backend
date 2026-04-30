@@ -180,7 +180,34 @@ async def run_eval(
         # Ragas's evaluate() is sync internally; we run it in a thread so
         # the worker's event loop stays responsive (so other jobs can be
         # claimed while a long eval is in flight).
+        #
+        # Two layers of timeout protection:
+        #   1. RunConfig.timeout caps each individual judge LLM call inside
+        #      Ragas. Without this, the underlying _call_with_retry can
+        #      spend up to 1+2+4+8=15s on its own retry stack per call,
+        #      and Ragas fires multiple per metric — easy to exhaust the
+        #      outer budget on a single slow metric.
+        #   2. RunConfig.max_retries=2 short-circuits Ragas's own retry
+        #      loop on top of ours (which has 5 attempts already). Stacking
+        #      both was 5*2 = 10× retries per failure.
+        #   3. Outer asyncio.wait_for hard-caps the whole evaluate() at
+        #      timeout * (n_metrics + 2). The +2 buffer covers fixed
+        #      overhead (dataset construction, result serialisation) so a
+        #      run that needed exactly N*timeout doesn't get killed at the
+        #      finish line.
         from ragas import evaluate  # type: ignore
+        from ragas.run_config import RunConfig  # type: ignore
+
+        run_config = RunConfig(
+            timeout=int(timeout),
+            max_retries=2,
+            max_wait=int(timeout / 2),
+            # Ragas defaults to max_workers=16; for a single-row dataset
+            # the realistic concurrency ceiling is "calls per metric × n
+            # metrics" — let it parallelise so independent metrics' judge
+            # calls overlap instead of running serially.
+            max_workers=8,
+        )
 
         loop = asyncio.get_running_loop()
         result = await asyncio.wait_for(
@@ -191,12 +218,26 @@ async def run_eval(
                     metrics=metrics,
                     llm=judge_llm,
                     embeddings=judge_emb,
+                    run_config=run_config,
                     raise_exceptions=False,  # individual metric errors → NaN
                     show_progress=False,
                 ),
             ),
-            timeout=timeout * len(metrics),
+            timeout=timeout * (len(metrics) + 2),
         )
+    except asyncio.TimeoutError:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.warning(
+            "[eval] ragas.evaluate timed out after %d ms (budget=%d s, %d metrics) "
+            "— posting eval_error and skipping this row",
+            elapsed_ms, int(timeout * (len(metrics) + 2)), len(metrics),
+        )
+        if trace_id:
+            obs.score(
+                trace_id=trace_id, name="eval_error", value=0.0,
+                comment=f"timeout after {elapsed_ms} ms",
+            )
+        return {}
     except Exception as exc:
         logger.exception("[eval] ragas.evaluate failed: %s", exc)
         if trace_id:

@@ -138,8 +138,15 @@ class Settings(BaseSettings):
     # (1.0 = all). Disable with eval_enabled=False to skip eval entirely.
     eval_enabled: bool            = True
     eval_sample_rate: float       = 1.0
-    # Per-metric timeout — protects the worker from a stuck judge LLM call.
-    eval_metric_timeout_seconds: float = 60.0
+    # Per-metric timeout — used as both:
+    #   • Ragas RunConfig.timeout (per individual LLM call inside evaluate)
+    #   • a multiplier for the outer asyncio.wait_for that hard-caps the
+    #     whole evaluate() wallclock at timeout * (n_metrics + 2).
+    # 90 s gives each Gemini judge call enough headroom for retries while
+    # keeping the worst-case eval bounded around 7-8 min for the 3-metric
+    # set (faithfulness, answer_relevancy, context_precision). Was 60 s,
+    # which routinely blew up under retry storms.
+    eval_metric_timeout_seconds: float = 90.0
 
     # ── Daily quotas (cost protection) ───────────────────────────────────────
     # Counts rolling 24-hour windows over ai_jobs (per-org) and chat_messages
