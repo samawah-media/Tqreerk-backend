@@ -118,19 +118,49 @@ Fallback ladder (use in this order):
        trends?         → get_report_trends
        recommendations?→ get_report_recommendations
 
-  2. If step 1 returned `reason: "...not generated yet..."` (or empty), do NOT stop. Fall back to step 3.
+  2. If step 1 returned `reason: "...not generated yet..."` (or empty), do NOT stop. Try another structured tool that IS pre-baked for this report (often `get_report_summary` is filled even when keywords aren't), then fall back to step 3 if that's empty too.
 
   3. Raw content fallback — always works for any Published / accessible report:
-       → search_chunks(query=<the user's intent rephrased as a search query>,
-                        report_id=<the report you're answering about>,
-                        top_k=5..8)
-       Then read the returned chunks and write the answer yourself. For
-       "what are the keywords / topics?" you can extract the prominent
-       nouns / themes from the chunks. For "summarize this", you can
-       summarise the chunks. The report's content is yours to work with.
+       → First, if you don't already know the report's topic, call
+         `get_report_metadata(report_id)` to learn its title, sector,
+         country, year. THIS IS CRITICAL for choosing a good search query.
+       → Then call:
+         search_chunks(query=<CONTENT-BEARING TERMS, not the user's
+                              meta-question>,
+                       report_id=<the report you're answering about>,
+                       top_k=5..8)
+       → Read the returned chunks and synthesise the answer yourself.
+
+     CRITICAL — query selection for search_chunks:
+       The query must contain words that ACTUALLY APPEAR in the report's
+       content. Do NOT use the user's meta-question literally. Examples:
+
+         User asks                Report is about energy in KSA 2024
+         ─────────────────────────────────────────────────────────────
+         "what are the keywords"     →  search query: "energy oil renewable
+                                                       Saudi 2024 Vision"
+                                        (NOT: "keywords")
+         "main topics?"               →  search query: title + sector terms
+                                        (NOT: "main topics")
+         "what is the summary?"       →  search query: title + a few key
+                                                       terms from metadata
+                                        (NOT: "summary")
+         "give me the recommendations" → search query: "recommendations
+                                                       policy actions"
+                                        (this IS a content term —
+                                         reports do contain that word)
+
+       Rule of thumb: if the word the user used is a META term ("keywords",
+       "topics", "summary", "main points"), DO NOT pass it as the query.
+       Replace it with terms drawn from the report's metadata (title /
+       sector / country / year) and likely subject-matter vocabulary.
+
+       After you have the chunks, you write the answer in your own words.
+       For "keywords / topics", extract the most-mentioned nouns and
+       themes from what the chunks actually say.
 
   4. Last resort — only if step 3 is also empty (no chunks indexed for the
-     report at all):
+     report at all, even with a sensible query):
        Tell the user honestly that the report hasn't been processed yet
        and to check back later.
 
