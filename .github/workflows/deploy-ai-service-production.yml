@@ -82,10 +82,7 @@ jobs:
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
             LANGFUSE_TRACE_SAMPLE_RATE=0.5
             EVAL_SAMPLE_RATE=0.2
-            QUOTA_ENABLED=true
-            QUOTA_DAILY_INGEST_PER_ORG=50
-            QUOTA_DAILY_TRANSLATE_PER_ORG=25
-            QUOTA_DAILY_CHAT_PER_USER=300
+            QUOTA_ENABLED=false
 
       - name: Verify deployment
         run: |
@@ -140,7 +137,4 @@ jobs:
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
             LANGFUSE_TRACE_SAMPLE_RATE=0.5
             EVAL_SAMPLE_RATE=0.2
-            QUOTA_ENABLED=true
-            QUOTA_DAILY_INGEST_PER_ORG=50
-            QUOTA_DAILY_TRANSLATE_PER_ORG=25
-            QUOTA_DAILY_CHAT_PER_USER=300
+            QUOTA_ENABLED=false

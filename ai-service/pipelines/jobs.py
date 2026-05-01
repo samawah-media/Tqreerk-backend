@@ -131,7 +131,7 @@ async def _wake_worker() -> None:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
 
         import httpx
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(url.rstrip("/") + "/health", headers=headers)
         logger.info("[wake] pinged %s -> %d", url, resp.status_code)
     except Exception as exc:
