@@ -46,7 +46,9 @@ def _build_client() -> genai.Client:
     indefinitely — same failure mode that bit ai-service before its 120s
     fix.
     """
-    http_opts = {"timeout": 120}
+    # google-genai HttpOptions timeout is in milliseconds.
+    # 120_000 ms = 120 s — enough headroom for a full embedding batch.
+    http_opts = {"timeout": 120_000}
     logger.info(
         "[embedder] building Vertex client project=%s location=%s model=%s",
         settings.gcp_project_id, settings.vertex_location, settings.embed_vertex_model,
