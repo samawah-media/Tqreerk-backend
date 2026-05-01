@@ -47,7 +47,14 @@ from models.schema import (
     RerankResult,
 )
 from pipeline import chunker, embeddings, reranker, vertex_embedder
-from pipeline.ingest import claim_job, mark_job_completed, mark_job_failed, run_ingest
+from pipeline.ingest import (
+    claim_job,
+    mark_job_completed,
+    mark_job_failed,
+    reset_job_for_embed_retry,
+    _load_chunk_checkpoint,
+    run_ingest,
+)
 from pipeline.orchestrator import process_document, process_page
 
 logger = logging.getLogger(__name__)
@@ -511,7 +518,7 @@ async def _run_ingest_job_background(body: IngestJobRequest) -> None:
     )
     try:
         result = await loop.run_in_executor(
-            None, run_ingest, body.report_id, body.file_url, body.options,
+            None, run_ingest, body.report_id, body.file_url, body.options, body.job_id,
         )
         await loop.run_in_executor(None, mark_job_completed, body.job_id, result)
         logger.info(
@@ -520,7 +527,23 @@ async def _run_ingest_job_background(body: IngestJobRequest) -> None:
         )
     except Exception as exc:
         logger.exception("[ingest_job] job=%s pipeline failed: %s", body.job_id, exc)
-        await loop.run_in_executor(None, mark_job_failed, body.job_id, str(exc))
+        # If a chunk checkpoint was saved (embedding failed after extract/chunk
+        # completed), reset to Pending so the watcher re-triggers embedding
+        # without repeating the expensive download→extract→chunk stages.
+        checkpoint = await loop.run_in_executor(
+            None, _load_chunk_checkpoint, body.job_id,
+        )
+        if checkpoint:
+            logger.info(
+                "[ingest_job] job=%s has chunk checkpoint — resetting to Pending "
+                "for embed retry (watcher will re-trigger in ≤2 min)",
+                body.job_id,
+            )
+            await loop.run_in_executor(
+                None, reset_job_for_embed_retry, body.job_id, str(exc),
+            )
+        else:
+            await loop.run_in_executor(None, mark_job_failed, body.job_id, str(exc))
 
 
 def _check_token(provided: str | None) -> None:
