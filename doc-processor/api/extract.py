@@ -20,11 +20,12 @@ import asyncio
 import base64
 import logging
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 
 import time
 
 from core.config import settings
+
 from models.schema import (
     EmbedRequest,
     EmbedResponse,
@@ -37,11 +38,16 @@ from models.schema import (
     IngestFullRequest,
     IngestFullResponse,
     IngestFullStats,
+    IngestJobAccepted,
+    IngestJobRequest,
+    IngestRequest,
+    IngestResponse,
     RerankRequest,
     RerankResponse,
     RerankResult,
 )
 from pipeline import chunker, embeddings, reranker, vertex_embedder
+from pipeline.ingest import claim_job, mark_job_completed, mark_job_failed, run_ingest
 from pipeline.orchestrator import process_document, process_page
 
 logger = logging.getLogger(__name__)
@@ -406,6 +412,104 @@ async def ingest_full(
             chunks_emitted=len(chunks_out),
         ),
     )
+
+
+@router.post("/ingest", response_model=IngestResponse)
+async def ingest(
+    body: IngestRequest,
+    x_internal_token: str | None = Header(default=None),
+) -> IngestResponse:
+    """Download → extract → chunk → embed → persist in one GPU-side call.
+
+    The ai-service worker sends { report_id, file_url } and gets back ingest
+    stats. No PDF bytes or chunk vectors are transferred back — the doc-
+    processor writes directly to report_chunks via the shared Postgres DB.
+
+    Failure modes
+    =============
+    - DATABASE_URL not set → 500 (misconfiguration; will surface on startup)
+    - Download fails       → 502 propagated from httpx / GCS
+    - Vertex embed fails   → 502 (retried up to 3x inside vertex_embedder)
+    - DB write fails       → 500 (transaction is rolled back automatically)
+    """
+    _check_token(x_internal_token)
+
+    if not settings.database_url:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL is not configured on this doc-processor instance.",
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, run_ingest, body.report_id, body.file_url, body.options,
+        )
+    except Exception as exc:
+        logger.exception("ingest: pipeline failed for report=%s: %s", body.report_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return IngestResponse(**result)
+
+
+@router.post("/ingest_job", response_model=IngestJobAccepted, status_code=202)
+async def ingest_job(
+    body: IngestJobRequest,
+    background_tasks: BackgroundTasks,
+    x_internal_token: str | None = Header(default=None),
+) -> IngestJobAccepted:
+    """Async ingest: GPU owns the full job lifecycle.
+
+    Returns 202 immediately. A background task then:
+      1. Claims the ai_jobs row (Pending → Processing) — if already claimed
+         by another trigger, the task exits without running twice.
+      2. Runs the full ingest pipeline (download → extract → chunk → embed →
+         persist to report_chunks).
+      3. Sets the job to Completed or Failed with output / error.
+
+    The ai-service worker never processes jobs triggered via this endpoint
+    (they are excluded from the worker's claim query by step=ingest filter).
+    """
+    _check_token(x_internal_token)
+
+    if not settings.database_url:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL is not configured on this doc-processor instance.",
+        )
+
+    background_tasks.add_task(_run_ingest_job_background, body)
+    return IngestJobAccepted(accepted=True, job_id=body.job_id)
+
+
+async def _run_ingest_job_background(body: IngestJobRequest) -> None:
+    """Background task: claim → run pipeline → mark terminal state."""
+    loop = asyncio.get_running_loop()
+
+    claimed = await loop.run_in_executor(None, claim_job, body.job_id)
+    if not claimed:
+        logger.warning(
+            "[ingest_job] job=%s already claimed or not Pending — skipping",
+            body.job_id,
+        )
+        return
+
+    logger.info(
+        "[ingest_job] job=%s claimed, starting pipeline for report=%s",
+        body.job_id, body.report_id,
+    )
+    try:
+        result = await loop.run_in_executor(
+            None, run_ingest, body.report_id, body.file_url, body.options,
+        )
+        await loop.run_in_executor(None, mark_job_completed, body.job_id, result)
+        logger.info(
+            "[ingest_job] job=%s completed: %d chunks / %d pages",
+            body.job_id, result.get("chunks_inserted", 0), result.get("pages_processed", 0),
+        )
+    except Exception as exc:
+        logger.exception("[ingest_job] job=%s pipeline failed: %s", body.job_id, exc)
+        await loop.run_in_executor(None, mark_job_failed, body.job_id, str(exc))
 
 
 def _check_token(provided: str | None) -> None:

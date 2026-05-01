@@ -59,12 +59,17 @@ class Settings(BaseSettings):
     # secret so a misconfigured IAM doesn't expose the GPU pipeline publicly.
     internal_api_token: str = ""
 
-    # ── Vertex AI (used by /v1/ingest_full to embed chunks) ──────────────────
-    # The doc-processor calls Vertex gemini-embedding-001 directly so that the
-    # /v1/ingest_full endpoint can return chunks-with-vectors in one round-trip
-    # — eliminates the 100 MB extraction-response transfer that was OOM-killing
-    # the ai-service worker. Same model + dim as ai-service so vectors live in
-    # one space; no DB migration needed.
+    # ── Database (used by /v1/ingest to persist chunks directly) ────────────────
+    # Same connection string as the ai-service. When set, /v1/ingest runs the
+    # full pipeline — download → extract → chunk → embed → persist — so the
+    # ai-service worker only needs to mark the job Complete. No chunks-with-
+    # vectors payload crosses the network.
+    database_url: str = ""
+
+    # ── Vertex AI (used by /v1/ingest_full and /v1/ingest to embed chunks) ──────
+    # The doc-processor calls Vertex gemini-embedding-001 directly so that
+    # embeddings stay in the same vector space as the existing report_chunks
+    # rows. Same model + dim as ai-service; no DB migration needed.
     gcp_project_id: str = ""
     vertex_location: str = "us-central1"
     embed_vertex_model: str = "gemini-embedding-001"

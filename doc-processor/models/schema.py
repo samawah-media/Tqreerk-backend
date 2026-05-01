@@ -309,6 +309,77 @@ class IngestFullResponse(BaseModel):
     stats: IngestFullStats
 
 
+# ── /v1/ingest — full GPU-side ingest (download → extract → chunk → embed → persist)
+# Two sub-modes share the same pipeline (run_ingest):
+#
+#   /v1/ingest       — synchronous. Returns full stats when done. Used by the
+#                      ai-service worker for ingest+summarize jobs (worker
+#                      manages the ai_jobs row lifecycle itself).
+#
+#   /v1/ingest_job   — asynchronous. Accepts {job_id, ...}, returns 202
+#                      immediately, then runs the pipeline in a background
+#                      task and updates ai_jobs directly. The ai-service
+#                      worker never touches these jobs.
+
+class IngestOptions(BaseModel):
+    """Extraction toggles for /v1/ingest. Same flags as ExtractOptions."""
+    extract_tables: bool    = True
+    extract_figures: bool   = True
+    extract_formulas: bool  = True
+    ocr_fallback: bool      = True
+    figure_captioning: bool = True
+
+
+class IngestRequest(BaseModel):
+    """Request body for POST /v1/ingest."""
+    report_id: str = Field(
+        ...,
+        description="UUID of the report row — used as the ReportId FK in report_chunks.",
+    )
+    file_url: str = Field(
+        ...,
+        description="gs://bucket/path.pdf or https:// URL of the source PDF.",
+    )
+    options: IngestOptions = Field(default_factory=IngestOptions)
+
+
+class IngestResponse(BaseModel):
+    """Stats returned by POST /v1/ingest (synchronous path).
+
+    Shape matches the OutputData written into ai_jobs by ai-service's
+    run_ingest_only_job so callers can read either path's result uniformly.
+    """
+    report_id: str
+    pages_processed: int
+    chunks_inserted: int
+    pages_total: int
+    extractor: str
+    embed_model: str
+    embed_dim: int
+    total_latency_ms: int
+
+
+class IngestJobRequest(BaseModel):
+    """Request body for POST /v1/ingest_job (async, GPU-managed job lifecycle)."""
+    job_id: str = Field(
+        ...,
+        description="UUID of the ai_jobs row. The GPU will atomically claim it "
+                    "(Pending → Processing) and drive it to Completed or Failed.",
+    )
+    report_id: str
+    file_url: str = Field(
+        ...,
+        description="gs://bucket/path.pdf or https:// URL of the source PDF.",
+    )
+    options: IngestOptions = Field(default_factory=IngestOptions)
+
+
+class IngestJobAccepted(BaseModel):
+    """Response for POST /v1/ingest_job — returned immediately before processing starts."""
+    accepted: bool = True
+    job_id: str
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

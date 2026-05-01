@@ -55,37 +55,71 @@ logging.getLogger().addFilter(_RootFilter())
 
 
 async def _pending_job_watcher() -> None:
-    """Background loop that wakes the worker whenever Pending ingest/translate
-    jobs are found. Runs only in API mode.
+    """Background loop that recovers stuck Pending jobs. Runs only in API mode.
 
-    Why: insert_job() fires a single wake-ping when the job is created. If
-    that ping fails (worker scaled to zero, token fetch timeout, etc.) the job
-    sits Pending forever. This loop retries the wake every 60 s so a failed
-    ping is self-healing within a minute — without any .NET changes or new
-    endpoints.
+    Two recovery paths, checked every 60 s:
+
+    1. step=ingest jobs (GPU-owned):
+       Re-fires trigger_ingest() for each stuck job so the GPU can claim and
+       process it. Handles the case where the initial trigger (fired at job
+       creation) failed because the GPU was cold/unavailable.
+
+    2. Other Pending jobs (worker-owned: translate, ingest+summarize, etc.):
+       Wakes the worker service via a health ping so it polls and claims them.
     """
     from core.db import conn_ctx
     from pipelines.jobs import _wake_worker
+    from services.doc_extractor import trigger_ingest
 
     while True:
         await asyncio.sleep(60)
         try:
             async with conn_ctx() as conn:
-                cur = await conn.execute(
+                # GPU-owned: Pending step=ingest jobs
+                gpu_cur = await conn.execute(
                     """
-                    SELECT COUNT(*) FROM ai_jobs
-                    WHERE "Status" = 'Pending'
-                      AND "JobType" != 'Evaluation'
+                    SELECT "Id", "ReportId", "InputData"->>'file_url'
+                    FROM ai_jobs
+                    WHERE "Status"  = 'Pending'
+                      AND "JobType" = 'Ingestion'
+                      AND "InputData"->>'step' = 'ingest'
                     """,
                 )
-                row = await cur.fetchone()
-                count = int(row[0]) if row else 0
-            if count > 0:
+                gpu_rows = await gpu_cur.fetchall()
+
+                # Worker-owned: any other Pending job
+                worker_cur = await conn.execute(
+                    """
+                    SELECT COUNT(*) FROM ai_jobs
+                    WHERE "Status"  = 'Pending'
+                      AND "JobType" != 'Evaluation'
+                      AND NOT (
+                            "JobType" = 'Ingestion'
+                            AND "InputData"->>'step' = 'ingest'
+                      )
+                    """,
+                )
+                worker_row = await worker_cur.fetchone()
+                worker_count = int(worker_row[0]) if worker_row else 0
+
+            if gpu_rows:
                 logger.info(
-                    "[watcher] %d pending ingest/translate job(s) — waking worker",
-                    count,
+                    "[watcher] %d stuck GPU ingest job(s) — re-triggering",
+                    len(gpu_rows),
+                )
+                for job_id, report_id, file_url in gpu_rows:
+                    if file_url:
+                        asyncio.create_task(
+                            trigger_ingest(str(job_id), str(report_id), file_url)
+                        )
+
+            if worker_count > 0:
+                logger.info(
+                    "[watcher] %d pending worker job(s) — waking worker",
+                    worker_count,
                 )
                 await _wake_worker()
+
         except Exception as exc:
             logger.warning("[watcher] pending-job check failed: %s", exc)
 

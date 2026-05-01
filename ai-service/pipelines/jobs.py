@@ -466,6 +466,13 @@ async def claim_one_job(conn: AsyncConnection) -> dict | None:
               AND "InputData" != 'null'::jsonb
               AND ("InputData"->>'file_url' IS NOT NULL
                    OR "JobType" = 'Evaluation')
+              -- step=ingest jobs are handled directly by the GPU service
+              -- (doc-processor /v1/ingest_job). Exclude them so the worker
+              -- never races with the GPU for the same row.
+              AND NOT (
+                    "JobType" = 'Ingestion'
+                    AND "InputData"->>'step' = 'ingest'
+              )
             ORDER BY "CreatedAt"
             FOR UPDATE SKIP LOCKED
             LIMIT 1
