@@ -518,7 +518,7 @@ async def sweep_stale_jobs() -> int:
         return cur.rowcount or 0
 
 
-async def run_worker_loop() -> None:
+async def run_worker_loop(shutdown: asyncio.Event | None = None) -> None:
     """Main worker entrypoint. Polls ai_jobs forever; runs one job at a time.
 
     Concurrency model:
@@ -528,6 +528,11 @@ async def run_worker_loop() -> None:
           to FOR UPDATE SKIP LOCKED.
         • Stale-job sweep runs every loop iteration but is cheap (single
           UPDATE that no-ops when nothing is stale).
+
+    shutdown: asyncio.Event set by the SIGTERM handler in main.py. When set,
+        the loop finishes the current job (if any) and exits cleanly instead
+        of being killed mid-job.  Passing None falls back to the old
+        "loop forever" behaviour (used in tests / local runs).
     """
     poll = settings.worker_poll_interval_seconds
     logger.info(
@@ -539,6 +544,11 @@ async def run_worker_loop() -> None:
     sweep_every_seconds = 60.0
 
     while True:
+        # Honour a shutdown request between jobs — never interrupt a running job.
+        if shutdown and shutdown.is_set():
+            logger.info("Worker shutdown event set — exiting loop after idle check")
+            return
+
         try:
             async with conn_ctx() as conn:
                 job = await claim_one_job(conn)
@@ -560,6 +570,9 @@ async def run_worker_loop() -> None:
                 logger.exception("worker stale-job sweep failed: %s", exc)
 
         if job is None:
+            if shutdown and shutdown.is_set():
+                logger.info("Worker shutdown event set and queue empty — exiting")
+                return
             await asyncio.sleep(poll)
             continue
 

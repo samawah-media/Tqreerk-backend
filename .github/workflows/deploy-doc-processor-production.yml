@@ -69,7 +69,7 @@ jobs:
             --port=8080 \
             --no-allow-unauthenticated \
             --execution-environment=gen2 \
-            --set-env-vars=ENVIRONMENT=production,SENTRY_DSN=${{ secrets.SENTRY_DSN }},INTERNAL_API_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
+            --set-env-vars=ENVIRONMENT=production,SENTRY_DSN=${{ secrets.SENTRY_DSN }},INTERNAL_API_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }},GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
 
       - name: Verify deployment
         run: |

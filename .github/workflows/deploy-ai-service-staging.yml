@@ -133,6 +133,7 @@ jobs:
             --min-instances=0
             --max-instances=3
             --timeout=900
+            --no-cpu-throttling
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
           env_vars: |

@@ -171,7 +171,7 @@ class Settings(BaseSettings):
     # the agent's accessible-report scope is computed per-user (Published OR
     # own-org membership). Capping chat per-org would punish quiet orgs whose
     # one chatty user overwhelmed everyone else's allowance.
-    quota_enabled: bool                 = True
+    quota_enabled: bool                 = False
     quota_daily_ingest_per_org: int     = 20      # /reports/ingest, EnqueueIngest
     quota_daily_translate_per_org: int  = 10      # /reports/translate
     quota_daily_chat_per_user: int      = 200     # /chat/.../messages

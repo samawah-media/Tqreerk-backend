@@ -13,6 +13,7 @@ worker pool, not on the request-serving instance.
 """
 import asyncio
 import logging
+import signal
 import uuid
 from contextlib import asynccontextmanager
 
@@ -211,15 +212,39 @@ def main() -> None:
     Worker mode never returns under normal operation — it loops forever. If it
     crashes hard, Cloud Run restarts the container, which is the desired
     behaviour for a queue worker.
+
+    SIGTERM handling: Cloud Run sends SIGTERM when it wants to replace/stop the
+    instance (new revision deployment, scale-to-zero, etc.). We catch it and
+    set a shutdown event so the worker loop finishes the current job before
+    exiting rather than dying mid-job and leaving the row stuck in 'Processing'.
+    Cloud Run waits up to 10 s after SIGTERM before sending SIGKILL, so this
+    is best-effort for jobs that complete quickly; long-running jobs are
+    protected by the stale-job sweeper on the next worker boot.
     """
     if settings.worker_mode == "worker":
         from pipelines.jobs import run_worker_loop
 
         logger.info("Starting in WORKER mode")
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        shutdown_event = asyncio.Event()
+
+        def _handle_signal(sig: int, *_) -> None:
+            name = signal.Signals(sig).name
+            logger.info(
+                "Worker received %s — will finish current job then exit", name
+            )
+            loop.call_soon_threadsafe(shutdown_event.set)
+
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT,  _handle_signal)
+
         try:
-            asyncio.run(run_worker_loop())
-        except KeyboardInterrupt:
-            logger.info("Worker received SIGINT — shutting down")
+            loop.run_until_complete(run_worker_loop(shutdown_event))
+        finally:
+            loop.close()
+        logger.info("Worker exited cleanly.")
         return
 
     # API mode — defer to uvicorn launched from the Dockerfile CMD. Running
