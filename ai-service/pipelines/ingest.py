@@ -37,6 +37,7 @@ import sentry_sdk
 from google.cloud import storage
 
 from core.chunking import chunk_blocks_with_meta, chunk_text
+from core.config import settings
 from core.db import conn_ctx
 from services import doc_extractor, embed, observability as obs
 
@@ -152,6 +153,37 @@ async def ingest_report_bytes(
         report_id, pages_total, extractor,
     )
 
+    # ── Option B fast path: doc-processor /v1/ingest_full ────────────────────
+    # When enabled, doc-processor extracts + chunks + embeds in one HTTP call
+    # and returns a small (~2-3 MB) chunks-with-vectors payload. The legacy
+    # path below moves ~100 MB of structured blocks back over HTTP and
+    # OOM'd the worker during JSON parse.
+    #
+    # Only the auto + doc-processor extractor modes use this path; gemini-vision
+    # explicitly bypasses doc-processor and stays on the legacy chunking path.
+    # The forced "doc-processor" mode also takes this path for consistency
+    # with the env flag intent.
+    if (
+        settings.doc_processor_ingest_full_enabled
+        and extractor != "gemini-vision"
+        and settings.doc_processor_enabled
+        and settings.doc_processor_url
+    ):
+        result = await _ingest_via_ingest_full(
+            report_id, pdf_bytes, pages_total, trace,
+        )
+        if result is not None:
+            # ingest_full handled it end-to-end. Return its result;
+            # caller (run_ingest_summarize_job) will run summarize next.
+            return result
+        # ingest_full returned None — PDF too large or doc-processor
+        # disabled at runtime. Fall through to the legacy path.
+        logger.info(
+            "[ingest %s] ingest_full skipped (oversized or disabled); "
+            "falling back to legacy extract+chunk+embed path",
+            report_id,
+        )
+
     # Branch by extractor toggle, wrapped in a single "extract" span so the
     # trace tree shows extraction time regardless of which path won.
     page_results: list[dict] | None = None
@@ -216,6 +248,95 @@ async def ingest_report_bytes(
     return {
         "pages_processed": pages_with_chunks,
         "chunks_inserted": len(chunk_rows),
+        "pages_total":     pages_total,
+        "extractor":       extractor_tag,
+    }
+
+
+# ── ingest_full fast path (Option B) ────────────────────────────────────────
+
+
+async def _ingest_via_ingest_full(
+    report_id: UUID, pdf_bytes: bytes, pages_total: int, trace,
+) -> dict | None:
+    """Drive an ingest end-to-end via doc-processor /v1/ingest_full.
+
+    Returns a result dict on success (same shape as ingest_report_bytes)
+    or None to signal "fall back to legacy path" (PDF too large, etc.).
+    Re-raises on hard failures so the job runner can mark Failed.
+    """
+    loop = asyncio.get_running_loop()
+    with sentry_sdk.start_span(op="ingest.ingest_full", description="doc-processor"), \
+         obs.span(trace, name="ingest_full",
+                  input={"pages_total": pages_total}) as sp:
+        body = await loop.run_in_executor(
+            None, doc_extractor.ingest_full, pdf_bytes,
+        )
+        if body is None:
+            return None  # caller falls back to legacy path
+
+        chunks = body.get("chunks") or []
+        doc_meta = body.get("document_metadata") or {}
+        stats = body.get("stats") or {}
+        sp.update(output={
+            "n_chunks": len(chunks),
+            "extract_ms": stats.get("extract_latency_ms"),
+            "chunk_ms":   stats.get("chunk_latency_ms"),
+            "embed_ms":   stats.get("embed_latency_ms"),
+        })
+
+    if not chunks:
+        logger.warning(
+            "[ingest %s] ingest_full produced 0 chunks (page_count=%d)",
+            report_id, doc_meta.get("page_count", 0),
+        )
+        # An ingest_full returning zero chunks is treated as a real result
+        # (empty PDF) — don't fall back. Persist the empty set so the job
+        # completes cleanly and the report doesn't sit Pending forever.
+
+    # Convert the wire response into the (page, idx, content, vec, metadata)
+    # tuple shape that _persist_chunks expects. The persist contract hasn't
+    # changed; only how chunks were produced.
+    languages = doc_meta.get("detected_languages") or []
+    rows: list[tuple[int, int, str, np.ndarray, dict]] = []
+    for ch in chunks:
+        embedding = ch.get("embedding") or []
+        if not embedding:
+            # Should not happen when options.embed_chunks=True, but guard so
+            # we don't write a zero-vector row to the index.
+            raise RuntimeError(
+                f"ingest_full returned chunk with empty embedding "
+                f"(page={ch.get('page_number')}, idx={ch.get('chunk_index')})"
+            )
+        rows.append((
+            int(ch.get("page_number") or 0),
+            int(ch.get("chunk_index") or 0),
+            ch.get("content") or "",
+            np.array(embedding, dtype=np.float32),
+            {
+                "section_title": ch.get("section_title") or "",
+                "block_types":   ch.get("block_types") or [],
+                "language":      languages[0] if languages else "mixed",
+                "extractor":     body.get("extractor") or "doc-processor-v1",
+            },
+        ))
+    rows.sort(key=lambda r: (r[0], r[1]))
+
+    with sentry_sdk.start_span(op="ingest.persist"), \
+         obs.span(trace, name="persist", input={"n_rows": len(rows)}):
+        await _persist_chunks(report_id, rows)
+
+    pages_with_chunks = len({r[0] for r in rows})
+    extractor_tag = body.get("extractor") or "doc-processor-v1"
+    logger.info(
+        "ingest report=%s complete via ingest_full: %d chunks across %d/%d "
+        "pages (extractor=%s, embed_model=%s)",
+        report_id, len(rows), pages_with_chunks, pages_total, extractor_tag,
+        body.get("embed_model"),
+    )
+    return {
+        "pages_processed": pages_with_chunks,
+        "chunks_inserted": len(rows),
         "pages_total":     pages_total,
         "extractor":       extractor_tag,
     }

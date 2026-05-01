@@ -417,10 +417,11 @@ async def dispatch(job: dict) -> None:
         if not file_url:
             await mark_failed(job_id, "Ingestion job missing file_url in input_data")
             return
-        if step == "ingest+summarize":
-            await run_ingest_summarize_job(job_id, report_id, file_url, extractor=extractor)
-        else:
+        if step == "ingest":
             await run_ingest_only_job(job_id, report_id, file_url, extractor=extractor)
+        else:
+            
+            await run_ingest_summarize_job(job_id, report_id, file_url, extractor=extractor)
         return
 
     if job_type == "Translation":

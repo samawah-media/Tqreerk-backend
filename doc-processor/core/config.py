@@ -59,6 +59,24 @@ class Settings(BaseSettings):
     # secret so a misconfigured IAM doesn't expose the GPU pipeline publicly.
     internal_api_token: str = ""
 
+    # ── Vertex AI (used by /v1/ingest_full to embed chunks) ──────────────────
+    # The doc-processor calls Vertex gemini-embedding-001 directly so that the
+    # /v1/ingest_full endpoint can return chunks-with-vectors in one round-trip
+    # — eliminates the 100 MB extraction-response transfer that was OOM-killing
+    # the ai-service worker. Same model + dim as ai-service so vectors live in
+    # one space; no DB migration needed.
+    gcp_project_id: str = ""
+    vertex_location: str = "us-central1"
+    embed_vertex_model: str = "gemini-embedding-001"
+    embed_vertex_dim: int   = 768
+
+    # ── /v1/ingest_full chunk cap ────────────────────────────────────────────
+    # Safety ceiling so a malformed PDF can't produce a 50 MB embedding payload.
+    # 1000 chunks ≈ 3 MB of vectors + ~3 MB of text — well under any worker
+    # memory limit. Calls that would exceed are rejected with HTTP 413; caller
+    # falls back to per-page mode.
+    ingest_full_max_chunks: int = 1000
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

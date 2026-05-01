@@ -240,6 +240,75 @@ class RerankResponse(BaseModel):
     latency_ms: int
 
 
+# ── /v1/ingest_full ──────────────────────────────────────────────────────────
+# End-to-end ingest in one round-trip. Replaces the legacy flow where
+# ai-service called /v1/extract_document, received ~100 MB of structured
+# blocks, then chunked + embedded locally. With ingest_full the doc-processor
+# does extract → chunk → embed and returns just chunks + vectors (~2-3 MB
+# for a 134-page PDF). The ai-service worker only persists.
+
+
+class IngestFullOptions(BaseModel):
+    """Per-request toggles for the combined extract + chunk + embed path.
+
+    Inherits all extractor flags so callers can mirror what they pass to
+    /v1/extract_document. `embed_chunks=False` skips the Vertex round-trip
+    and returns chunks without vectors — useful for dry-runs and chunk-
+    boundary debugging.
+    """
+    extract_tables: bool   = True
+    extract_figures: bool  = True
+    extract_formulas: bool = True
+    ocr_fallback: bool     = True
+    figure_captioning: bool = True
+    embed_chunks: bool     = True
+
+
+class IngestFullRequest(BaseModel):
+    """Request body for POST /v1/ingest_full."""
+    pdf_b64: str = Field(
+        ...,
+        description="Base64-encoded PDF bytes.",
+    )
+    options: IngestFullOptions = Field(default_factory=IngestFullOptions)
+
+
+class IngestChunk(BaseModel):
+    """One ingest-ready chunk: text + section + embedding."""
+    page_number: int
+    chunk_index: int
+    content: str
+    section_title: str = ""
+    block_types: list[str] = Field(default_factory=list)
+    # 768-dim vector when options.embed_chunks=True; empty list otherwise.
+    embedding: list[float] = Field(default_factory=list)
+
+
+class IngestFullStats(BaseModel):
+    """Per-stage timing so the caller can see where time was spent."""
+    extract_latency_ms: int
+    chunk_latency_ms:   int
+    embed_latency_ms:   int
+    total_latency_ms:   int
+    pages_processed:    int
+    chunks_emitted:     int
+
+
+class IngestFullResponse(BaseModel):
+    """Response body for POST /v1/ingest_full.
+
+    Wire size for a 134-page PDF with ~277 chunks: ~2-3 MB (vs ~100 MB for
+    the equivalent /v1/extract_document response). The size delta is the
+    point of this endpoint.
+    """
+    document_metadata: DocumentMetadata
+    chunks: list[IngestChunk]
+    extractor: str = "doc-processor-v1"
+    embed_model: str = ""           # "" when options.embed_chunks=False
+    embed_dim: int = 0              # 0 when options.embed_chunks=False
+    stats: IngestFullStats
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

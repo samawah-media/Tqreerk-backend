@@ -48,3 +48,14 @@ sentence-transformers==3.2.1
 pymupdf==1.24.14
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
+
+# ── Chunking + Vertex embedding (used by /v1/ingest_full) ────────────────────
+# /v1/ingest_full extracts → chunks → embeds in one round-trip so the
+# ai-service worker doesn't have to receive 100 MB of structured blocks
+# back over HTTP. The chunker uses the same RecursiveCharacterTextSplitter
+# as ai-service so chunk boundaries stay byte-identical. Vertex genai SDK
+# pinned to the same version as ai-service so retry / timeout behaviour
+# matches.
+langchain-text-splitters==0.3.2
+google-genai==0.8.0
+google-auth==2.36.0

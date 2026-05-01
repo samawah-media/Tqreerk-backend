@@ -238,6 +238,82 @@ def _call_doc_processor(png_bytes: bytes, page_number: int) -> dict:
     )
 
 
+# ── Combined extract + chunk + embed (Option B) ─────────────────────────────
+
+
+def ingest_full(pdf_bytes: bytes) -> dict | None:
+    """Call doc-processor /v1/ingest_full and return chunks-with-vectors.
+
+    Returns a dict shaped:
+        {
+          "document_metadata": {page_count, has_tables, ...},
+          "chunks": [
+              {page_number, chunk_index, content, section_title,
+               block_types, embedding},
+              ...
+          ],
+          "stats": {extract_latency_ms, chunk_latency_ms, embed_latency_ms,
+                    total_latency_ms, pages_processed, chunks_emitted},
+          "extractor": str,
+          "embed_model": str,
+          "embed_dim": int,
+        }
+
+    Returns None when:
+      • doc-processor is disabled or unconfigured
+      • PDF exceeds the configured size threshold (caller falls back to
+        per-page extraction, which itself falls back to Gemini Vision)
+
+    Raises on any HTTP / network error so the caller's try/except in the
+    job runner marks the job Failed. We intentionally don't fall back to
+    /v1/extract_document here — that path was the OOM-prone one we're
+    moving off; reintroducing it as a fallback would defeat the point.
+    """
+    if not (settings.doc_processor_enabled and settings.doc_processor_url):
+        return None
+
+    pdf_mb = len(pdf_bytes) / (1024 * 1024)
+    if pdf_mb > settings.doc_processor_max_pdf_mb:
+        logger.info(
+            "doc_extractor: PDF is %.1f MB > %.1f MB cap; using per-page path",
+            pdf_mb, settings.doc_processor_max_pdf_mb,
+        )
+        return None
+
+    url = settings.doc_processor_url.rstrip("/") + "/v1/ingest_full"
+    headers = _build_headers()
+    payload = {
+        "pdf_b64": base64.b64encode(pdf_bytes).decode("ascii"),
+        "options": {
+            "extract_tables":     True,
+            "extract_figures":    True,
+            "extract_formulas":   True,
+            "ocr_fallback":       True,
+            "figure_captioning":  True,
+            "embed_chunks":       True,
+        },
+    }
+
+    started = time.perf_counter()
+    response = _client().post(url, headers=headers, json=payload)
+    response.raise_for_status()
+    body = response.json()
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    chunks = body.get("chunks") or []
+    stats = body.get("stats") or {}
+    doc_meta = body.get("document_metadata") or {}
+    logger.info(
+        "doc-processor ingest_full latency=%dms chunks=%d pages=%d "
+        "extract_ms=%s chunk_ms=%s embed_ms=%s",
+        elapsed_ms, len(chunks), doc_meta.get("page_count", 0),
+        stats.get("extract_latency_ms"),
+        stats.get("chunk_latency_ms"),
+        stats.get("embed_latency_ms"),
+    )
+    return body
+
+
 # ── Embeddings ──────────────────────────────────────────────────────────────
 
 def embed_texts(texts: list[str], kind: str = "passage") -> list[list[float]]:

@@ -117,6 +117,17 @@ class Settings(BaseSettings):
     # adds ~33% overhead. 22 MB raw → ~29 MB on the wire, comfortably under.
     doc_processor_max_pdf_mb: float = 22.0
 
+    # ── ingest_full path (Option B) ──────────────────────────────────────────
+    # When True, ingest calls doc-processor /v1/ingest_full which returns
+    # chunks-with-embeddings in one round-trip (~2-3 MB for 134 pages) instead
+    # of the legacy /v1/extract_document path (~100 MB of structured blocks).
+    # This eliminates the OOM that killed the worker during JSON parse of the
+    # large extraction response. Off by default for safe rollout — flip via
+    # env var when ready. When True, the per-page Gemini Vision fallback no
+    # longer runs on doc-processor failures (failed jobs go straight to
+    # Failed); flip back to False if you need that fallback behaviour.
+    doc_processor_ingest_full_enabled: bool = True
+
     # ── Langfuse (self-hosted observability) ─────────────────────────────────
     # When `langfuse_enabled` is on AND keys are present, every chat / ingest
     # request emits a trace tree with spans for each phase and a generation
