@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     gcp_project_id: str                # e.g. taqrrerk
     gcs_bucket: str                    # taqreerk-uploads (me-central1, Doha)
     translate_location: str = "global" # Google Translate API location
-    vertex_location: str = "global"  # Vertex AI region
+    vertex_location: str = "europe-west3"  # Vertex AI region
     gemini_api_key: str = ""           # optional: AI Studio key — if set, used INSTEAD of Vertex AI
     internal_api_key: str = ""         # optional: shared secret for .NET → Python calls
 
