@@ -64,10 +64,27 @@ jobs:
       #                                 for /v1/extract_document on large PDFs.
       - name: Deploy to Cloud Run (Staging)
         env:
-          # Loaded as a shell env var so semicolons/equals in the connection
-          # string are not interpreted by the shell when passed to gcloud.
+          # All secrets are loaded as shell env vars first so Python can read
+          # them and write a properly YAML-escaped --env-vars-file. This avoids
+          # any shell word-splitting on semicolons/equals in connection strings.
           DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          INTERNAL_API_TOKEN: ${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
+          GCP_PROJECT_ID_VAL: ${{ secrets.GCP_PROJECT_ID }}
         run: |
+          python3 - <<'PYEOF'
+          import os, yaml
+          env_vars = {
+              "ENVIRONMENT": "staging",
+              "SENTRY_DSN": os.environ["SENTRY_DSN"],
+              "INTERNAL_API_TOKEN": os.environ["INTERNAL_API_TOKEN"],
+              "GCP_PROJECT_ID": os.environ["GCP_PROJECT_ID_VAL"],
+              "DATABASE_URL": os.environ["DATABASE_URL"],
+          }
+          with open("/tmp/env-vars.yaml", "w") as f:
+              yaml.dump(env_vars, f, default_flow_style=False, allow_unicode=True)
+          PYEOF
+
           gcloud run deploy ${{ env.SERVICE }} \
             --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
             --region=${{ env.REGION }} \
@@ -87,16 +104,7 @@ jobs:
             --no-cpu-throttling \
             --execution-environment=gen2 \
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }} \
-            --set-env-vars="ENVIRONMENT=staging,SENTRY_DSN=${{ secrets.SENTRY_DSN }},INTERNAL_API_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }},GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}"
-
-          # DATABASE_URL is set separately via --update-env-vars because the
-          # connection string contains semicolons and equals signs that would
-          # be interpreted by the shell if inlined into --set-env-vars.
-          # Double-quoting "${DATABASE_URL}" keeps those characters literal.
-          gcloud run services update ${{ env.SERVICE }} \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }} \
-            --update-env-vars="^|^DATABASE_URL=${DATABASE_URL}"
+            --env-vars-file=/tmp/env-vars.yaml
 
           
       # Health check tolerates the extended cold-start window. We poll for up
