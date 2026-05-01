@@ -69,6 +69,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from core.config import settings
+from services import observability as obs
 from services.tools import ToolContext, build_tools
 
 logger = logging.getLogger(__name__)
@@ -373,20 +374,27 @@ def make_langfuse_handler(
 ) -> Any | None:
     """Return a Langfuse LangChain CallbackHandler, or None when disabled.
 
-    Importing `langfuse.callback` is gated so a missing/broken Langfuse
-    install doesn't break chat. The returned handler is passed to the
-    graph via `config={"callbacks": [handler]}`. Every node + tool call
-    inside the run lands under one Langfuse trace tagged with this user
-    and session, matching how the legacy chat path traced single-shot
-    requests.
+    Two construction paths depending on whether the caller pinned a trace
+    id upfront:
 
-    `trace_id` lets the caller pin the trace ID upfront. The agent's
-    spans nest under that trace, AND the Ragas eval job (run later by
-    the worker) can post `score` events against the same id so quality
-    metrics show up inline in the Langfuse dashboard. Without it, the
-    callback handler invents its own trace id at first event and the
-    eval worker has nothing to attach scores to — scores get silently
-    dropped.
+      • `trace_id` provided  → pre-create the trace via the Langfuse SDK
+        client (`client.trace(id=...)`) and return that trace's
+        `get_langchain_handler()`. The agent's spans nest under our chosen
+        id, AND the async Ragas eval worker can later post `score` events
+        against the same id so quality metrics show up inline in the
+        Langfuse dashboard. This is the production path.
+
+      • no `trace_id`        → fall back to a vanilla `CallbackHandler`
+        which invents its own id. Scores from the eval worker would be
+        orphaned in this mode, so we only use this for local debug runs.
+
+    Why we don't pass `trace_id` to `CallbackHandler(...)` directly: the
+    Langfuse 2.x CallbackHandler constructor doesn't accept a `trace_id`
+    kwarg, so doing so raises TypeError, the surrounding try/except
+    swallows it, and the agent runs with NO Langfuse callback at all.
+    That's the bug we're fixing here — the previous version of this
+    function silently disabled Langfuse on every chat that pinned a
+    trace id.
     """
     if not settings.langfuse_enabled:
         return None
@@ -394,10 +402,30 @@ def make_langfuse_handler(
             and settings.langfuse_public_key
             and settings.langfuse_secret_key):
         return None
-    try:
-        from langfuse.callback import CallbackHandler  # type: ignore[import-not-found]
 
-        kwargs: dict[str, Any] = dict(
+    try:
+        if trace_id:
+            # Pre-create the trace so we own its id. The trace object
+            # carries identity (user/session/tags) and `get_langchain_handler`
+            # returns a CallbackHandler bound to it — every span the agent
+            # emits via config={"callbacks": [handler]} attaches here.
+            client = obs.get_client()
+            if client is None:
+                # Langfuse client init failed earlier; fall through to
+                # the no-handler path so the agent still runs.
+                return None
+            trace = client.trace(
+                id=trace_id,
+                name=trace_name,
+                user_id=str(user_id),
+                session_id=str(session_id),
+                tags=["chat", "agent"],
+            )
+            return trace.get_langchain_handler(update_parent=False)
+
+        # No pinned id — vanilla handler with auto-generated trace.
+        from langfuse.callback import CallbackHandler  # type: ignore[import-not-found]
+        return CallbackHandler(
             host=settings.langfuse_host,
             public_key=settings.langfuse_public_key,
             secret_key=settings.langfuse_secret_key,
@@ -406,9 +434,6 @@ def make_langfuse_handler(
             trace_name=trace_name,
             tags=["chat", "agent"],
         )
-        if trace_id:
-            kwargs["trace_id"] = trace_id
-        return CallbackHandler(**kwargs)
     except Exception as exc:
         logger.warning("[agent] langfuse handler init failed: %s", exc)
         return None
