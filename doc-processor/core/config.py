@@ -3,6 +3,48 @@ production with different model variants and thresholds without rebuilds."""
 from pydantic_settings import BaseSettings
 
 
+# Maps .NET / Npgsql connection-string keys to libpq keys so the doc-processor
+# can accept the SAME DATABASE_URL secret the .NET API and ai-service use.
+_DOTNET_TO_LIBPQ = {
+    "host":        "host",
+    "server":      "host",
+    "port":        "port",
+    "database":    "dbname",
+    "username":    "user",
+    "user id":     "user",
+    "password":    "password",
+    "ssl mode":    "sslmode",
+    "sslmode":     "sslmode",
+}
+
+
+def _normalize_database_url(value: str) -> str:
+    """Accept a libpq URI (postgres://...), libpq keyword string, or a .NET
+    Npgsql connection string (Host=...;Database=...;Username=...;Password=...).
+    .NET strings are converted to libpq keyword format that psycopg3 understands.
+    """
+    v = value.strip()
+    if not v:
+        return v
+    if v.startswith(("postgres://", "postgresql://")):
+        return v
+    if "=" in v and ";" in v:   # .NET semicolon-separated format
+        parts = []
+        for chunk in v.split(";"):
+            if "=" not in chunk:
+                continue
+            k, _, val = chunk.partition("=")
+            key = _DOTNET_TO_LIBPQ.get(k.strip().lower())
+            if not key:
+                continue
+            val = val.strip()
+            if any(c in val for c in " '\\"):
+                val = "'" + val.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            parts.append(f"{key}={val}")
+        return " ".join(parts)
+    return v
+
+
 class Settings(BaseSettings):
     # ── Runtime ──────────────────────────────────────────────────────────────
     environment: str = "staging"                 # tags Sentry events
@@ -59,7 +101,33 @@ class Settings(BaseSettings):
     # secret so a misconfigured IAM doesn't expose the GPU pipeline publicly.
     internal_api_token: str = ""
 
+    # ── Database (used by /v1/ingest to persist chunks directly) ────────────────
+    # Same connection string as the ai-service. When set, /v1/ingest runs the
+    # full pipeline — download → extract → chunk → embed → persist — so the
+    # ai-service worker only needs to mark the job Complete. No chunks-with-
+    # vectors payload crosses the network.
+    database_url: str = ""
+
+    # ── Vertex AI (used by /v1/ingest_full and /v1/ingest to embed chunks) ──────
+    # The doc-processor calls Vertex gemini-embedding-001 directly so that
+    # embeddings stay in the same vector space as the existing report_chunks
+    # rows. Same model + dim as ai-service; no DB migration needed.
+    gcp_project_id: str = ""
+    vertex_location: str = "us-central1"
+    embed_vertex_model: str = "gemini-embedding-001"
+    embed_vertex_dim: int   = 768
+
+    # ── /v1/ingest_full chunk cap ────────────────────────────────────────────
+    # Safety ceiling so a malformed PDF can't produce a 50 MB embedding payload.
+    # 1000 chunks ≈ 3 MB of vectors + ~3 MB of text — well under any worker
+    # memory limit. Calls that would exceed are rejected with HTTP 413; caller
+    # falls back to per-page mode.
+    ingest_full_max_chunks: int = 1000
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    def model_post_init(self, __context) -> None:
+        self.database_url = _normalize_database_url(self.database_url)
 
 
 settings = Settings()  # type: ignore[call-arg]

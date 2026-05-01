@@ -87,9 +87,21 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
+      # Pull the previous prod-latest image so Docker has cached layers to
+      # reuse — see deploy-staging.yml for the rationale. Saves ~2-4 min of
+      # .NET restore on warm-cache builds.
+      - name: Pull cached image
+        run: |
+          docker pull ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
+            || echo "no previous image at prod-latest — first cold build"
+
       - name: Build Docker image
+        env:
+          DOCKER_BUILDKIT: "1"
         run: |
           docker build \
+            --cache-from=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
             -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
             -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
             .
@@ -132,7 +144,7 @@ jobs:
             Quota__Enabled=true
             Quota__DailyIngestPerOrg=50
             Quota__DailyTranslatePerOrg=25
-            Quota__DailyChatPerOrg=1000
+            Quota__DailyChatPerUser=300
 
       - name: Show production URL
         run: echo "Production deployed → ${{ steps.deploy.outputs.url }}"

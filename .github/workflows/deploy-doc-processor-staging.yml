@@ -63,12 +63,35 @@ jobs:
       #   --timeout=600               → matches ai-service's 600 s timeout
       #                                 for /v1/extract_document on large PDFs.
       - name: Deploy to Cloud Run (Staging)
+        env:
+          # All secrets are loaded as shell env vars first so Python can read
+          # them and write a properly YAML-escaped --env-vars-file. This avoids
+          # any shell word-splitting on semicolons/equals in connection strings.
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          INTERNAL_API_TOKEN: ${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
+          GCP_PROJECT_ID_VAL: ${{ secrets.GCP_PROJECT_ID }}
+          GPU_REGION: ${{ env.REGION }}
         run: |
+          python3 - <<'PYEOF'
+          import os, yaml
+          env_vars = {
+              "ENVIRONMENT": "staging",
+              "SENTRY_DSN": os.environ["SENTRY_DSN"],
+              "INTERNAL_API_TOKEN": os.environ["INTERNAL_API_TOKEN"],
+              "GCP_PROJECT_ID": os.environ["GCP_PROJECT_ID_VAL"],
+              "DATABASE_URL": os.environ["DATABASE_URL"],
+              "VERTEX_LOCATION": os.environ["GPU_REGION"],
+          }
+          with open("/tmp/env-vars.yaml", "w") as f:
+              yaml.dump(env_vars, f, default_flow_style=False, allow_unicode=True)
+          PYEOF
+
           gcloud run deploy ${{ env.SERVICE }} \
             --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT_ID }} \
-            --service-account=${{ secrets.GCP_DOC_PROCESSOR_SA }} \
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }} \
             --gpu=1 \
             --gpu-type=nvidia-l4 \
             --no-gpu-zonal-redundancy \
@@ -80,8 +103,10 @@ jobs:
             --timeout=600 \
             --port=8080 \
             --allow-unauthenticated \
+            --no-cpu-throttling \
             --execution-environment=gen2 \
-            --set-env-vars=ENVIRONMENT=staging,SENTRY_DSN=${{ secrets.SENTRY_DSN }},INTERNAL_API_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
+            --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }} \
+            --env-vars-file=/tmp/env-vars.yaml
 
           
       # Health check tolerates the extended cold-start window. We poll for up

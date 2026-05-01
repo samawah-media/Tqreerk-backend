@@ -183,10 +183,15 @@ class EmbedRequest(BaseModel):
 
 
 class EmbedResponse(BaseModel):
-    """One 1024-dim vector per input, in the same order. `dim` lets clients
-    sanity-check against their stored schema before persisting."""
+    """One vector per input, in the same order. `dim` lets clients
+    sanity-check against their stored schema before persisting.
+
+    Note (2026-04-30): /v1/embed is in legacy mode — production now uses
+    Vertex gemini-embedding-001 directly from ai-service. This endpoint
+    remains for ad-hoc tooling but its embeddings live in a different
+    vector space than the production index, so don't mix them."""
     embeddings: list[list[float]]
-    dim: int = 1024
+    dim: int = 768
     model: str
     latency_ms: int
 
@@ -233,6 +238,146 @@ class RerankResponse(BaseModel):
     results: list[RerankResult]
     model: str
     latency_ms: int
+
+
+# ── /v1/ingest_full ──────────────────────────────────────────────────────────
+# End-to-end ingest in one round-trip. Replaces the legacy flow where
+# ai-service called /v1/extract_document, received ~100 MB of structured
+# blocks, then chunked + embedded locally. With ingest_full the doc-processor
+# does extract → chunk → embed and returns just chunks + vectors (~2-3 MB
+# for a 134-page PDF). The ai-service worker only persists.
+
+
+class IngestFullOptions(BaseModel):
+    """Per-request toggles for the combined extract + chunk + embed path.
+
+    Inherits all extractor flags so callers can mirror what they pass to
+    /v1/extract_document. `embed_chunks=False` skips the Vertex round-trip
+    and returns chunks without vectors — useful for dry-runs and chunk-
+    boundary debugging.
+    """
+    extract_tables: bool   = True
+    extract_figures: bool  = True
+    extract_formulas: bool = True
+    ocr_fallback: bool     = True
+    figure_captioning: bool = True
+    embed_chunks: bool     = True
+
+
+class IngestFullRequest(BaseModel):
+    """Request body for POST /v1/ingest_full."""
+    pdf_b64: str = Field(
+        ...,
+        description="Base64-encoded PDF bytes.",
+    )
+    options: IngestFullOptions = Field(default_factory=IngestFullOptions)
+
+
+class IngestChunk(BaseModel):
+    """One ingest-ready chunk: text + section + embedding."""
+    page_number: int
+    chunk_index: int
+    content: str
+    section_title: str = ""
+    block_types: list[str] = Field(default_factory=list)
+    # 768-dim vector when options.embed_chunks=True; empty list otherwise.
+    embedding: list[float] = Field(default_factory=list)
+
+
+class IngestFullStats(BaseModel):
+    """Per-stage timing so the caller can see where time was spent."""
+    extract_latency_ms: int
+    chunk_latency_ms:   int
+    embed_latency_ms:   int
+    total_latency_ms:   int
+    pages_processed:    int
+    chunks_emitted:     int
+
+
+class IngestFullResponse(BaseModel):
+    """Response body for POST /v1/ingest_full.
+
+    Wire size for a 134-page PDF with ~277 chunks: ~2-3 MB (vs ~100 MB for
+    the equivalent /v1/extract_document response). The size delta is the
+    point of this endpoint.
+    """
+    document_metadata: DocumentMetadata
+    chunks: list[IngestChunk]
+    extractor: str = "doc-processor-v1"
+    embed_model: str = ""           # "" when options.embed_chunks=False
+    embed_dim: int = 0              # 0 when options.embed_chunks=False
+    stats: IngestFullStats
+
+
+# ── /v1/ingest — full GPU-side ingest (download → extract → chunk → embed → persist)
+# Two sub-modes share the same pipeline (run_ingest):
+#
+#   /v1/ingest       — synchronous. Returns full stats when done. Used by the
+#                      ai-service worker for ingest+summarize jobs (worker
+#                      manages the ai_jobs row lifecycle itself).
+#
+#   /v1/ingest_job   — asynchronous. Accepts {job_id, ...}, returns 202
+#                      immediately, then runs the pipeline in a background
+#                      task and updates ai_jobs directly. The ai-service
+#                      worker never touches these jobs.
+
+class IngestOptions(BaseModel):
+    """Extraction toggles for /v1/ingest. Same flags as ExtractOptions."""
+    extract_tables: bool    = True
+    extract_figures: bool   = True
+    extract_formulas: bool  = True
+    ocr_fallback: bool      = True
+    figure_captioning: bool = True
+
+
+class IngestRequest(BaseModel):
+    """Request body for POST /v1/ingest."""
+    report_id: str = Field(
+        ...,
+        description="UUID of the report row — used as the ReportId FK in report_chunks.",
+    )
+    file_url: str = Field(
+        ...,
+        description="gs://bucket/path.pdf or https:// URL of the source PDF.",
+    )
+    options: IngestOptions = Field(default_factory=IngestOptions)
+
+
+class IngestResponse(BaseModel):
+    """Stats returned by POST /v1/ingest (synchronous path).
+
+    Shape matches the OutputData written into ai_jobs by ai-service's
+    run_ingest_only_job so callers can read either path's result uniformly.
+    """
+    report_id: str
+    pages_processed: int
+    chunks_inserted: int
+    pages_total: int
+    extractor: str
+    embed_model: str
+    embed_dim: int
+    total_latency_ms: int
+
+
+class IngestJobRequest(BaseModel):
+    """Request body for POST /v1/ingest_job (async, GPU-managed job lifecycle)."""
+    job_id: str = Field(
+        ...,
+        description="UUID of the ai_jobs row. The GPU will atomically claim it "
+                    "(Pending → Processing) and drive it to Completed or Failed.",
+    )
+    report_id: str
+    file_url: str = Field(
+        ...,
+        description="gs://bucket/path.pdf or https:// URL of the source PDF.",
+    )
+    options: IngestOptions = Field(default_factory=IngestOptions)
+
+
+class IngestJobAccepted(BaseModel):
+    """Response for POST /v1/ingest_job — returned immediately before processing starts."""
+    accepted: bool = True
+    job_id: str
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Tqreerk-backend")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+97e1790cba4174e40c3d6fda72c8be9f7fa36f8e")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+13908dbf8326b50048f4ba9877b58bbd10d740b8")]
 [assembly: System.Reflection.AssemblyProductAttribute("Tqreerk-backend")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Tqreerk-backend")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

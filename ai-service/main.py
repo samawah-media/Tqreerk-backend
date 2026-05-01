@@ -13,7 +13,9 @@ worker pool, not on the request-serving instance.
 """
 import asyncio
 import logging
+import signal
 import uuid
+from contextlib import asynccontextmanager
 
 # Sentry must initialize BEFORE FastAPI/Starlette are imported so its
 # auto-instrumentation can hook into them. If SENTRY_DSN is not set, this
@@ -41,7 +43,106 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Taqreerk AI Service", version="1.0.0")
+# Suppress noisy INFO messages that the google-genai SDK emits directly to
+# the root logger (no named logger, so we can't filter by logger name).
+class _RootFilter(logging.Filter):
+    _SUPPRESS = ("AFC is enabled with max remote calls",)
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(s in msg for s in self._SUPPRESS)
+
+logging.getLogger().addFilter(_RootFilter())
+
+
+async def _pending_job_watcher() -> None:
+    """Background loop that recovers stuck Pending jobs. Runs only in API mode.
+
+    Two recovery paths, checked every 60 s:
+
+    1. step=ingest jobs (GPU-owned):
+       Re-fires trigger_ingest() for each stuck job so the GPU can claim and
+       process it. Handles the case where the initial trigger (fired at job
+       creation) failed because the GPU was cold/unavailable.
+
+    2. Other Pending jobs (worker-owned: translate, ingest+summarize, etc.):
+       Wakes the worker service via a health ping so it polls and claims them.
+    """
+    from core.db import conn_ctx
+    from pipelines.jobs import _wake_worker
+    from services.doc_extractor import trigger_ingest
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with conn_ctx() as conn:
+                # GPU-owned: Pending step=ingest jobs that have been
+                # waiting for more than 2 minutes.  Freshly-triggered jobs
+                # (accepted by the GPU but not yet claimed) are excluded so
+                # we don't flood the GPU with duplicate triggers during the
+                # few seconds between "202 Accepted" and claim_job().
+                gpu_cur = await conn.execute(
+                    """
+                    SELECT "Id", "ReportId", "InputData"->>'file_url'
+                    FROM ai_jobs
+                    WHERE "Status"  = 'Pending'
+                      AND "JobType" = 'Ingestion'
+                      AND "InputData"->>'step' = 'ingest'
+                      AND "CreatedAt" < now() - interval '2 minutes'
+                    """,
+                )
+                gpu_rows = await gpu_cur.fetchall()
+
+                # Worker-owned: any other Pending job
+                worker_cur = await conn.execute(
+                    """
+                    SELECT COUNT(*) FROM ai_jobs
+                    WHERE "Status"  = 'Pending'
+                      AND "JobType" != 'Evaluation'
+                      AND NOT (
+                            "JobType" = 'Ingestion'
+                            AND "InputData"->>'step' = 'ingest'
+                      )
+                    """,
+                )
+                worker_row = await worker_cur.fetchone()
+                worker_count = int(worker_row[0]) if worker_row else 0
+
+            if gpu_rows:
+                logger.info(
+                    "[watcher] %d stuck GPU ingest job(s) — re-triggering",
+                    len(gpu_rows),
+                )
+                for job_id, report_id, file_url in gpu_rows:
+                    if file_url:
+                        asyncio.create_task(
+                            trigger_ingest(str(job_id), str(report_id), file_url)
+                        )
+
+            if worker_count > 0:
+                logger.info(
+                    "[watcher] %d pending worker job(s) — waking worker",
+                    worker_count,
+                )
+                await _wake_worker()
+
+        except Exception as exc:
+            logger.warning("[watcher] pending-job check failed: %s", exc)
+
+
+@asynccontextmanager
+async def lifespan(app_: FastAPI):
+    if settings.worker_mode == "api":
+        watcher = asyncio.create_task(_pending_job_watcher())
+    else:
+        watcher = None
+    try:
+        yield
+    finally:
+        if watcher:
+            watcher.cancel()
+
+
+app = FastAPI(title="Taqreerk AI Service", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -150,15 +251,39 @@ def main() -> None:
     Worker mode never returns under normal operation — it loops forever. If it
     crashes hard, Cloud Run restarts the container, which is the desired
     behaviour for a queue worker.
+
+    SIGTERM handling: Cloud Run sends SIGTERM when it wants to replace/stop the
+    instance (new revision deployment, scale-to-zero, etc.). We catch it and
+    set a shutdown event so the worker loop finishes the current job before
+    exiting rather than dying mid-job and leaving the row stuck in 'Processing'.
+    Cloud Run waits up to 10 s after SIGTERM before sending SIGKILL, so this
+    is best-effort for jobs that complete quickly; long-running jobs are
+    protected by the stale-job sweeper on the next worker boot.
     """
     if settings.worker_mode == "worker":
         from pipelines.jobs import run_worker_loop
 
         logger.info("Starting in WORKER mode")
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        shutdown_event = asyncio.Event()
+
+        def _handle_signal(sig: int, *_) -> None:
+            name = signal.Signals(sig).name
+            logger.info(
+                "Worker received %s — will finish current job then exit", name
+            )
+            loop.call_soon_threadsafe(shutdown_event.set)
+
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT,  _handle_signal)
+
         try:
-            asyncio.run(run_worker_loop())
-        except KeyboardInterrupt:
-            logger.info("Worker received SIGINT — shutting down")
+            loop.run_until_complete(run_worker_loop(shutdown_event))
+        finally:
+            loop.close()
+        logger.info("Worker exited cleanly.")
         return
 
     # API mode — defer to uvicorn launched from the Dockerfile CMD. Running

@@ -7,9 +7,10 @@ using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.Application.Services;
 
-/// Counts rolling 24-hour usage per organization and throws
-/// QuotaExceededException when an org is at its daily cap. Thin and
-/// stateless — the only state is the (org, kind) → cap config.
+/// Counts rolling 24-hour usage and throws QuotaExceededException when
+/// a daily cap is hit. Thin and stateless — the only state is the
+/// (kind → cap) config. Ingest / Translate are scoped per-org; chat is
+/// scoped per-user (chat_sessions.UserId is the natural owner of a chat).
 ///
 /// Failure semantics: any non-quota error inside the count query is
 /// LOGGED AND TREATED AS UNDER-QUOTA. We refuse to lock real users out
@@ -78,11 +79,11 @@ public class QuotaService : IQuotaService
     }
 
     public async Task AssertUnderChatQuotaAsync(
-        Guid organizationId,
+        Guid userId,
         CancellationToken ct = default)
     {
         if (!_settings.Enabled) return;
-        var cap = _settings.DailyChatPerOrg;
+        var cap = _settings.DailyChatPerUser;
         if (cap <= 0) return;
 
         var since = DateTime.UtcNow.AddHours(-24);
@@ -90,13 +91,12 @@ public class QuotaService : IQuotaService
         int count;
         try
         {
-            // Join chat_messages → chat_sessions → reports to get the
-            // owning org. Single-table query the DB indexes already cover.
+            // Join chat_messages → chat_sessions on UserId. The
+            // chat_sessions.UserId index covers this lookup.
             count = await (
                 from m in _db.ChatMessages
                 join s in _db.ChatSessions on m.SessionId equals s.Id
-                join r in _db.Reports      on s.ReportId  equals r.Id
-                where r.OrganizationId == organizationId
+                where s.UserId == userId
                    && m.Role == "user"
                    && m.CreatedAt > since
                 select m.Id
@@ -106,16 +106,16 @@ public class QuotaService : IQuotaService
         {
             _logger.LogWarning(
                 exc,
-                "[quota] chat count failed for org={OrgId} — allowing through",
-                organizationId);
+                "[quota] chat count failed for user={UserId} — allowing through",
+                userId);
             return;
         }
 
         if (count >= cap)
         {
             _logger.LogWarning(
-                "[quota] org={OrgId} hit daily chat cap ({Count}/{Cap}) — throwing 429",
-                organizationId, count, cap);
+                "[quota] user={UserId} hit daily chat cap ({Count}/{Cap}) — throwing 429",
+                userId, count, cap);
             throw new QuotaExceededException("chat message", cap);
         }
     }

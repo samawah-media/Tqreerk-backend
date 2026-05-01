@@ -34,12 +34,17 @@ _client_lock = threading.Lock()
 def _build_client() -> genai.Client:
     """Construct a fresh genai client. Caller holds _client_lock."""
     global _mode
+    # 120 s per-request timeout so a stalled Vertex connection raises instead
+    # of hanging indefinitely. _call_with_retry then replaces the client and
+    # retries. Without this, embed_content / generate_content can block a
+    # thread pool worker forever on TCP half-open connections.
+    http_opts = {"timeout": 120}
     if settings.gemini_api_key:
         _mode = "api_key"
         logger.info(
             "[gemini] building client mode=api_key (AI Studio)"
         )
-        return genai.Client(api_key=settings.gemini_api_key)
+        return genai.Client(api_key=settings.gemini_api_key, http_options=http_opts)
     _mode = "vertex"
     logger.info(
         "[gemini] building client mode=vertex project=%s location=%s",
@@ -49,6 +54,7 @@ def _build_client() -> genai.Client:
         vertexai=True,
         project=settings.gcp_project_id,
         location=settings.vertex_location,
+        http_options=http_opts,
     )
 
 

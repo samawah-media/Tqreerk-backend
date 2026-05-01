@@ -1,29 +1,23 @@
-"""PDF ingestion pipeline (chunk-aware, dual-extractor).
+"""PDF ingestion pipeline.
 
-Flow
-====
-  1. Download the PDF from GCS (gs://) or HTTPS.
-  2. Try the **full-PDF** extraction path first
-     (services.doc_extractor.extract_document). Doc-processor sees the
-     original text layer — no rasterisation loss for digital PDFs — and
-     resolves reading order across page breaks. Returns one
-     {page_number, content, metadata} dict per page, or None to signal
-     "skip me" (disabled, oversized, or transient failure).
-  3. If full-PDF mode skipped, fall back to **per-page rendering**
-     (PyMuPDF → PNG) and call extract_page() on each. extract_page() itself
-     falls back to Gemini Vision when doc-processor is unreachable.
-  4. Either path yields the same per-page list. Each page's content gets
-     chunked (~500-token sub-page chunks via LangChain) and each chunk
-     gets its own Gemini embedding.
-  5. All chunk rows are written to report_chunks in a single transaction
-     after deleting any pre-existing chunks for the report (re-ingest is
-     idempotent).
+Primary path (GPU)
+==================
+When DOC_PROCESSOR_ENABLED=true and extractor != "gemini-vision", ingest
+delegates entirely to the doc-processor /v1/ingest endpoint. The GPU
+service handles download → extract → chunk → embed → persist in one call;
+the ai-service only receives stats and marks the job Complete. No PDF bytes
+or chunk vectors cross the network twice.
 
-Why this layering: doc-processor is the new, more accurate extractor; Gemini
-Vision is the proven baseline. The ingest pipeline never assumes either
-works — any single layer failing degrades cleanly to the next, so a misbehaving
-GPU service can't block ingest. Which path ran for each chunk is recorded
-in `metadata.extractor` for downstream A/B comparison.
+Fallback path (Gemini Vision / legacy)
+=======================================
+Used when doc-processor is disabled, unreachable, or the caller explicitly
+requests extractor="gemini-vision":
+  1. Download PDF from GCS or HTTPS.
+  2. Render each page to PNG (PyMuPDF).
+  3. Describe each page via Gemini Vision.
+  4. Chunk text locally (~500-token splits via LangChain).
+  5. Embed all chunks via Vertex gemini-embedding-001.
+  6. Write report_chunks in one transaction (idempotent — DELETE first).
 """
 import asyncio
 import json
@@ -33,11 +27,13 @@ from uuid import UUID
 import fitz  # PyMuPDF
 import httpx
 import numpy as np
+import sentry_sdk
 from google.cloud import storage
 
-from core.chunking import chunk_blocks_with_meta, chunk_text
+from core.chunking import chunk_text
+from core.config import settings
 from core.db import conn_ctx
-from services import doc_extractor, observability as obs
+from services import doc_extractor, embed, observability as obs
 
 logger = logging.getLogger(__name__)
 
@@ -75,25 +71,26 @@ def _download_from_gcs(gs_uri: str) -> bytes:
 async def ingest_report(
     report_id: UUID, file_url: str, extractor: str = "auto",
 ) -> dict:
-    """Download a PDF (gs:// or https://) and populate report_chunks.
+    """Ingest a PDF and populate report_chunks.
 
-    `extractor` selects the extraction path for A/B comparison:
-      - "auto"          (default): doc-processor full-PDF, fall back to per-page
-                                   (which itself falls back to Gemini Vision).
-      - "doc-processor": force doc-processor only; raise if it returns nothing.
-      - "gemini-vision": skip doc-processor entirely, render every page and
-                         use Gemini Vision only.
+    Primary path — GPU (doc-processor /v1/ingest):
+        When DOC_PROCESSOR_ENABLED=true and extractor != "gemini-vision",
+        the entire pipeline (download, extract, chunk, embed, persist) runs
+        on the GPU Cloud Run service. This function receives only stats.
+
+    Fallback path — Gemini Vision:
+        Used when doc-processor is disabled or extractor="gemini-vision".
+        The PDF is downloaded here, each page is described by Gemini Vision,
+        chunks are split locally, embedded via Vertex, and persisted.
 
     Returns:
         {
-          "pages_processed":  int,  # pages that produced at least one chunk
-          "chunks_inserted":  int,  # total chunk rows written
-          "pages_total":      int,  # pages in the source PDF (incl. blanks)
-          "extractor":        str,  # which path produced the content
+          "pages_processed":  int,
+          "chunks_inserted":  int,
+          "pages_total":      int,
+          "extractor":        str,
         }
     """
-    # One trace per ingest call. Reused by ingest_report_bytes via the
-    # `_ingest_trace` argument so spans nest under the same trace tree.
     trace = obs.trace(
         name="ingest",
         input={"file_url": file_url, "extractor": extractor},
@@ -101,7 +98,63 @@ async def ingest_report(
         tags=["ingest", f"extractor:{extractor}"],
     )
 
-    with obs.span(trace, name="download", input={"file_url": file_url}) as sp:
+    # ── Primary path: full GPU ingest ────────────────────────────────────────
+    if (
+        extractor != "gemini-vision"
+        and settings.doc_processor_enabled
+        and settings.doc_processor_url
+    ):
+        loop = asyncio.get_running_loop()
+        with sentry_sdk.start_span(op="ingest.gpu", description="/v1/ingest"), \
+             obs.span(trace, name="gpu_ingest",
+                      input={"file_url": file_url}) as sp:
+            logger.info("[ingest %s] GPU path: calling /v1/ingest", report_id)
+            result = await loop.run_in_executor(
+                None,
+                doc_extractor.ingest_via_gpu,
+                str(report_id),
+                file_url,
+            )
+            sp.update(output=result)
+        logger.info(
+            "[ingest %s] GPU ingest done: %d chunks / %d pages (extractor=%s)",
+            report_id,
+            result.get("chunks_inserted", 0),
+            result.get("pages_processed", 0),
+            result.get("extractor", "?"),
+        )
+        try:
+            trace.update(output=result)
+            obs.flush()
+        except Exception:
+            pass
+        return {
+            "pages_processed": result.get("pages_processed", 0),
+            "chunks_inserted": result.get("chunks_inserted", 0),
+            "pages_total":     result.get("pages_total", 0),
+            "extractor":       result.get("extractor", "doc-processor-v1"),
+        }
+
+    # ── Fallback path: Gemini Vision ─────────────────────────────────────────
+    logger.info(
+        "[ingest %s] Gemini Vision path (extractor=%s, doc_processor_enabled=%s)",
+        report_id, extractor, settings.doc_processor_enabled,
+    )
+    result = await _ingest_gemini_vision(report_id, file_url, trace)
+    try:
+        trace.update(output=result)
+        obs.flush()
+    except Exception:
+        pass
+    return result
+
+
+async def _ingest_gemini_vision(
+    report_id: UUID, file_url: str, trace,
+) -> dict:
+    """Legacy ingest: download PDF → Gemini Vision per-page → chunk → embed → persist."""
+    with sentry_sdk.start_span(op="ingest.download", description=file_url), \
+         obs.span(trace, name="download", input={"file_url": file_url}) as sp:
         logger.info("[ingest %s] downloading %s", report_id, file_url)
         if file_url.startswith("gs://"):
             pdf_bytes = _download_from_gcs(file_url)
@@ -116,67 +169,13 @@ async def ingest_report(
         )
         sp.update(output={"bytes": len(pdf_bytes)})
 
-    result = await ingest_report_bytes(
-        report_id, pdf_bytes, extractor=extractor, _ingest_trace=trace,
-    )
-    try:
-        trace.update(output=result)
-        obs.flush()
-    except Exception:
-        pass
-    return result
-
-
-async def ingest_report_bytes(
-    report_id: UUID, pdf_bytes: bytes, extractor: str = "auto",
-    _ingest_trace=None,
-) -> dict:
-    # If called directly (without going through ingest_report) make a trace
-    # of our own so spans below still nest under something. The trace is a
-    # no-op stub when Langfuse is disabled.
-    trace = _ingest_trace or obs.trace(
-        name="ingest_bytes",
-        metadata={"report_id": str(report_id), "extractor": extractor},
-        tags=["ingest"],
-    )
-
-    # Count pages up-front so the response always reports `pages_total`,
-    # even if extraction returns nothing.
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         pages_total = len(doc)
 
-    logger.info(
-        "[ingest %s] PDF has %d pages, extractor=%s",
-        report_id, pages_total, extractor,
-    )
-
-    # Branch by extractor toggle, wrapped in a single "extract" span so the
-    # trace tree shows extraction time regardless of which path won.
-    page_results: list[dict] | None = None
-    with obs.span(trace, name="extract",
-                  input={"extractor": extractor, "pages_total": pages_total}) as sp:
-        if extractor == "gemini-vision":
-            page_results = await _extract_per_page(pdf_bytes, force_gemini=True)
-        elif extractor == "doc-processor":
-            page_results = await _extract_full_pdf(pdf_bytes)
-            if page_results is None:
-                raise RuntimeError(
-                    "extractor='doc-processor' was requested but doc-processor "
-                    "returned nothing (disabled, oversized, or errored)"
-                )
-            logger.info(
-                "[ingest %s] doc-processor returned %d pages (forced)",
-                report_id, len(page_results),
-            )
-        else:
-            logger.info("[ingest %s] auto: trying full-PDF extractor", report_id)
-            page_results = await _extract_full_pdf(pdf_bytes)
-            if page_results is None:
-                logger.info("[ingest %s] full-PDF unavailable, falling back to per-page", report_id)
-                page_results = await _extract_per_page(pdf_bytes)
-            else:
-                logger.info("[ingest %s] full-PDF returned %d pages", report_id, len(page_results))
-
+    with sentry_sdk.start_span(op="ingest.extract", description="gemini-vision"), \
+         obs.span(trace, name="extract",
+                  input={"extractor": "gemini-vision", "pages_total": pages_total}) as sp:
+        page_results = await _extract_per_page(pdf_bytes, force_gemini=True)
         sp.update(output={
             "n_pages": len(page_results),
             "extractor_used": _dominant_extractor(page_results),
@@ -184,29 +183,24 @@ async def ingest_report_bytes(
 
     if not page_results:
         logger.warning(
-            "[ingest %s] no pages were extracted (%d total in source PDF)",
-            report_id, pages_total,
+            "[ingest %s] no pages extracted (%d total in PDF)", report_id, pages_total,
         )
 
-    # Step 3 — chunk every page, then embed all chunks in one GPU batch via
-    # doc-processor /v1/embed. Single round-trip replaces N Vertex calls and
-    # keeps inference inside the same Cloud Run network as extraction.
-    logger.info("[ingest %s] chunk+embed phase starting (%d pages)", report_id, len(page_results))
-    with obs.span(trace, name="chunk_and_embed",
+    with sentry_sdk.start_span(op="ingest.chunk_and_embed"), \
+         obs.span(trace, name="chunk_and_embed",
                   input={"n_pages": len(page_results)}) as sp:
         chunk_rows = await _chunk_and_embed(page_results)
         sp.update(output={"n_chunks": len(chunk_rows)})
-    logger.info("[ingest %s] chunk+embed produced %d rows", report_id, len(chunk_rows))
 
-    # Step 4 — write to report_chunks atomically.
-    with obs.span(trace, name="persist", input={"n_rows": len(chunk_rows)}):
+    with sentry_sdk.start_span(op="ingest.persist"), \
+         obs.span(trace, name="persist", input={"n_rows": len(chunk_rows)}):
         await _persist_chunks(report_id, chunk_rows)
 
     pages_with_chunks = len({row[0] for row in chunk_rows})
     extractor_tag = _dominant_extractor(page_results)
     logger.info(
-        "ingest report=%s complete: %d chunks across %d/%d pages (extractor=%s)",
-        report_id, len(chunk_rows), pages_with_chunks, pages_total, extractor_tag,
+        "ingest report=%s complete (gemini-vision): %d chunks / %d/%d pages",
+        report_id, len(chunk_rows), pages_with_chunks, pages_total,
     )
     return {
         "pages_processed": pages_with_chunks,
@@ -275,43 +269,23 @@ async def _extract_per_page(
 async def _chunk_and_embed(
     page_results: list[dict],
 ) -> list[tuple[int, int, str, np.ndarray, dict]]:
-    """Convert per-page extraction output into chunk rows.
+    """Convert Gemini Vision per-page output into chunk rows (fallback path only).
 
-    Pipeline:
-      1. Chunk every non-empty page locally (sub-page chunking via LangChain).
-      2. Send ALL chunk strings in one batch to doc-processor /v1/embed.
-         Single HTTP round-trip; the GPU service batches internally so a
-         100-chunk doc embeds in one VRAM pass instead of 100 Vertex calls.
-      3. Stitch (page, idx, text, embedding, metadata) tuples back in order.
+    The GPU path never calls this — doc-processor chunks and embeds on the
+    GPU side. This is used only when extractor="gemini-vision" or doc-processor
+    is disabled. Gemini Vision returns plain text (no structured blocks), so
+    we always use the recursive char splitter here.
 
     Returns rows sorted by (page_number, chunk_index) for deterministic insert.
     """
-    # Step 1 — chunk locally, preserving (page_num, chunk_idx, metadata).
-    # When the extractor returned structured blocks (doc-processor path), use
-    # the structure-aware packer: never splits a table/figure/formula, keeps
-    # heading + body together, packs greedy up to ~500 tokens. Pure-text
-    # extractors (Gemini Vision) fall back to the recursive char splitter.
     pending: list[tuple[int, int, str, dict]] = []
     for page in page_results:
         page_num = int(page.get("page_number") or 0) or None
         content: str = page.get("content") or ""
         metadata: dict = dict(page.get("metadata") or {})
-        blocks = page.get("blocks") or []
         if page_num is None:
             continue
-
-        if blocks:
-            chunked = chunk_blocks_with_meta(blocks)
-            for idx, ch in enumerate(chunked):
-                # Enrich per-chunk metadata so downstream filtering can
-                # narrow by block type or section without re-deriving it.
-                chunk_meta = dict(metadata)
-                chunk_meta["block_types"] = ch["block_types"]
-                if ch["section_title"]:
-                    chunk_meta["section_title"] = ch["section_title"]
-                pending.append((page_num, idx, ch["content"], chunk_meta))
-        elif content.strip():
-            # Vision-only path or empty-blocks fallback.
+        if content.strip():
             for idx, ch in enumerate(chunk_text(content)):
                 pending.append((page_num, idx, ch, metadata))
 
@@ -320,16 +294,17 @@ async def _chunk_and_embed(
 
     texts = [p[2] for p in pending]
     logger.info(
-        "[ingest] embedding %d chunks via doc-processor /v1/embed (one batch)",
+        "[ingest] embedding %d chunks via Vertex gemini-embedding-001 (RETRIEVAL_DOCUMENT)",
         len(texts),
     )
 
-    # Step 2 — embed all chunks in one GPU batch. The doc-processor handles
-    # internal batching so we send the entire list and get one response back.
+    # Step 2 — embed all chunks via the managed embedding API. The genai
+    # SDK batches server-side; we send one HTTP call. _call_with_retry inside
+    # the wrapper handles SSL EOFs and connection resets the same way as
+    # every other Gemini call.
     loop = asyncio.get_running_loop()
     vectors = await loop.run_in_executor(
-        None,
-        lambda: doc_extractor.embed_texts(texts, "passage"),
+        None, embed.embed_passages, texts,
     )
 
     if len(vectors) != len(pending):

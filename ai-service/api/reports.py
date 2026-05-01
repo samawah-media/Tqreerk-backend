@@ -12,6 +12,7 @@ This module never spawns background tasks. Endpoints only INSERT into ai_jobs
 (WORKER_MODE=worker) claims and runs each row via FOR UPDATE SKIP LOCKED. See
 pipelines/jobs.py for the runner / claim logic.
 """
+import asyncio
 import json
 import logging
 from uuid import UUID, uuid4
@@ -22,6 +23,7 @@ from psycopg import AsyncConnection
 import numpy as np
 
 from core.db import get_conn
+from services import doc_extractor
 from models.ingest import (
     BulkIngestRequest,
     BulkJobsResponse,
@@ -192,7 +194,14 @@ async def ingest(
         },
     )
     await conn.commit()
-    logger.info("[ingest] job=%s queued (Pending), worker will pick up", job_id)
+
+    # Fire-and-forget: GPU service claims the job, runs the pipeline, and
+    # writes Completed/Failed directly into ai_jobs. No worker involved.
+    asyncio.create_task(
+        doc_extractor.trigger_ingest(str(job_id), str(body.report_id), body.file_url),
+    )
+
+    logger.info("[ingest] job=%s queued (Pending), GPU trigger fired", job_id)
     return IngestResponse(report_id=body.report_id, job_id=job_id)
 
 

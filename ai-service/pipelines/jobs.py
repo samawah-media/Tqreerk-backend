@@ -26,6 +26,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
+import sentry_sdk
 from psycopg import AsyncConnection
 
 from core.config import settings
@@ -103,6 +104,14 @@ async def _wake_worker() -> None:
     Google-signed ID token (audience = worker URL). Cloud Run validates the
     token at the load balancer; on auth failure the container never starts,
     which would defeat the whole point of this wake-up.
+
+    Timeout sizing: fire-and-forget ping. The HTTP request hitting the Cloud
+    Run frontend is what triggers the worker's cold start, even if our own
+    request times out before the container is ready to respond. So a
+    timeout here is a "false negative" on the log (warning fires, but the
+    wake actually succeeded). 15 s is generous enough to ride out the
+    typical 3-8 s Python cold start AND the ~500 ms ID-token fetch, so
+    when a real failure does fire we can trust it.
     """
     url = settings.worker_url
     if not url:
@@ -122,11 +131,21 @@ async def _wake_worker() -> None:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
 
         import httpx
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(url.rstrip("/") + "/health", headers=headers)
         logger.info("[wake] pinged %s -> %d", url, resp.status_code)
     except Exception as exc:
-        logger.warning("[wake] failed pinging %s: %s", url, exc)
+        # Include the exception class name — many httpx / auth exceptions
+        # stringify to an empty body, which makes "failed pinging URL: "
+        # logs unactionable. The class name disambiguates between cold-
+        # start timeout (ReadTimeout / ConnectTimeout — usually a false
+        # negative; the wake still happened), auth failure
+        # (DefaultCredentialsError, RefreshError), and DNS / network
+        # errors.
+        logger.warning(
+            "[wake] failed pinging %s (%s): %s",
+            url, type(exc).__name__, exc or repr(exc),
+        )
 
 
 async def mark_processing(job_id: UUID) -> None:
@@ -178,14 +197,22 @@ async def run_ingest_only_job(
         "[job %s] ingest start report=%s file=%s extractor=%s",
         job_id, report_id, file_url, extractor,
     )
-    await mark_processing(job_id)
-    try:
-        result = await ingest_report(report_id, file_url, extractor=extractor)
-        logger.info("[job %s] ingest done %s", job_id, result)
-        await mark_completed(job_id, result)
-    except Exception as exc:
-        logger.exception("[job %s] ingest FAILED: %s", job_id, exc)
-        await mark_failed(job_id, str(exc))
+    with sentry_sdk.start_transaction(op="ingest", name="ingest_report", sampled=True) as txn:
+        txn.set_tag("report_id", str(report_id))
+        txn.set_tag("job_id", str(job_id))
+        txn.set_tag("extractor", extractor)
+        txn.set_data("file_url", file_url)
+        await mark_processing(job_id)
+        try:
+            result = await ingest_report(report_id, file_url, extractor=extractor)
+            logger.info("[job %s] ingest done %s", job_id, result)
+            txn.set_data("result", result)
+            txn.set_tag("extractor_used", result.get("extractor", "unknown"))
+            await mark_completed(job_id, result)
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+            logger.exception("[job %s] ingest FAILED: %s", job_id, exc)
+            await mark_failed(job_id, str(exc))
 
 
 async def run_ingest_summarize_job(
@@ -196,43 +223,53 @@ async def run_ingest_summarize_job(
         "[job %s] ingest+summarize start report=%s file=%s extractor=%s",
         job_id, report_id, file_url, extractor,
     )
-    await mark_processing(job_id)
-    try:
-        ingest_result = await ingest_report(report_id, file_url, extractor=extractor)
-        logger.info("[job %s] ingest phase done: %s", job_id, ingest_result)
+    with sentry_sdk.start_transaction(op="ingest", name="ingest_summarize_report", sampled=True) as txn:
+        txn.set_tag("report_id", str(report_id))
+        txn.set_tag("job_id", str(job_id))
+        txn.set_tag("extractor", extractor)
+        txn.set_data("file_url", file_url)
+        await mark_processing(job_id)
+        try:
+            ingest_result = await ingest_report(report_id, file_url, extractor=extractor)
+            logger.info("[job %s] ingest phase done: %s", job_id, ingest_result)
+            txn.set_tag("extractor_used", ingest_result.get("extractor", "unknown"))
 
-        # Aggregate chunks back to page-level text for the summary prompt.
-        async with conn_ctx() as conn:
-            cur = await conn.execute(
-                """
-                SELECT "PageNumber",
-                       string_agg("Content", E'\n\n' ORDER BY "ChunkIndex") AS content
-                FROM report_chunks
-                WHERE "ReportId" = %s
-                GROUP BY "PageNumber"
-                ORDER BY "PageNumber"
-                """,
-                [str(report_id)],
+            with sentry_sdk.start_span(op="ingest.summarize", description="summarize_report"):
+                async with conn_ctx() as conn:
+                    cur = await conn.execute(
+                        """
+                        SELECT "PageNumber",
+                               string_agg("Content", E'\n\n' ORDER BY "ChunkIndex") AS content
+                        FROM report_chunks
+                        WHERE "ReportId" = %s
+                        GROUP BY "PageNumber"
+                        ORDER BY "PageNumber"
+                        """,
+                        [str(report_id)],
+                    )
+                    page_rows = await cur.fetchall()
+
+                if not page_rows:
+                    raise RuntimeError("Ingest produced no pages")
+
+                summary = summarize_report([content for _, content in page_rows])
+
+            logger.info(
+                "[job %s] summarize done: %d findings, %d topics",
+                job_id, len(summary.key_findings), len(summary.topics),
             )
-            page_rows = await cur.fetchall()
-
-        if not page_rows:
-            raise RuntimeError("Ingest produced no pages")
-
-        summary = summarize_report([content for _, content in page_rows])
-        logger.info(
-            "[job %s] summarize done: %d findings, %d topics",
-            job_id, len(summary.key_findings), len(summary.topics),
-        )
-        await mark_completed(job_id, {
-            **ingest_result,
-            "summary": summary.summary,
-            "key_findings": summary.key_findings,
-            "topics": summary.topics,
-        })
-    except Exception as exc:
-        logger.exception("[job %s] ingest+summarize FAILED: %s", job_id, exc)
-        await mark_failed(job_id, str(exc))
+            result = {
+                **ingest_result,
+                "summary": summary.summary,
+                "key_findings": summary.key_findings,
+                "topics": summary.topics,
+            }
+            txn.set_data("result", {k: v for k, v in result.items() if k != "summary"})
+            await mark_completed(job_id, result)
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+            logger.exception("[job %s] ingest+summarize FAILED: %s", job_id, exc)
+            await mark_failed(job_id, str(exc))
 
 
 async def run_translate_job(
@@ -380,10 +417,11 @@ async def dispatch(job: dict) -> None:
         if not file_url:
             await mark_failed(job_id, "Ingestion job missing file_url in input_data")
             return
-        if step == "ingest+summarize":
-            await run_ingest_summarize_job(job_id, report_id, file_url, extractor=extractor)
-        else:
+        if step == "ingest":
             await run_ingest_only_job(job_id, report_id, file_url, extractor=extractor)
+        else:
+            
+            await run_ingest_summarize_job(job_id, report_id, file_url, extractor=extractor)
         return
 
     if job_type == "Translation":
@@ -424,6 +462,17 @@ async def claim_one_job(conn: AsyncConnection) -> dict | None:
             SELECT "Id"
             FROM ai_jobs
             WHERE "Status" = 'Pending'
+              AND "InputData" IS NOT NULL
+              AND "InputData" != 'null'::jsonb
+              AND ("InputData"->>'file_url' IS NOT NULL
+                   OR "JobType" = 'Evaluation')
+              -- step=ingest jobs are handled directly by the GPU service
+              -- (doc-processor /v1/ingest_job). Exclude them so the worker
+              -- never races with the GPU for the same row.
+              AND NOT (
+                    "JobType" = 'Ingestion'
+                    AND "InputData"->>'step' = 'ingest'
+              )
             ORDER BY "CreatedAt"
             FOR UPDATE SKIP LOCKED
             LIMIT 1
@@ -476,7 +525,7 @@ async def sweep_stale_jobs() -> int:
         return cur.rowcount or 0
 
 
-async def run_worker_loop() -> None:
+async def run_worker_loop(shutdown: asyncio.Event | None = None) -> None:
     """Main worker entrypoint. Polls ai_jobs forever; runs one job at a time.
 
     Concurrency model:
@@ -486,6 +535,11 @@ async def run_worker_loop() -> None:
           to FOR UPDATE SKIP LOCKED.
         • Stale-job sweep runs every loop iteration but is cheap (single
           UPDATE that no-ops when nothing is stale).
+
+    shutdown: asyncio.Event set by the SIGTERM handler in main.py. When set,
+        the loop finishes the current job (if any) and exits cleanly instead
+        of being killed mid-job.  Passing None falls back to the old
+        "loop forever" behaviour (used in tests / local runs).
     """
     poll = settings.worker_poll_interval_seconds
     logger.info(
@@ -497,6 +551,11 @@ async def run_worker_loop() -> None:
     sweep_every_seconds = 60.0
 
     while True:
+        # Honour a shutdown request between jobs — never interrupt a running job.
+        if shutdown and shutdown.is_set():
+            logger.info("Worker shutdown event set — exiting loop after idle check")
+            return
+
         try:
             async with conn_ctx() as conn:
                 job = await claim_one_job(conn)
@@ -518,12 +577,22 @@ async def run_worker_loop() -> None:
                 logger.exception("worker stale-job sweep failed: %s", exc)
 
         if job is None:
+            if shutdown and shutdown.is_set():
+                logger.info("Worker shutdown event set and queue empty — exiting")
+                return
             await asyncio.sleep(poll)
             continue
 
+        raw = job.get("input_data") or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = {}
+        step = raw.get("step") or ""
         logger.info(
-            "worker claimed job=%s type=%s report=%s",
-            job["id"], job["job_type"], job["report_id"],
+            "worker claimed job=%s type=%s step=%s report=%s",
+            job["id"], job["job_type"], step or "(none)", job["report_id"],
         )
         try:
             await dispatch(job)

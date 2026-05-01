@@ -32,6 +32,7 @@ on the doc-processor service.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import time
@@ -236,6 +237,210 @@ def _call_doc_processor(png_bytes: bytes, page_number: int) -> dict:
     return _normalize_page_response(
         body, body.get("extractor") or "doc-processor-v1",
     )
+
+
+# ── Combined extract + chunk + embed (Option B) ─────────────────────────────
+
+
+def ingest_full(pdf_bytes: bytes) -> dict | None:
+    """Call doc-processor /v1/ingest_full and return chunks-with-vectors.
+
+    Returns a dict shaped:
+        {
+          "document_metadata": {page_count, has_tables, ...},
+          "chunks": [
+              {page_number, chunk_index, content, section_title,
+               block_types, embedding},
+              ...
+          ],
+          "stats": {extract_latency_ms, chunk_latency_ms, embed_latency_ms,
+                    total_latency_ms, pages_processed, chunks_emitted},
+          "extractor": str,
+          "embed_model": str,
+          "embed_dim": int,
+        }
+
+    Returns None when:
+      • doc-processor is disabled or unconfigured
+      • PDF exceeds the configured size threshold (caller falls back to
+        per-page extraction, which itself falls back to Gemini Vision)
+
+    Raises on any HTTP / network error so the caller's try/except in the
+    job runner marks the job Failed. We intentionally don't fall back to
+    /v1/extract_document here — that path was the OOM-prone one we're
+    moving off; reintroducing it as a fallback would defeat the point.
+    """
+    if not (settings.doc_processor_enabled and settings.doc_processor_url):
+        return None
+
+    pdf_mb = len(pdf_bytes) / (1024 * 1024)
+    if pdf_mb > settings.doc_processor_max_pdf_mb:
+        logger.info(
+            "doc_extractor: PDF is %.1f MB > %.1f MB cap; using per-page path",
+            pdf_mb, settings.doc_processor_max_pdf_mb,
+        )
+        return None
+
+    url = settings.doc_processor_url.rstrip("/") + "/v1/ingest_full"
+    headers = _build_headers()
+    payload = {
+        "pdf_b64": base64.b64encode(pdf_bytes).decode("ascii"),
+        "options": {
+            "extract_tables":     True,
+            "extract_figures":    True,
+            "extract_formulas":   True,
+            "ocr_fallback":       True,
+            "figure_captioning":  True,
+            "embed_chunks":       True,
+        },
+    }
+
+    started = time.perf_counter()
+    response = _client().post(url, headers=headers, json=payload)
+    response.raise_for_status()
+    body = response.json()
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    chunks = body.get("chunks") or []
+    stats = body.get("stats") or {}
+    doc_meta = body.get("document_metadata") or {}
+    logger.info(
+        "doc-processor ingest_full latency=%dms chunks=%d pages=%d "
+        "extract_ms=%s chunk_ms=%s embed_ms=%s",
+        elapsed_ms, len(chunks), doc_meta.get("page_count", 0),
+        stats.get("extract_latency_ms"),
+        stats.get("chunk_latency_ms"),
+        stats.get("embed_latency_ms"),
+    )
+    return body
+
+
+# ── GPU-triggered ingest (fire-and-forget, GPU owns job lifecycle) ────────────
+
+async def trigger_ingest(job_id: str, report_id: str, file_url: str) -> None:
+    """Fire POST /v1/ingest_job to the GPU and return immediately.
+
+    The GPU service claims the ai_jobs row, runs the full pipeline, and marks
+    the job Completed or Failed — no worker involvement. This function is
+    called as an asyncio.create_task from the ingest API endpoint so the
+    HTTP response is never delayed by GPU cold-start time.
+
+    On any error (cold start timeout, GPU unavailable, auth failure) the job
+    stays Pending. The _pending_job_watcher in main.py re-calls this every
+    60 s so recovery is automatic when the GPU comes back up.
+    """
+    if not (settings.doc_processor_enabled and settings.doc_processor_url):
+        logger.info("[trigger_ingest] doc_processor not configured, skipping")
+        return
+
+    url = settings.doc_processor_url.rstrip("/") + "/v1/ingest_job"
+
+    # Fetch a Google-signed ID token for the GPU service (same pattern as
+    # _wake_worker in jobs.py). Offloaded to a thread because fetch_id_token
+    # is synchronous.
+    token: str | None = None
+    try:
+        from google.auth.transport.requests import Request as AuthRequest
+        from google.oauth2 import id_token as oauth_id_token
+
+        loop = asyncio.get_running_loop()
+        token = await loop.run_in_executor(
+            None,
+            lambda: oauth_id_token.fetch_id_token(AuthRequest(), settings.doc_processor_url),
+        )
+    except Exception as exc:
+        logger.debug("[trigger_ingest] ID token fetch failed (%s); proceeding without", exc)
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if settings.doc_processor_token:
+        headers["X-Internal-Token"] = settings.doc_processor_token
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    payload = {
+        "job_id":    job_id,
+        "report_id": report_id,
+        "file_url":  file_url,
+        "options": {
+            "extract_tables":    True,
+            "extract_figures":   True,
+            "extract_formulas":  True,
+            "ocr_fallback":      True,
+            "figure_captioning": True,
+        },
+    }
+
+    try:
+        # connect_timeout=120 covers GPU cold-start (~60-90 s).
+        # read_timeout=30 is just for the 202 ACK — the pipeline runs in
+        # a background task on the GPU side so the response is fast.
+        async with httpx.AsyncClient(
+            # default=30 covers read/write/pool; connect overridden to 120
+            # so GPU cold-starts (~60-90 s) don't kill the trigger before
+            # the doc-processor even starts listening.
+            timeout=httpx.Timeout(30.0, connect=120.0),
+        ) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+        logger.info(
+            "[trigger_ingest] job=%s accepted by GPU (HTTP %d)",
+            job_id, resp.status_code,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[trigger_ingest] job=%s failed to reach GPU (%s): %s — "
+            "job stays Pending; watcher will retry in ≤60 s",
+            job_id, type(exc).__name__, exc or repr(exc),
+        )
+
+
+# ── Full GPU ingest (sync, used by worker for ingest+summarize) ──────────────
+
+def ingest_via_gpu(report_id: str, file_url: str) -> dict:
+    """POST to doc-processor /v1/ingest.
+
+    The GPU service handles the entire pipeline — download, extract, chunk,
+    embed, and persist to report_chunks — and returns stats. The ai-service
+    worker only needs to mark the job Complete with the returned dict.
+
+    Raises on any HTTP / network error so the job runner's except block
+    can mark the job Failed.
+    """
+    if not (settings.doc_processor_enabled and settings.doc_processor_url):
+        raise RuntimeError(
+            "doc_processor not configured — cannot ingest via GPU; "
+            "set DOC_PROCESSOR_ENABLED=true and DOC_PROCESSOR_URL"
+        )
+
+    url = settings.doc_processor_url.rstrip("/") + "/v1/ingest"
+    headers = _build_headers()
+    payload = {
+        "report_id": report_id,
+        "file_url":  file_url,
+        "options": {
+            "extract_tables":    True,
+            "extract_figures":   True,
+            "extract_formulas":  True,
+            "ocr_fallback":      True,
+            "figure_captioning": True,
+        },
+    }
+
+    started = time.perf_counter()
+    response = _client().post(url, headers=headers, json=payload)
+    response.raise_for_status()
+    body = response.json()
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    logger.info(
+        "doc-processor /v1/ingest report=%s latency=%dms "
+        "pages=%d chunks=%d extractor=%s",
+        report_id, elapsed_ms,
+        body.get("pages_processed", 0),
+        body.get("chunks_inserted", 0),
+        body.get("extractor", "?"),
+    )
+    return body
 
 
 # ── Embeddings ──────────────────────────────────────────────────────────────

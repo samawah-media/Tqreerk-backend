@@ -71,6 +71,15 @@ _client: Any = None
 _client_attempted: bool = False
 
 
+def get_client() -> Any:
+    """Public accessor for the Langfuse client singleton. Other modules use
+    this when they need to pre-create a trace (so they can pin its ID before
+    handing the trace's LangChain handler to LangGraph) — in particular the
+    agent uses this to share a trace ID with the async Ragas eval worker.
+    Returns None when Langfuse is disabled or misconfigured."""
+    return _client_or_none()
+
+
 def _client_or_none() -> Any:
     """Return the cached Langfuse client, or None when disabled / unreachable.
 

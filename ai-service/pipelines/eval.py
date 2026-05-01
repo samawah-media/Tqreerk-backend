@@ -36,17 +36,23 @@ Eval is best-effort and isolated from chat. A crash here:
 
 Metrics
 =======
-Six reference-free metrics — picked because they don't need a gold answer:
+Reference-free metrics — they only see (question, contexts, answer) and
+don't need a gold answer to grade. Ragas 0.2.x's `LLMContextRecall` and
+`NoiseSensitivity` actually require a ground-truth `reference` column
+despite being labelled "reference-free" in older docs, so they're omitted
+here. The set we run:
 
-  1. faithfulness                — does the answer derive from the contexts?
-  2. answer_relevancy            — does the answer actually address the question?
-  3. context_precision_no_ref    — are retrieved chunks on-topic?
-  4. context_recall_no_ref       — are all the chunks needed for the answer present?
-  5. noise_sensitivity_relevant   — robustness to noise on relevant chunks
-  6. noise_sensitivity_irrelevant — robustness to noise on irrelevant chunks
+  1. faithfulness               — does the answer derive from the contexts?
+  2. answer_relevancy           — does the answer actually address the question?
+  3. context_precision_no_ref   — are retrieved chunks on-topic?
 
-We rerun the full set per chat. Volume is low enough (max ~20 chats / hour
-in staging) that the LLM-judge cost is bounded; sample rate gating lives
+That's three metrics covering the three failure modes that actually matter
+for online RAG: hallucination, off-topic answers, and bad retrieval. Recall
++ noise-sensitivity require ground truth and will be added when we build
+an offline labelled eval set.
+
+We rerun the set per chat. Volume is low enough (max ~20 chats / hour in
+staging) that the LLM-judge cost is bounded; sample rate gating lives
 upstream in the chat handler.
 """
 from __future__ import annotations
@@ -68,12 +74,13 @@ logger = logging.getLogger(__name__)
 # Names match Langfuse score names — keep them stable so dashboard filters
 # don't break on a Ragas version bump that renames internal class names.
 _METRIC_NAMES = {
-    "faithfulness":                  "faithfulness",
-    "answer_relevancy":              "answer_relevancy",
+    "faithfulness":                        "faithfulness",
+    "answer_relevancy":                    "answer_relevancy",
     "context_precision_without_reference": "context_precision",
-    "context_recall_without_reference":    "context_recall",
-    "noise_sensitivity_relevant":    "noise_sensitivity_relevant",
-    "noise_sensitivity_irrelevant":  "noise_sensitivity_irrelevant",
+    # Common alternate keys Ragas has used across versions; map them all
+    # back to our stable Langfuse score name so a version bump doesn't
+    # break the dashboard.
+    "llm_context_precision_without_reference": "context_precision",
 }
 
 
@@ -81,6 +88,10 @@ def _build_metric_objects() -> list:
     """Construct the Ragas metric instances at call-time so a failed import
     of one optional metric (Ragas API churn between versions) doesn't break
     the rest. Each metric is built independently and skipped on import error.
+
+    Only metrics that work without a ground-truth `reference` column are
+    included — context_recall, noise_sensitivity, and answer_correctness
+    silently expected `reference` in 0.2.x and would fail validation here.
     """
     metrics: list = []
 
@@ -96,8 +107,10 @@ def _build_metric_objects() -> list:
     except Exception as exc:
         logger.warning("[eval] answer_relevancy import failed: %s", exc)
 
-    # Reference-free precision/recall live behind class names that have
-    # rotated across Ragas versions; try the modern path then fall back.
+    # Genuinely reference-free precision: scores how on-topic the retrieved
+    # chunks are without comparing against a gold answer. The class name
+    # has churned across Ragas versions; fall through to whichever export
+    # is current.
     try:
         from ragas.metrics import LLMContextPrecisionWithoutReference  # type: ignore
         metrics.append(LLMContextPrecisionWithoutReference())
@@ -105,20 +118,6 @@ def _build_metric_objects() -> list:
         logger.warning(
             "[eval] LLMContextPrecisionWithoutReference unavailable: %s", exc,
         )
-
-    try:
-        from ragas.metrics import LLMContextRecall  # type: ignore
-        metrics.append(LLMContextRecall())
-    except Exception as exc:
-        logger.warning("[eval] LLMContextRecall unavailable: %s", exc)
-
-    try:
-        from ragas.metrics import NoiseSensitivity  # type: ignore
-        # Ragas exposes one class with a `mode` argument in 0.2.x.
-        metrics.append(NoiseSensitivity(mode="relevant"))
-        metrics.append(NoiseSensitivity(mode="irrelevant"))
-    except Exception as exc:
-        logger.warning("[eval] NoiseSensitivity unavailable: %s", exc)
 
     return metrics
 
@@ -181,7 +180,34 @@ async def run_eval(
         # Ragas's evaluate() is sync internally; we run it in a thread so
         # the worker's event loop stays responsive (so other jobs can be
         # claimed while a long eval is in flight).
+        #
+        # Two layers of timeout protection:
+        #   1. RunConfig.timeout caps each individual judge LLM call inside
+        #      Ragas. Without this, the underlying _call_with_retry can
+        #      spend up to 1+2+4+8=15s on its own retry stack per call,
+        #      and Ragas fires multiple per metric — easy to exhaust the
+        #      outer budget on a single slow metric.
+        #   2. RunConfig.max_retries=2 short-circuits Ragas's own retry
+        #      loop on top of ours (which has 5 attempts already). Stacking
+        #      both was 5*2 = 10× retries per failure.
+        #   3. Outer asyncio.wait_for hard-caps the whole evaluate() at
+        #      timeout * (n_metrics + 2). The +2 buffer covers fixed
+        #      overhead (dataset construction, result serialisation) so a
+        #      run that needed exactly N*timeout doesn't get killed at the
+        #      finish line.
         from ragas import evaluate  # type: ignore
+        from ragas.run_config import RunConfig  # type: ignore
+
+        run_config = RunConfig(
+            timeout=int(timeout),
+            max_retries=2,
+            max_wait=int(timeout / 2),
+            # Ragas defaults to max_workers=16; for a single-row dataset
+            # the realistic concurrency ceiling is "calls per metric × n
+            # metrics" — let it parallelise so independent metrics' judge
+            # calls overlap instead of running serially.
+            max_workers=8,
+        )
 
         loop = asyncio.get_running_loop()
         result = await asyncio.wait_for(
@@ -192,12 +218,26 @@ async def run_eval(
                     metrics=metrics,
                     llm=judge_llm,
                     embeddings=judge_emb,
+                    run_config=run_config,
                     raise_exceptions=False,  # individual metric errors → NaN
                     show_progress=False,
                 ),
             ),
-            timeout=timeout * len(metrics),
+            timeout=timeout * (len(metrics) + 2),
         )
+    except asyncio.TimeoutError:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.warning(
+            "[eval] ragas.evaluate timed out after %d ms (budget=%d s, %d metrics) "
+            "— posting eval_error and skipping this row",
+            elapsed_ms, int(timeout * (len(metrics) + 2)), len(metrics),
+        )
+        if trace_id:
+            obs.score(
+                trace_id=trace_id, name="eval_error", value=0.0,
+                comment=f"timeout after {elapsed_ms} ms",
+            )
+        return {}
     except Exception as exc:
         logger.exception("[eval] ragas.evaluate failed: %s", exc)
         if trace_id:

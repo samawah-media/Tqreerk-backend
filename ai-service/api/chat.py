@@ -1,37 +1,47 @@
-"""Chat endpoints — per-session Q&A with RAG (streaming).
+"""Chat endpoints — per-session Q&A driven by the LangGraph agent.
 
-Pipeline (each step skips when its predecessor short-circuits):
-    1. Page-direct lookup ("give me page 5") — bypasses retrieval entirely
-       when the user explicitly asks for a numbered page.
-    2. Chat cache — exact-match on a SHA256 cache_key, then semantic match on
-       cached question embeddings (only after we've embedded the question
-       anyway for retrieval).
-    3. Hybrid retrieval — dense (cosine) + sparse (tsvector) candidates fused
-       via Reciprocal Rank Fusion (RRF). Replaces the older weighted-sum
-       approach which was dominated by the dense score because the two scales
-       were so different.
-    4. Cross-encoder rerank — Vertex AI Ranking API picks top-K from the RRF
-       pool. Behind a feature flag (settings.reranker_enabled).
-    5. Gemini stream — final answer, streamed to the client over SSE.
+What changed (2026-04-30): the single-shot retrieval-then-stream pipeline
+that lived here was replaced by `pipelines.agent.build_agent`. Every
+chat turn now runs through a tool-using ReAct-style loop instead of one
+fixed `embed → hybrid retrieve → rerank → Gemini` chain.
 
-Storage: all retrieval is now over `report_chunks` (sub-page chunks ~500
-tokens each), not the previous `report_pages` table. Page-level features that
-the frontend still expects (e.g. "show me page 5 verbatim") are reconstructed
-by aggregating chunks for that page in chunk_index order.
+SSE protocol
+============
+The wire format is a superset of the legacy stream so existing clients
+keep working — they just need to ignore unknown event types. The new
+events report the agent's intermediate decisions so the UI can show
+"searching reports…" / "reading page 5 of report X…" hints:
+
+    data: {"type": "tool_call", "name": "search_chunks", "args": {...}}
+    data: {"type": "tool_result", "name": "search_chunks", "ok": true}
+    data: {"type": "sources", "pages": [3, 7]}     ← emitted once tools have run
+    data: {"type": "token", "text": "Hello"}       ← repeated during final answer
+    data: {"type": "done"}
+
+`tool_call` and `tool_result` events are best-effort observability;
+clients that don't care about them can drop them on the floor and still
+get a usable stream of tokens.
+
+Source pages
+============
+With agent-style retrieval the chunks the model used can come from
+multiple `search_chunks` / `get_page` tool runs. We collect every
+`page_number` referenced in tool results and emit them as a single
+`sources` event right before the first token. Order is "first-seen,"
+not relevance-ranked — relevance ranking belongs in the model's prose.
 """
 import asyncio
 import json
 import logging
 import random
-import re
 import time
 from uuid import UUID, uuid4
 
 logger = logging.getLogger(__name__)
 
-import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage, HumanMessage
 from psycopg import AsyncConnection
 
 from core.config import settings
@@ -43,37 +53,21 @@ from models.chat import (
     SessionHistoryResponse,
     SessionMessage,
 )
+from pipelines.agent import (
+    build_agent,
+    initial_state,
+    make_langfuse_handler,
+)
 from pipelines.jobs import insert_job
-from services import chat_cache, observability as obs, reranker
-from services.doc_extractor import embed_texts as embed_via_gpu
-from services.gemini import chat_with_context_stream
+from services import observability as obs
+from services.access import accessible_report_ids
 from services.quota import assert_under_chat_quota
+from services.tools import ToolContext
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-# Recognises explicit page requests in either Arabic or English, accepting both
-# Western (0-9) and Arabic-Indic (٠-٩) digit forms.
-_PAGE_PATTERN = re.compile(
-    r"(?:page|pg\.?|p\.?|الصفحة|صفحة|الصفحه|صفحه)\s*[#:\-]?\s*(\d+|[٠-٩]+)",
-    re.IGNORECASE,
-)
-_ARABIC_TO_LATIN = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
-
-def _detect_page_request(message: str) -> int | None:
-    """Return the page number if the message explicitly asks for a page, else None.
-
-    Examples that match: "give me page 2", "what is on page 5?",
-    "ما هو محتوى الصفحة 3", "صفحة ٧".
-    """
-    m = _PAGE_PATTERN.search(message)
-    if not m:
-        return None
-    try:
-        return int(m.group(1).translate(_ARABIC_TO_LATIN))
-    except ValueError:
-        return None
-
+# ── Session CRUD ───────────────────────────────────────────────────────────
 
 @router.post("/sessions", response_model=CreateSessionResponse, status_code=201)
 async def create_session(
@@ -131,116 +125,67 @@ async def get_session(
     )
 
 
-# ── Retrieval helpers ────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────
 
-async def _fetch_page_chunks(
-    conn: AsyncConnection, report_id, page_number: int,
-) -> list[dict]:
-    """Return all chunks for an explicit page request, in chunk_index order."""
-    cur = await conn.execute(
-        """
-        SELECT "PageNumber", "Content", "ChunkIndex"
-        FROM report_chunks
-        WHERE "ReportId" = %s AND "PageNumber" = %s
-        ORDER BY "ChunkIndex"
-        """,
-        [str(report_id), page_number],
-    )
-    rows = await cur.fetchall()
-    return [
-        {"page_number": p, "content": c, "chunk_index": i}
-        for p, c, i in rows
-    ]
+# Tool result fields that look like page numbers we want to surface as
+# sources. Tools return JSON-encoded strings (see services/tools.py); we
+# parse and walk for `page` / `page_number` keys.
+_PAGE_KEYS = ("page", "page_number")
 
 
-async def _hybrid_rrf_retrieve(
-    conn: AsyncConnection,
-    report_id,
-    question: str,
-    question_vec: np.ndarray,
-    top_n: int,
-) -> list[dict]:
-    """Hybrid retrieval over report_chunks using Reciprocal Rank Fusion.
+def _extract_pages(tool_output: str) -> list[int]:
+    """Best-effort: pull page numbers out of one tool's JSON result.
 
-    Why RRF instead of weighted-sum: the dense cosine score and the tsvector
-    rank live on completely different scales (cosine ∈ [0,1] tightly clustered
-    around 0.7-0.9 vs ts_rank unbounded but typically 0.001-0.1). A linear
-    combination is dominated by whichever scale has more dynamic range, which
-    in practice means the BM25 contribution is noise. RRF ignores raw scores
-    and uses ranks: rrf(d) = Σ 1/(k + rank_in_list_i). It's scale-invariant
-    and is what production engines (Elasticsearch, Vespa) ship as default.
-
-    `k = 60` is the canonical RRF constant; higher k flattens the curve, lower
-    k weights the very top of each list more aggressively. 60 has been
-    empirically robust across domains.
+    The tool wrappers in services/tools.py serialize with `json.dumps`
+    (or return a `_no_results(...)` shape), so we can decode and walk
+    for keys named `page` / `page_number`. Anything that doesn't decode
+    as JSON is silently ignored — sources are observability, not load-
+    bearing for the answer.
     """
-    rrf_k = 60
+    try:
+        parsed = json.loads(tool_output)
+    except Exception:
+        return []
 
-    cur = await conn.execute(
-        """
-        WITH dense AS (
-            SELECT "PageNumber", "Content", "ChunkIndex", metadata,
-                   ROW_NUMBER() OVER (ORDER BY embedding <=> %s) AS rnk
-            FROM report_chunks
-            WHERE "ReportId" = %s AND embedding IS NOT NULL
-            ORDER BY embedding <=> %s
-            LIMIT %s
-        ),
-        sparse AS (
-            SELECT "PageNumber", "Content", "ChunkIndex", metadata,
-                   ROW_NUMBER() OVER (
-                       ORDER BY ts_rank(search_vector,
-                                        plainto_tsquery('arabic', %s) ||
-                                        plainto_tsquery('english', %s)) DESC
-                   ) AS rnk
-            FROM report_chunks
-            WHERE "ReportId" = %s
-              AND search_vector @@ (plainto_tsquery('arabic', %s) ||
-                                    plainto_tsquery('english', %s))
-            LIMIT %s
-        )
-        SELECT COALESCE(d."PageNumber", s."PageNumber")  AS page_number,
-               COALESCE(d."Content",    s."Content")     AS content,
-               COALESCE(d."ChunkIndex", s."ChunkIndex")  AS chunk_index,
-               COALESCE(d.metadata,     s.metadata)      AS metadata,
-               COALESCE(1.0 / (%s + d.rnk), 0)
-             + COALESCE(1.0 / (%s + s.rnk), 0)           AS rrf_score
-        FROM dense d
-        FULL OUTER JOIN sparse s
-          ON  d."PageNumber" = s."PageNumber"
-          AND d."ChunkIndex" = s."ChunkIndex"
-        ORDER BY rrf_score DESC
-        LIMIT %s
-        """,
-        [
-            question_vec, str(report_id), question_vec, top_n,
-            question, question, str(report_id), question, question, top_n,
-            rrf_k, rrf_k,
-            top_n,
-        ],
-    )
-    rows = await cur.fetchall()
-    return [
-        {
-            "page_number": p,
-            "content": c,
-            "chunk_index": ci,
-            "metadata": m or {},
-            "rrf_score": float(s),
-        }
-        for p, c, ci, m, s in rows
-    ]
+    out: list[int] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in _PAGE_KEYS and isinstance(v, int):
+                    out.append(v)
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(parsed)
+    return out
 
 
-def _dedupe_pages_in_order(chunks: list[dict]) -> list[int]:
-    """Return source page numbers, preserving rank order, no duplicates."""
+def _dedup_in_order(values: list[int]) -> list[int]:
     seen: set[int] = set()
     out: list[int] = []
-    for ch in chunks:
-        p = int(ch["page_number"])
-        if p not in seen:
-            seen.add(p)
-            out.append(p)
+    for v in values:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _summarise_tool_args(args: dict | None) -> dict:
+    """Trim huge tool args (long queries, full embeddings) before pushing
+    them onto the wire. Helps the client UI render `tool_call` events
+    without exploding when a query is paragraph-length."""
+    if not args:
+        return {}
+    out: dict = {}
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > 200:
+            out[k] = v[:200] + "…"
+        else:
+            out[k] = v
     return out
 
 
@@ -252,285 +197,279 @@ async def send_message(
     body: SendMessageRequest,
     conn: AsyncConnection = Depends(get_conn),
 ):
-    """Stream the assistant's answer back as Server-Sent Events.
+    """Run one chat turn through the LangGraph agent and stream events as SSE.
 
-    Event format (one event per line, blank-line separated):
-      data: {"type": "sources", "pages": [3, 7, 12]}      ← sent first
-      data: {"type": "cache_hit", "tier": "exact|semantic"}  ← only on cache hit
-      data: {"type": "token", "text": "Hello"}            ← repeated
-      data: {"type": "token", "text": " there"}
-      data: {"type": "done"}                              ← sent last
-
-    Frontend should consume via EventSource or fetch + ReadableStream.
-    """
-    # ── Timing instrumentation — each step logs its duration ───────────────
+    See module docstring for the wire format. This handler is the single
+    entry point for production chat — there is no longer a non-agent
+    fast-path."""
     t0 = time.perf_counter()
+    sid = str(session_id)
+    sid_short = sid[:8]
+
     def _mark(label: str, since: float) -> float:
         now = time.perf_counter()
-        logger.info("chat[%s] %s: %.0f ms", str(session_id)[:8], label, (now - since) * 1000)
+        logger.info("chat[%s] %s: %.0f ms", sid_short, label, (now - since) * 1000)
         return now
 
-    # ── Langfuse trace ─────────────────────────────────────────────────────
-    # One trace per chat request, grouped by session_id so the dashboard
-    # shows the full conversation under a single Langfuse "session". The
-    # trace is a no-op when Langfuse is disabled or sampling drops it.
-    chat_trace = obs.trace(
-        name="chat",
-        session_id=str(session_id),
-        input={"message": body.message},
-        tags=["chat"],
+    # ── Validate session — pull user + report in one round-trip ───────────
+    # Sessions are owned by a UserId; ReportId is the optional "currently
+    # viewing" hint. We no longer need the report's OrganizationId because
+    # the chat quota is now per-user (see services/quota.py).
+    row = await conn.execute(
+        """
+        SELECT "UserId", "ReportId"
+        FROM chat_sessions
+        WHERE "Id" = %s
+        """,
+        [sid],
     )
-
-    # ─── Validate session ───────────────────────────────────────────────────
-    # Pull report_id AND its organization in one round-trip so we can run
-    # the per-org chat quota check immediately after.
-    with obs.span(chat_trace, name="validate_session"):
-        row = await conn.execute(
-            """
-            SELECT s."ReportId", r."OrganizationId"
-            FROM chat_sessions s
-            JOIN reports r ON r."Id" = s."ReportId"
-            WHERE s."Id" = %s
-            """,
-            [str(session_id)],
-        )
-        session = await row.fetchone()
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        report_id, organization_id = session[0], session[1]
-    chat_trace.update(metadata={
-        "report_id": str(report_id),
-        "organization_id": str(organization_id) if organization_id else None,
-    })
+    session = await row.fetchone()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    user_id, report_id = session[0], session[1]
     t1 = _mark("validate_session", t0)
 
-    # ─── Quota gate (per-org daily chat cap) ────────────────────────────────
-    # Runs BEFORE we touch retrieval / Gemini / Ragas. A 429 here means the
-    # caller's org has sent ≥ quota_daily_chat_per_org user messages in the
-    # last 24h. Cheap insurance against runaway cost from one chatty user.
-    await assert_under_chat_quota(conn, organization_id)
+    # ── Quota gate (per-user daily chat cap) ───────────────────────────────
+    await assert_under_chat_quota(conn, user_id)
 
-    # ─── Load conversation history (last 10 messages → 5 turns) ────────────
-    with obs.span(chat_trace, name="load_history") as sp:
-        hist_cur = await conn.execute(
-            """
-            SELECT "Role", "Content" FROM (
-                SELECT "Role", "Content", "CreatedAt"
-                FROM chat_messages
-                WHERE "SessionId" = %s
-                ORDER BY "CreatedAt" DESC
-                LIMIT 10
-            ) recent
-            ORDER BY "CreatedAt" ASC
-            """,
-            [str(session_id)],
-        )
-        history = [{"role": r, "content": c} for r, c in await hist_cur.fetchall()]
-        sp.update(output={"turn_count": len(history)})
+    # ── Load conversation history (last 10 → 5 turns) ──────────────────────
+    hist_cur = await conn.execute(
+        """
+        SELECT "Role", "Content" FROM (
+            SELECT "Role", "Content", "CreatedAt"
+            FROM chat_messages
+            WHERE "SessionId" = %s
+            ORDER BY "CreatedAt" DESC
+            LIMIT 10
+        ) recent
+        ORDER BY "CreatedAt" ASC
+        """,
+        [sid],
+    )
+    history_rows = await hist_cur.fetchall()
+    history_msgs = [
+        HumanMessage(content=c) if r == "user" else AIMessage(content=c)
+        for r, c in history_rows
+    ]
     t2 = _mark("load_history", t1)
 
-    # ─── Cache lookup (layer 1: exact match — no embedding cost) ────────────
-    # Only consult the cache for stateless questions: in a multi-turn chat,
-    # the same surface text can mean different things depending on context.
-    # Treating the first message of a session as cacheable is a safe default;
-    # later turns flow through retrieval.
-    cache_eligible = len(history) == 0
-    cache_hit = None
-    if cache_eligible:
-        cache_hit = await chat_cache.lookup(conn, report_id, body.message)
+    # ── Resolve the user's accessible report set (Published OR own org) ───
+    accessible_ids = await accessible_report_ids(conn, user_id)
+    _mark("accessible_report_ids", t2)
 
-    # ─── Page-number short-circuit (skips retrieval entirely) ───────────────
-    requested_page = _detect_page_request(body.message)
-    direct_chunks: list[dict] = []
-    if cache_hit is None and requested_page is not None:
-        direct_chunks = await _fetch_page_chunks(conn, report_id, requested_page)
+    # Two short-circuit paths, each producing a single user-visible token
+    # and a `done` event so the client UI handles them like any normal
+    # answer instead of crashing on a missing stream.
+    early_msg: str | None = None
+    if not accessible_ids:
+        early_msg = (
+            "You don't have access to any reports yet. Sign in or wait for "
+            "your organization to publish reports, then try again."
+        )
+    elif report_id is not None and str(report_id) not in accessible_ids:
+        # The session was created against a report this user can no longer
+        # read — either the report was un-Published, the user was removed
+        # from the org, or the session was created without an access check
+        # in place. Fail fast: handing this to the agent would cause every
+        # report-scoped tool to return "outside accessible scope" and the
+        # model to flail.
+        logger.warning(
+            "chat[%s] session report=%s is not in user=%s accessible scope "
+            "(accessible_count=%d) — aborting before agent",
+            sid_short, report_id, user_id, len(accessible_ids),
+        )
+        early_msg = (
+            "Your access to this report has changed and you can no longer "
+            "view it in this chat. Please open a new chat from a report "
+            "you currently have access to."
+        )
 
-    # ─── Hybrid RAG retrieval + rerank (only if no shortcut applied) ───────
-    retrieved_chunks: list[dict] = []
-    question_vec: np.ndarray | None = None
-    if cache_hit is None and not direct_chunks:
-        t_embed_start = time.perf_counter()
-        with obs.span(chat_trace, name="embed_question") as sp:
-            question_vec = np.array(
-                embed_via_gpu([body.message], kind="query")[0],
-                dtype=np.float32,
-            )
-            sp.update(output={"dim": int(question_vec.shape[0])})
-        t_embed_done = _mark("embed_question", t_embed_start)
+    if early_msg is not None:
+        early_token_evt = "data: " + json.dumps(
+            {"type": "token", "text": early_msg}, ensure_ascii=False
+        ) + "\n\n"
+        early_done_evt = "data: " + json.dumps({"type": "done"}) + "\n\n"
 
-        # Layer 2 cache lookup is cheap once we have the embedding — try it
-        # before paying for retrieval and the LLM.
-        if cache_eligible:
-            cache_hit = await chat_cache.lookup(
-                conn, report_id, body.message, question_embedding=question_vec,
-            )
+        async def early_stream():
+            yield early_token_evt
+            yield early_done_evt
+        return StreamingResponse(early_stream(), media_type="text/event-stream")
 
-        if cache_hit is None:
-            candidate_pool = max(
-                settings.reranker_candidate_pool,
-                settings.reranker_top_k,
-            ) if settings.reranker_enabled else settings.reranker_top_k
-
-            with obs.span(chat_trace, name="hybrid_retrieve",
-                          input={"query": body.message, "top_n": candidate_pool}) as sp:
-                candidates = await _hybrid_rrf_retrieve(
-                    conn, report_id, body.message, question_vec, top_n=candidate_pool,
-                )
-                sp.update(output={"n_candidates": len(candidates)})
-            t_retrieve_done = _mark("hybrid_rrf", t_embed_done)
-
-            # Cross-encoder rerank picks the final top-K from the candidate pool.
-            # Falls back to retrieval order on /v1/rerank failure — handled
-            # inside the wrapper.
-            with obs.span(chat_trace, name="rerank",
-                          input={"top_k": settings.reranker_top_k}) as sp:
-                retrieved_chunks = reranker.rerank(
-                    body.message, candidates, top_k=settings.reranker_top_k,
-                )
-                sp.update(output={
-                    "n_kept": len(retrieved_chunks),
-                    "top_score": (retrieved_chunks[0].get("rerank_score")
-                                  if retrieved_chunks else None),
-                })
-            _mark("rerank", t_retrieve_done)
-
-    # ─── Persist the user message before streaming starts ───────────────────
+    # ── Persist user message before streaming starts ───────────────────────
     await conn.execute(
         """
         INSERT INTO chat_messages ("Id", "SessionId", "Role", "Content", "SourcePages", "CreatedAt")
         VALUES (gen_random_uuid(), %s, 'user', %s, NULL, now())
         """,
-        [str(session_id), body.message],
+        [sid, body.message],
     )
     await conn.commit()
-    t4 = _mark("save_user_msg", t2)
-    logger.info("chat[%s] pre_stream_total: %.0f ms", str(session_id)[:8], (t4 - t0) * 1000)
+    t3 = _mark("save_user_msg", t2)
+    logger.info("chat[%s] pre_stream_total: %.0f ms", sid_short, (t3 - t0) * 1000)
 
-    # ─── Cache hit: return the stored answer as a synthetic stream ──────────
-    # Same SSE shape as a normal answer, plus a `cache_hit` event so the client
-    # / observability stack can tell them apart.
-    if cache_hit is not None:
-        sid_short = str(session_id)[:8]
-        # Tag the trace as a cache hit so the dashboard can filter cache vs
-        # full-pipeline requests and so per-tier hit-rates fall out for free.
-        try:
-            chat_trace.update(
-                tags=["chat", "cache_hit", f"tier:{cache_hit.tier}"],
-                metadata={"cache_tier": cache_hit.tier},
-            )
-        except Exception:
-            pass
+    # ── Build the agent ────────────────────────────────────────────────────
+    ctx = ToolContext(
+        user_id=user_id if isinstance(user_id, UUID) else UUID(str(user_id)),
+        session_id=session_id,
+        accessible_ids=accessible_ids,
+    )
+    graph = build_agent(ctx)
 
-        async def cached_stream():
-            try:
-                yield f"data: {json.dumps({'type': 'cache_hit', 'tier': cache_hit.tier})}\n\n"
-                yield f"data: {json.dumps({'type': 'sources', 'pages': cache_hit.source_pages})}\n\n"
-                yield f"data: {json.dumps({'type': 'token', 'text': cache_hit.answer})}\n\n"
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-                # Persist the cached answer as a real assistant message so
-                # session history stays consistent regardless of cache state.
-                async with conn_ctx() as save_conn:
-                    await save_conn.execute(
-                        """
-                        INSERT INTO chat_messages ("Id", "SessionId", "Role", "Content", "SourcePages", "CreatedAt")
-                        VALUES (gen_random_uuid(), %s, 'assistant', %s, %s, now())
-                        """,
-                        [str(session_id), cache_hit.answer, json.dumps(cache_hit.source_pages)],
-                    )
-                    await save_conn.commit()
-            except Exception as exc:
-                logger.error("chat[%s] cached_stream_error: %s", sid_short, exc)
-                yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
-            finally:
-                # Close the trace with the cached answer so dashboards see
-                # the same shape regardless of cache vs full-pipeline path.
-                try:
-                    chat_trace.update(output={
-                        "answer": cache_hit.answer,
-                        "source_pages": cache_hit.source_pages,
-                        "cache_tier": cache_hit.tier,
-                    })
-                    obs.flush()
-                except Exception:
-                    pass
-
-        return StreamingResponse(
-            cached_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    # If the session is bound to a specific report, hint the agent: "the
+    # user is currently viewing report X — prefer it unless they ask
+    # something cross-report." We push this as a leading user message
+    # instead of a system prompt mutation so the per-turn graph state
+    # stays clean of construction-time dependencies.
+    user_text = body.message
+    if report_id is not None:
+        user_text = (
+            f"[context] The user is currently viewing report id={report_id}. "
+            "Prefer it as the default scope unless the question is clearly "
+            "about a different report.\n\n"
+            f"{body.message}"
         )
 
-    # ─── Build the context list passed to Gemini ────────────────────────────
-    context_chunks_objs = direct_chunks or retrieved_chunks
-    context_chunks = [c["content"] for c in context_chunks_objs]
-    source_pages = _dedupe_pages_in_order(context_chunks_objs)
-
-    # ─── Streaming generator ────────────────────────────────────────────────
-    user_message = body.message
-    sid = str(session_id)
-    sid_short = sid[:8]
-    cacheable = cache_eligible and question_vec is not None
-
-    # Generation event for the streaming Gemini call. We open it now (so it
-    # appears in the trace before the first token) and update with the full
-    # output + token usage after the stream ends.
-    generation = obs.generation(
-        chat_trace,
-        name="gemini_chat",
-        model=settings.gemini_chat_model,
-        input={
-            "question": user_message,
-            "context_chunks": context_chunks,
-            "history_turns": len(history),
-        },
-        metadata={
-            "source_pages": source_pages,
-            "n_chunks": len(context_chunks),
-        },
+    state0 = initial_state(
+        user_id=user_id,
+        session_id=session_id,
+        history=history_msgs,
+        user_message=HumanMessage(content=user_text),
     )
 
+    # Langfuse: one trace per chat turn, all model + tool spans nested.
+    # We mint the trace_id ourselves rather than letting the CallbackHandler
+    # invent one, because the asynchronous Ragas eval job (enqueued at the
+    # bottom of this handler, run later by the worker) needs the SAME id to
+    # post `score` events against. Without a shared id, eval runs but the
+    # scores get dropped on the floor at obs.score(trace_id="") — see
+    # services/observability.py.
+    trace_id = str(uuid4())
+    lf_handler = make_langfuse_handler(
+        user_id=user_id,
+        session_id=session_id,
+        trace_id=trace_id,
+        trace_name="chat_agent",
+    )
+    callbacks = [lf_handler] if lf_handler is not None else []
+
+    # ── Stream agent events to SSE ─────────────────────────────────────────
     async def event_stream():
-        full_answer = ""
-        stream_start = time.perf_counter()
-        first_token_at: float | None = None
+        full_answer_parts: list[str] = []
+        all_pages: list[int] = []
+        sources_emitted = False
         token_count = 0
+        first_token_at: float | None = None
+        stream_start = time.perf_counter()
+        # Aggregated tool outputs — fed to the Ragas eval job below as the
+        # "contexts" the answer was grounded on. Bounded to avoid OOM on a
+        # chatty agent that ran a half-dozen search_chunks.
+        tool_contexts: list[str] = []
+
         try:
-            # Tell the client which pages we're answering from before the first token
-            yield f"data: {json.dumps({'type': 'sources', 'pages': source_pages})}\n\n"
-            await asyncio.sleep(0)  # let uvicorn flush the bytes to the client
+            async for ev in graph.astream_events(
+                state0,
+                config={"callbacks": callbacks} if callbacks else None,
+                version="v2",
+            ):
+                etype = ev.get("event")
+                name = ev.get("name", "")
 
-            # Run the SYNC Gemini stream in a thread so we don't block the event loop.
-            # Each chunk gets pushed onto an async queue → consumed and yielded here.
-            queue: asyncio.Queue = asyncio.Queue()
-            SENTINEL = object()
-            loop = asyncio.get_running_loop()
-
-            def producer():
-                try:
-                    for delta in chat_with_context_stream(history, user_message, context_chunks):
-                        loop.call_soon_threadsafe(queue.put_nowait, delta)
-                finally:
-                    loop.call_soon_threadsafe(queue.put_nowait, SENTINEL)
-
-            asyncio.get_event_loop().run_in_executor(None, producer)
-
-            while True:
-                item = await queue.get()
-                if item is SENTINEL:
-                    break
-                if first_token_at is None:
-                    first_token_at = time.perf_counter()
-                    logger.info(
-                        "chat[%s] gemini_first_token: %.0f ms",
-                        sid_short, (first_token_at - stream_start) * 1000,
+                # ── Tool start: surface it to the client ───────────────
+                if etype == "on_tool_start":
+                    args = ev.get("data", {}).get("input", {})
+                    if isinstance(args, dict):
+                        # LangChain wraps the args under a single key for
+                        # StructuredTool; unwrap if so.
+                        if set(args.keys()) == {"input"} and isinstance(args["input"], dict):
+                            args = args["input"]
+                    yield (
+                        "data: " + json.dumps({
+                            "type": "tool_call",
+                            "name": name,
+                            "args": _summarise_tool_args(args if isinstance(args, dict) else {}),
+                        }, ensure_ascii=False) + "\n\n"
                     )
-                token_count += 1
-                full_answer += item
-                yield f"data: {json.dumps({'type': 'token', 'text': item})}\n\n"
-                await asyncio.sleep(0)
+                    await asyncio.sleep(0)
 
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                # ── Tool end: collect pages, emit ack ──────────────────
+                elif etype == "on_tool_end":
+                    output = ev.get("data", {}).get("output")
+                    output_text = ""
+                    if hasattr(output, "content"):
+                        # ToolMessage
+                        output_text = str(output.content)
+                    elif isinstance(output, str):
+                        output_text = output
+                    elif output is not None:
+                        output_text = str(output)
+
+                    pages = _extract_pages(output_text)
+                    if pages:
+                        all_pages.extend(pages)
+                    if output_text:
+                        tool_contexts.append(output_text[:4000])
+
+                    yield (
+                        "data: " + json.dumps({
+                            "type": "tool_result",
+                            "name": name,
+                            "ok": "error" not in output_text.lower()[:50] if output_text else True,
+                            "n_pages": len(pages),
+                        }, ensure_ascii=False) + "\n\n"
+                    )
+                    await asyncio.sleep(0)
+
+                # ── Token chunk from the model ─────────────────────────
+                elif etype == "on_chat_model_stream":
+                    chunk = ev.get("data", {}).get("chunk")
+                    text = ""
+                    if chunk is not None:
+                        # AIMessageChunk.content is usually a string; with
+                        # tool-calling Vertex sometimes returns a list of
+                        # parts — flatten to a string.
+                        c = getattr(chunk, "content", "")
+                        if isinstance(c, list):
+                            text = "".join(
+                                p.get("text", "") if isinstance(p, dict) else str(p)
+                                for p in c
+                            )
+                        else:
+                            text = str(c or "")
+                    if not text:
+                        continue
+
+                    # Emit `sources` once, right before the first user-visible
+                    # token. Pages collected so far are the ones grounding
+                    # this answer.
+                    if not sources_emitted and all_pages:
+                        deduped = _dedup_in_order(all_pages)
+                        yield (
+                            "data: " + json.dumps({"type": "sources", "pages": deduped})
+                            + "\n\n"
+                        )
+                        sources_emitted = True
+
+                    if first_token_at is None:
+                        first_token_at = time.perf_counter()
+                        logger.info(
+                            "chat[%s] agent_first_token: %.0f ms",
+                            sid_short, (first_token_at - stream_start) * 1000,
+                        )
+                    token_count += 1
+                    full_answer_parts.append(text)
+                    yield (
+                        "data: " + json.dumps({"type": "token", "text": text}, ensure_ascii=False)
+                        + "\n\n"
+                    )
+                    await asyncio.sleep(0)
+
+            # ── Stream done — make sure we emitted sources at least once ──
+            if not sources_emitted:
+                deduped = _dedup_in_order(all_pages)
+                yield "data: " + json.dumps({"type": "sources", "pages": deduped}) + "\n\n"
+
+            yield "data: " + json.dumps({"type": "done"}) + "\n\n"
+
             stream_end = time.perf_counter()
             logger.info(
                 "chat[%s] stream_total: %.0f ms, tokens: %d, total_request: %.0f ms",
@@ -539,41 +478,15 @@ async def send_message(
                 token_count,
                 (stream_end - t0) * 1000,
             )
-            # Close the Langfuse generation with the full answer + counts.
-            # `usage.output` is approximate (we count delta events, not real
-            # tokens) but is consistent across requests for relative cost
-            # tracking. Real token counts would need Gemini's usage_metadata
-            # which only ships on the LAST chunk of generate_content_stream.
-            try:
-                generation.end(
-                    output=full_answer,
-                    usage={"output": token_count},
-                    metadata={
-                        "first_token_ms": int((first_token_at - stream_start) * 1000)
-                                          if first_token_at else None,
-                        "stream_ms": int((stream_end - stream_start) * 1000),
-                    },
-                )
-            except Exception:
-                pass
         except Exception as exc:
-            logger.error("chat[%s] stream_error: %s", sid_short, exc)
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
-            try:
-                generation.end(
-                    output="",
-                    metadata={"error": str(exc)[:500]},
-                    level="ERROR",
-                )
-            except Exception:
-                pass
+            logger.exception("chat[%s] agent_stream_error: %s", sid_short, exc)
+            yield "data: " + json.dumps({"type": "error", "message": str(exc)}) + "\n\n"
             return
 
-        # ─── After the stream, persist the full assistant message ─────────
-        # The dep-injected `conn` was already returned to its pool when the
-        # handler returned, so open a fresh one for the save step.
+        # ── Persist the assistant message ──────────────────────────────────
+        full_answer = "".join(full_answer_parts).strip()
+        source_pages = _dedup_in_order(all_pages)
         try:
-            save_start = time.perf_counter()
             async with conn_ctx() as save_conn:
                 await save_conn.execute(
                     """
@@ -583,75 +496,52 @@ async def send_message(
                     [sid, full_answer, json.dumps(source_pages)],
                 )
                 await save_conn.commit()
-
-                # Cache the answer so future asks for the same question on the
-                # same report short-circuit retrieval and Gemini. Skipped for
-                # follow-up turns (cache_eligible=False) and for empty answers.
-                if cacheable and full_answer.strip():
-                    await chat_cache.store(
-                        save_conn, report_id, user_message, full_answer,
-                        source_pages, question_embedding=question_vec,
-                    )
-            logger.info(
-                "chat[%s] save_assistant_msg: %.0f ms",
-                sid_short, (time.perf_counter() - save_start) * 1000,
-            )
         except Exception as exc:
             logger.warning("chat[%s] save_assistant_msg failed: %s", sid_short, exc)
 
-        # ─── Close the Langfuse trace ─────────────────────────────────────
-        # `output` carries the final answer + the source pages we cited so
-        # the dashboard shows them inline. Flush ensures the trace lands in
-        # Langfuse even if Cloud Run recycles this instance shortly after.
+        # ── Flush Langfuse + enqueue eval ─────────────────────────────────
         try:
-            chat_trace.update(
-                output={"answer": full_answer, "source_pages": source_pages},
-            )
             obs.flush()
         except Exception:
             pass
 
-        # ─── Enqueue async Ragas eval (sample-rate gated) ─────────────────
-        # The worker reads input_data, runs ragas.evaluate, and posts one
-        # Langfuse score per metric back onto this trace within ~30-60s.
-        # We never block on it — eval is best-effort observability, not
-        # part of the chat contract.
         try:
             if (settings.eval_enabled
                     and settings.eval_sample_rate > 0.0
-                    and getattr(chat_trace, "id", "")
-                    and full_answer.strip()):
-                if random.random() < settings.eval_sample_rate:
-                    async with conn_ctx() as eval_conn:
-                        eval_job_id = uuid4()
-                        await insert_job(
-                            eval_conn,
-                            job_id=eval_job_id,
-                            job_type="Evaluation",
-                            report_id=report_id,
-                            input_data={
-                                "trace_id":   chat_trace.id,
-                                "question":   user_message,
-                                "contexts":   context_chunks,
-                                "answer":     full_answer,
-                                "session_id": sid,
-                            },
-                        )
-                        await eval_conn.commit()
-                    logger.info(
-                        "chat[%s] enqueued eval job=%s trace=%s",
-                        sid_short, eval_job_id, chat_trace.id,
+                    and full_answer
+                    and tool_contexts
+                    and random.random() < settings.eval_sample_rate):
+                async with conn_ctx() as eval_conn:
+                    eval_job_id = uuid4()
+                    await insert_job(
+                        eval_conn,
+                        job_id=eval_job_id,
+                        job_type="Evaluation",
+                        report_id=report_id,
+                        input_data={
+                            # Same trace id we pinned on the CallbackHandler
+                            # above. The worker passes it to obs.score() so
+                            # Ragas metrics land directly on the chat trace
+                            # the user just produced.
+                            "trace_id":   trace_id,
+                            "question":   body.message,
+                            "contexts":   tool_contexts,
+                            "answer":     full_answer,
+                            "session_id": sid,
+                        },
                     )
+                    await eval_conn.commit()
+                logger.info(
+                    "chat[%s] enqueued eval job=%s trace=%s",
+                    sid_short, eval_job_id, trace_id,
+                )
         except Exception as exc:
             logger.warning("chat[%s] enqueue_eval failed: %s", sid_short, exc)
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable proxy buffering for real streaming
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

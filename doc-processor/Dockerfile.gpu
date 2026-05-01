@@ -48,11 +48,12 @@ RUN pip install -r requirements.txt
 # model init happens at container startup when the L4 GPU is present.
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download(repo_id='microsoft/Florence-2-base-ft')" \
-    && python -c "from huggingface_hub import snapshot_download; \
-    snapshot_download(repo_id='BAAI/bge-m3')" \
-    && python -c "from huggingface_hub import snapshot_download; \
-    snapshot_download(repo_id='BAAI/bge-reranker-v2-m3')" \
     && python -c "import easyocr; easyocr.Reader(['ar', 'en'], gpu=False, download_enabled=True)"
+# bge-m3 + bge-reranker-v2-m3 dropped 2026-04-30 — embedding and reranking
+# moved to managed APIs (Vertex gemini-embedding-001 + Vertex AI Ranking).
+# The /v1/embed and /v1/rerank endpoints remain for backwards compatibility
+# but their init() calls will fail-soft to is_ready()=False; nothing in
+# production calls them anymore. Image size dropped ~5 GB.
 # pix2tex weight pre-download removed — pix2tex is disabled until a version
 # compatible with transformers>=4.42 is available.
 

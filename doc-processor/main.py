@@ -66,8 +66,14 @@ async def _warm_models() -> None:
         ("easyocr",     ocr.init),
         ("pix2tex",     formulas.init),
         ("florence-2",  figures.init),
-        ("embeddings",  embeddings.init),
-        ("reranker",    reranker.init),
+        # bge-m3 and bge-reranker-v2-m3 dropped 2026-04-30 — embedding /
+        # reranking moved to managed APIs (Vertex). The /v1/embed and
+        # /v1/rerank endpoints stay deployed but their model weights are
+        # no longer pre-cached in the image, so loading would require a
+        # network download at cold start. Skip the warmup; is_ready()
+        # returns False; the endpoints respond 503 if anyone calls them.
+        # ("embeddings",  embeddings.init),
+        # ("reranker",    reranker.init),
     ]:
         try:
             fn()
@@ -87,28 +93,46 @@ async def health() -> HealthResponse:
     ready when `status == "healthy"`. We deliberately return 200 in all
     states so an automated probe sees the structured payload, not an HTTP
     error — operators inspect models_loaded to debug a stuck instance.
+
+    Readiness scope (2026-04-30): the doc-processor is responsible only for
+    the EXTRACT pipeline (docling, easyocr, pix2tex, florence-2). bge-m3
+    and bge-reranker-v2-m3 were deliberately dropped from the warmup path
+    when chat moved to Vertex APIs — they're no longer part of the
+    "service is ready to serve" definition. We still surface `embeddings`
+    and `reranker` in `models_loaded` for ops visibility (so operators can
+    see at a glance that the legacy endpoints are intentionally cold), but
+    they don't gate the overall status — otherwise this instance would
+    report "loading" forever and Cloud Run would never mark it ready.
     """
     import torch
 
-    models_loaded = {
+    # Models the extract pipeline actually depends on. /health gates on
+    # exactly these — anything else is observability-only.
+    required = {
         "docling":    layout.is_ready(),
         "easyocr":    ocr.is_ready(),
         "pix2tex":    formulas.is_ready(),
         "florence-2": figures.is_ready(),
+    }
+
+    # Optional models we still expose (legacy /v1/embed and /v1/rerank
+    # endpoints respond 503 if anyone calls them). NOT included in the
+    # status calculation.
+    optional = {
         "embeddings": embeddings.is_ready(),
         "reranker":   reranker.is_ready(),
     }
 
-    if all(models_loaded.values()):
+    if all(required.values()):
         status = "healthy"
-    elif any(models_loaded.values()):
+    elif any(required.values()):
         status = "loading"
     else:
         status = "unhealthy"
 
     return HealthResponse(
         status=status,
-        models_loaded=models_loaded,
+        models_loaded={**required, **optional},
         gpu_available=torch.cuda.is_available(),
     )
 

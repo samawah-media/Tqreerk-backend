@@ -25,4 +25,5 @@ EXPOSE 8080
 # health endpoint reflects the active mode via /health.
 ENV WORKER_MODE=api
 
+
 CMD ["sh", "-c", "if [ \"$WORKER_MODE\" = \"worker\" ]; then python main.py & uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --log-level warning; else uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}; fi"]

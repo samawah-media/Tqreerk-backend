@@ -1,9 +1,14 @@
 namespace Taqreerk.Application.Settings;
 
-/// Per-organization daily quotas for the AI surfaces that cost real money.
-/// Each cap is a rolling 24-hour count over ai_jobs (or chat_messages for
-/// the chat cap). A value of 0 disables that specific cap. Tune via
+/// Daily quotas for the AI surfaces that cost real money. Each cap is a
+/// rolling 24-hour count. Value of 0 disables that specific cap. Tune via
 /// appsettings or env var without redeploy.
+///
+/// Ingest / Translate are per-org because reports (and their costs) are
+/// owned by an org. Chat is per-user because chat sessions are owned by
+/// an individual and the agent's accessible scope is computed per-user
+/// (Published OR own-org membership) — capping chat per org would punish
+/// quiet orgs whose one chatty user ate the whole allowance.
 public class QuotaSettings
 {
     public const string Section = "Quota";
@@ -19,8 +24,9 @@ public class QuotaSettings
     /// is per-character paid; multi-translating long PDFs adds up.
     public int DailyTranslatePerOrg { get; set; } = 10;
 
-    /// Max chat user-messages per org per 24h. Each message also enqueues
-    /// a Ragas eval (~6× extra Gemini calls), so this is the primary
-    /// chat-side cost gate.
-    public int DailyChatPerOrg { get; set; } = 500;
+    /// Max chat user-messages per user per 24h. Each message also enqueues
+    /// a Ragas eval (~3× extra Gemini calls) and runs an agent loop with
+    /// up to 5 tool round-trips, so this is the primary chat-side cost
+    /// gate.
+    public int DailyChatPerUser { get; set; } = 200;
 }

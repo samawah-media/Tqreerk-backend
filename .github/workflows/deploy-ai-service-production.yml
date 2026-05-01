@@ -29,9 +29,21 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
+      # Pull the previous prod-latest image so Docker has cached layers to
+      # reuse — see deploy-ai-service-staging.yml for the rationale. Saves
+      # ~3-5 min of pip downloads per deploy on warm-cache builds.
+      - name: Pull cached image
+        run: |
+          docker pull ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
+            || echo "no previous image at prod-latest — first cold build"
+
       - name: Build Docker image
+        env:
+          DOCKER_BUILDKIT: "1"
         run: |
           docker build \
+            --cache-from=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
             -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
             -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
             ./ai-service
@@ -70,10 +82,7 @@ jobs:
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
             LANGFUSE_TRACE_SAMPLE_RATE=0.5
             EVAL_SAMPLE_RATE=0.2
-            QUOTA_ENABLED=true
-            QUOTA_DAILY_INGEST_PER_ORG=50
-            QUOTA_DAILY_TRANSLATE_PER_ORG=25
-            QUOTA_DAILY_CHAT_PER_ORG=1000
+            QUOTA_ENABLED=false
 
       - name: Verify deployment
         run: |
@@ -112,6 +121,7 @@ jobs:
             --min-instances=1
             --max-instances=2
             --timeout=900
+            --no-cpu-throttling
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
           env_vars: |
@@ -127,7 +137,4 @@ jobs:
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
             LANGFUSE_TRACE_SAMPLE_RATE=0.5
             EVAL_SAMPLE_RATE=0.2
-            QUOTA_ENABLED=true
-            QUOTA_DAILY_INGEST_PER_ORG=50
-            QUOTA_DAILY_TRANSLATE_PER_ORG=25
-            QUOTA_DAILY_CHAT_PER_ORG=1000
+            QUOTA_ENABLED=false
