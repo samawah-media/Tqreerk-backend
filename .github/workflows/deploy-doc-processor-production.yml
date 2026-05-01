@@ -51,6 +51,8 @@ jobs:
       #                         models can be swapped via the FLORENCE_MODEL_ID
       #                         env (defaults to base-ft).
       - name: Deploy to Cloud Run (Production)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PRODUCTION }}
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
             --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
@@ -71,7 +73,12 @@ jobs:
             --no-cpu-throttling \
             --execution-environment=gen2 \
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }} \
-            --set-env-vars=ENVIRONMENT=production,SENTRY_DSN=${{ secrets.SENTRY_DSN }},INTERNAL_API_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }},GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},DATABASE_URL=${{ secrets.DATABASE_URL_PRODUCTION }}
+            --set-env-vars="ENVIRONMENT=production,SENTRY_DSN=${{ secrets.SENTRY_DSN }},INTERNAL_API_TOKEN=${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }},GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}"
+
+          gcloud run services update ${{ env.SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --update-env-vars="^|^DATABASE_URL=${DATABASE_URL}"
 
       - name: Verify deployment
         run: |
