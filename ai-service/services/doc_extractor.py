@@ -375,7 +375,10 @@ async def trigger_ingest(job_id: str, report_id: str, file_url: str) -> None:
         # read_timeout=30 is just for the 202 ACK — the pipeline runs in
         # a background task on the GPU side so the response is fast.
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=120.0, read=30.0),
+            # default=30 covers read/write/pool; connect overridden to 120
+            # so GPU cold-starts (~60-90 s) don't kill the trigger before
+            # the doc-processor even starts listening.
+            timeout=httpx.Timeout(30.0, connect=120.0),
         ) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
