@@ -14,6 +14,7 @@ worker pool, not on the request-serving instance.
 import asyncio
 import logging
 import uuid
+from contextlib import asynccontextmanager
 
 # Sentry must initialize BEFORE FastAPI/Starlette are imported so its
 # auto-instrumentation can hook into them. If SENTRY_DSN is not set, this
@@ -41,7 +42,67 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Taqreerk AI Service", version="1.0.0")
+# Suppress noisy INFO messages that the google-genai SDK emits directly to
+# the root logger (no named logger, so we can't filter by logger name).
+class _RootFilter(logging.Filter):
+    _SUPPRESS = ("AFC is enabled with max remote calls",)
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(s in msg for s in self._SUPPRESS)
+
+logging.getLogger().addFilter(_RootFilter())
+
+
+async def _pending_job_watcher() -> None:
+    """Background loop that wakes the worker whenever Pending ingest/translate
+    jobs are found. Runs only in API mode.
+
+    Why: insert_job() fires a single wake-ping when the job is created. If
+    that ping fails (worker scaled to zero, token fetch timeout, etc.) the job
+    sits Pending forever. This loop retries the wake every 60 s so a failed
+    ping is self-healing within a minute — without any .NET changes or new
+    endpoints.
+    """
+    from core.db import conn_ctx
+    from pipelines.jobs import _wake_worker
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with conn_ctx() as conn:
+                cur = await conn.execute(
+                    """
+                    SELECT COUNT(*) FROM ai_jobs
+                    WHERE "Status" = 'Pending'
+                      AND "JobType" != 'Evaluation'
+                    """,
+                )
+                row = await cur.fetchone()
+                count = int(row[0]) if row else 0
+            if count > 0:
+                logger.info(
+                    "[watcher] %d pending ingest/translate job(s) — waking worker",
+                    count,
+                )
+                await _wake_worker()
+        except Exception as exc:
+            logger.warning("[watcher] pending-job check failed: %s", exc)
+
+
+@asynccontextmanager
+async def lifespan(app_: FastAPI):
+    if settings.worker_mode == "api":
+        watcher = asyncio.create_task(_pending_job_watcher())
+    else:
+        watcher = None
+    try:
+        yield
+    finally:
+        if watcher:
+            watcher.cancel()
+
+
+app = FastAPI(title="Taqreerk AI Service", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

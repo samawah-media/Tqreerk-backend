@@ -54,9 +54,11 @@ class GeminiRagasLLM(BaseRagasLLM):
     """
 
     def __init__(self, run_config: RunConfig | None = None) -> None:
-        # Ragas inherits RunConfig from BaseRagasLLM; we accept a custom one
-        # only to satisfy the interface — defaults are fine for our scale.
         self.run_config = run_config or RunConfig()
+
+    def is_finished(self, response: LLMResult) -> bool:
+        # simple_completion is synchronous — response is always complete.
+        return True
 
     def _generate(self, prompt_text: str, temperature: float | None) -> LLMResult:
         try:
