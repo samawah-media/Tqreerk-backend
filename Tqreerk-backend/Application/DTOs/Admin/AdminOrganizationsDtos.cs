@@ -14,6 +14,7 @@ public record AdminOrganizationListItemDto(
     string Status,
     bool IsVerified,
     bool IsPartner,
+    bool TranslationEnabled,
     string? CountryCode,
     string? CountryNameAr,
     string? City,
@@ -49,6 +50,7 @@ public record AdminOrganizationDetailDto(
     string Status,
     bool IsVerified,
     bool IsPartner,
+    bool TranslationEnabled,
     string? SectorScope,
     Guid? CountryId,
     string? CountryNameAr,
@@ -79,7 +81,8 @@ public record UpdateAdminOrganizationRequest(
     [StringLength(50)] string? Phone,
     [StringLength(500)] string? WebsiteUrl,
     [StringLength(2000)] string? Description,
-    bool? IsPartner
+    bool? IsPartner,
+    bool? TranslationEnabled
 );
 
 /// Body of POST /api/admin/organizations/{id}/suspend. Reason is required

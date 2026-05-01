@@ -29,8 +29,11 @@ public class PublicReportsController : ControllerBase
         [FromQuery(Name = "q")] string? q = null,
         [FromQuery(Name = "sectors")] Guid[]? sectors = null,
         [FromQuery(Name = "countries")] Guid[]? countries = null,
+        [FromQuery(Name = "organizations")] Guid[]? organizations = null,
         [FromQuery(Name = "year_from")] int? yearFrom = null,
         [FromQuery(Name = "year_to")] int? yearTo = null,
+        [FromQuery(Name = "page_count_min")] int? pageCountMin = null,
+        [FromQuery(Name = "page_count_max")] int? pageCountMax = null,
         [FromQuery(Name = "language")] string? language = null,
         [FromQuery(Name = "sort")] string? sort = null,
         [FromQuery(Name = "page")] int page = 1,
@@ -41,8 +44,11 @@ public class PublicReportsController : ControllerBase
             Q: q,
             Sectors: sectors,
             Countries: countries,
+            Organizations: organizations,
             YearFrom: yearFrom,
             YearTo: yearTo,
+            PageCountMin: pageCountMin,
+            PageCountMax: pageCountMax,
             Language: language,
             Sort: sort,
             Page: page,
@@ -51,12 +57,54 @@ public class PublicReportsController : ControllerBase
         return Ok(await _reports.ListAsync(req, ct));
     }
 
-    /// <summary>Curated featured reports for the homepage.</summary>
+    /// <summary>Per-facet counts for the library sidebar. Same query
+    /// surface as <see cref="List"/> — counts on each dimension respect
+    /// every filter EXCEPT the dimension itself.</summary>
+    [HttpGet("facets")]
+    [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Any)]
+    [ProducesResponseType(typeof(PublicReportFacetsDto), StatusCodes.Status200OK)]
+    public async Task<IActionResult> Facets(
+        [FromQuery(Name = "q")] string? q = null,
+        [FromQuery(Name = "sectors")] Guid[]? sectors = null,
+        [FromQuery(Name = "countries")] Guid[]? countries = null,
+        [FromQuery(Name = "organizations")] Guid[]? organizations = null,
+        [FromQuery(Name = "year_from")] int? yearFrom = null,
+        [FromQuery(Name = "year_to")] int? yearTo = null,
+        [FromQuery(Name = "page_count_min")] int? pageCountMin = null,
+        [FromQuery(Name = "page_count_max")] int? pageCountMax = null,
+        [FromQuery(Name = "language")] string? language = null,
+        CancellationToken ct = default)
+    {
+        var req = new PublicReportListRequest(
+            Q: q,
+            Sectors: sectors,
+            Countries: countries,
+            Organizations: organizations,
+            YearFrom: yearFrom,
+            YearTo: yearTo,
+            PageCountMin: pageCountMin,
+            PageCountMax: pageCountMax,
+            Language: language
+        );
+        return Ok(await _reports.GetFacetsAsync(req, ct));
+    }
+
+    /// <summary>Curated featured reports for the homepage. Pass `section`
+    /// to scope to one column (HomepageHero / HomepageCarousel /
+    /// SectorTop / CountryTop). Omit it to get hero + carousel
+    /// fall-through.</summary>
     [HttpGet("featured")]
+    // Client/CDN-side caching only (5 min). Different ?take and ?section
+    // values use different URLs and therefore different cache entries
+    // automatically — VaryByQueryKeys would also enable server-side
+    // caching, which we don't run UseResponseCaching for.
     [ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any)]
     [ProducesResponseType(typeof(IReadOnlyList<PublicReportListItemDto>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> Featured([FromQuery] int take = 5, CancellationToken ct = default)
-        => Ok(await _reports.GetFeaturedAsync(take, ct));
+    public async Task<IActionResult> Featured(
+        [FromQuery] int take = 5,
+        [FromQuery] string? section = null,
+        CancellationToken ct = default)
+        => Ok(await _reports.GetFeaturedAsync(take, section, ct));
 
     /// <summary>Most-viewed reports in the last 7 days.</summary>
     [HttpGet("trending")]
@@ -78,4 +126,13 @@ public class PublicReportsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetBySlug(string slug, CancellationToken ct)
         => Ok(await _reports.GetBySlugAsync(slug, ct));
+
+    /// <summary>"More like this" — sector match first, then most-viewed
+    /// overall as a backfill. Never includes the source report itself.</summary>
+    [HttpGet("{slug}/related")]
+    [ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any)]
+    [ProducesResponseType(typeof(IReadOnlyList<PublicReportListItemDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> Related(
+        string slug, [FromQuery] int take = 3, CancellationToken ct = default)
+        => Ok(await _reports.GetRelatedAsync(slug, take, ct));
 }

@@ -10,16 +10,20 @@ using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.Application.Services;
 
-/// AI processing orchestrator. Pipeline:
-///   1. Ingestion         → ai-service /reports/ingest (writes report_pages,
-///                          updates Report.PageCount).
-///   2. Summarization     → ai-service /reports/summarize (summary + findings +
-///                          topics, persisted in ReportAiContent[lang=ar]).
-///   3. Translation (en)  → ai-service /reports/translate (returns gs:// URL,
-///                          persisted in ReportTranslation[lang=en]).
-///   4. Publish           → Report.Status = Published.
+/// AI processing orchestrator (queue-only). The AI service's worker drains the
+/// shared ai_jobs table, so this service's role is to:
 ///
-/// Each step is its own AiJob row so we can retry individual stages on failure.
+///   1. Approve            → admin clicks Approve in ReviewService → we
+///                           EnqueueIngestAsync (creates one Ingestion row
+///                           with step=ingest+summarize). The AI worker runs
+///                           extraction + summarization in one pass and writes
+///                           into report_chunks and report_ai_contents[ar].
+///   2. (manual) Translate → org user clicks the "ترجم التقرير" button →
+///                           EnqueueTranslateAsync. Gated by the org's
+///                           TranslationEnabled flag (toggled by staff).
+///   3. Reconcile          → FinalizeCompletedJobsAsync flips reports out of
+///                           ProcessingAi and syncs ReportTranslation rows
+///                           after the AI worker terminates each job.
 public class ReportAiService : IReportAiService
 {
     private const string DefaultTargetTranslationLanguage = "en";
@@ -32,6 +36,13 @@ public class ReportAiService : IReportAiService
     private readonly IQuotaService _quota;
     private readonly ILogger<ReportAiService> _logger;
 
+    // We POST directly to the AI service's HTTP endpoints (/reports/ingest,
+    // /reports/translate). The previous queue-only design (insert ai_jobs row
+    // and let the AI worker pick it up) doesn't survive a serverless deploy:
+    // Cloud Run scales the AI service to zero when idle, so the worker poll
+    // loop only runs while a container exists. Hitting the HTTP endpoint
+    // both wakes a container AND lets the AI side own the row insertion
+    // exactly the way its dispatch expects.
     public ReportAiService(
         TaqreerkDbContext db,
         IAiServiceClient ai,
@@ -58,7 +69,9 @@ public class ReportAiService : IReportAiService
         if (string.IsNullOrWhiteSpace(report.FileUrl))
             throw new InvalidOperationException("Report has no file URL — cannot ingest.");
 
-        // Idempotent: only create a new ingest job if there isn't an active one.
+        // Idempotent: skip if an Ingestion is already Pending/Processing.
+        // We check the AI-service-owned ai_jobs table here because that's
+        // where /reports/ingest writes its row.
         var hasActive = await _db.AiJobs.AnyAsync(
             j => j.ReportId == reportId
               && j.JobType == AiJobType.Ingestion
@@ -75,16 +88,131 @@ public class ReportAiService : IReportAiService
         // QuotaExceededException; controller layer maps it to HTTP 429.
         await _quota.AssertUnderJobQuotaAsync(report.OrganizationId, AiJobType.Ingestion, ct);
 
-        _db.AiJobs.Add(new AiJob
+        // POST to the AI service. The endpoint is fire-and-forget on the
+        // server side (returns 202 with a job_id and runs ingest+summarize
+        // in a background asyncio task). Calling it via HTTP also wakes the
+        // Cloud Run container so the AI worker is actually alive to drive
+        // the row to terminal state.
+        var gsUri = ToGcsUri(report.FileUrl);
+        try
         {
-            ReportId = reportId,
-            OrganizationId = report.OrganizationId,
-            JobType = AiJobType.Ingestion,
-            Status = AiJobStatus.Pending,
-        });
-        report.Status = ReportStatus.PendingReview; // "Processing" — re-using the existing enum for now.
+            var enqueued = await _ai.IngestAsync(reportId, gsUri, ct);
+            _logger.LogInformation(
+                "[ai] EnqueueIngest report={ReportId} accepted by ai-service job={AiJobId}",
+                reportId, enqueued.JobId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "[ai] EnqueueIngest report={ReportId} failed to call ai-service",
+                reportId);
+            throw;
+        }
+
+        // Flip the report into ProcessingAi locally so the dashboard reflects
+        // the in-flight state immediately. The status finalizer will move it
+        // forward to Published when the ai_jobs row reaches Completed.
+        report.Status = ReportStatus.ProcessingAi;
         await _db.SaveChangesAsync(ct);
-        _logger.LogInformation("[ai] EnqueueIngest report={ReportId} queued (Pending)", reportId);
+    }
+
+    /// <summary>
+    /// Manually trigger a translation for the report. Gated by the org's
+    /// TranslationEnabled flag and by ingest having produced an Arabic
+    /// summary. Calls the AI service's synchronous /reports/translate
+    /// endpoint — the call itself runs Cloud Translation v3 server-side
+    /// and returns once the translated PDF is in GCS.
+    /// </summary>
+    public async Task EnqueueTranslateAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default)
+    {
+        await AssertCallerOwnsReportAsync(currentUserId, reportId, ct);
+
+        var report = await _db.Reports
+            .Include(r => r.Organization)
+            .FirstOrDefaultAsync(r => r.Id == reportId, ct)
+            ?? throw new KeyNotFoundException("Report not found.");
+
+        if (string.IsNullOrWhiteSpace(report.FileUrl))
+            throw new InvalidOperationException("Report has no file URL — cannot translate.");
+
+        // Per-org gate. Toggled by staff from the admin app's Organizations page.
+        if (report.Organization is null || !report.Organization.TranslationEnabled)
+            throw new UnauthorizedAccessException("Translation is not enabled for this organization.");
+
+        // Translation requires the AR summary (and hence ingest) to be done.
+        var hasArContent = await _db.ReportAiContents
+            .AnyAsync(c => c.ReportId == reportId && c.Language == "ar", ct);
+        if (!hasArContent)
+            throw new InvalidOperationException("Translation requires the report to be ingested first.");
+
+        // Idempotent: skip if there's already an active or completed translation.
+        var hasActive = await _db.AiJobs.AnyAsync(
+            j => j.ReportId == reportId
+              && j.JobType == AiJobType.Translation
+              && (j.Status == AiJobStatus.Pending || j.Status == AiJobStatus.Processing),
+            ct);
+        if (hasActive) return;
+
+        var sourceLang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
+        var targetLang = sourceLang == "ar" ? DefaultTargetTranslationLanguage : "ar";
+
+        var existing = await _db.ReportTranslations
+            .FirstOrDefaultAsync(t => t.ReportId == reportId && t.Language == targetLang, ct);
+        if (existing is not null && !string.IsNullOrWhiteSpace(existing.TranslatedFileUrl)) return;
+
+        await _quota.AssertUnderJobQuotaAsync(report.OrganizationId, AiJobType.Translation, ct);
+
+        var gsUri = ToGcsUri(report.FileUrl);
+        var outputPrefix = BuildTranslationOutputPrefix(report.Id, targetLang);
+
+        // Mark Processing up-front so the user UI flips to "translating…"
+        // immediately. The HTTP call to /translate is synchronous and can take
+        // 1–3 min for Cloud Translation v3 — we can't keep the user staring
+        // at a spinner with no state change.
+        if (existing is null)
+        {
+            existing = new ReportTranslation
+            {
+                ReportId = reportId,
+                Language = targetLang,
+                TranslationStatus = TranslationStatus.Processing,
+            };
+            _db.ReportTranslations.Add(existing);
+        }
+        else
+        {
+            existing.TranslationStatus = TranslationStatus.Processing;
+        }
+        await _db.SaveChangesAsync(ct);
+
+        TranslateResult result;
+        try
+        {
+            result = await _ai.TranslateAsync(reportId, gsUri, outputPrefix, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "[ai] EnqueueTranslate report={ReportId} ai-service call failed",
+                reportId);
+
+            // Mark the translation row Failed so the user UI can show the error
+            // state instead of leaving it Processing forever.
+            existing.TranslationStatus = TranslationStatus.Failed;
+            await _db.SaveChangesAsync(ct);
+            throw;
+        }
+
+        var detectedTarget = string.IsNullOrWhiteSpace(result.TargetLanguage) ? targetLang : result.TargetLanguage;
+        existing.Language = detectedTarget;
+        existing.TranslatedFileUrl = result.TranslatedFileUrl;
+        existing.TranslationStatus = TranslationStatus.Completed;
+        existing.TranslatedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "[ai] EnqueueTranslate report={ReportId} target={Target} (Pending)",
+            reportId, targetLang);
     }
 
     public async Task RegenerateAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default)
@@ -159,329 +287,229 @@ public class ReportAiService : IReportAiService
 
         var overall = ComputeOverallStatus(jobs, contents.Count > 0);
 
+        // Surfacing the org-level flag here lets the user-side report page
+        // show/hide the manual "Translate" button without a second round-trip
+        // to the organization endpoint.
+        var translationEnabled = await _db.Reports
+            .AsNoTracking()
+            .Where(r => r.Id == reportId)
+            .Select(r => r.Organization!.TranslationEnabled)
+            .FirstOrDefaultAsync(ct);
+
         return new ReportAiStatusDto(
             reportId,
             overall,
             jobs,
             ar is null ? null : ToContentDto(ar),
             en is null ? null : ToContentDto(en),
-            translations
+            translations,
+            translationEnabled
         );
     }
 
-    public async Task ProcessJobAsync(Guid jobId, CancellationToken ct = default)
+    /// <summary>
+    /// Reconciles .NET-owned report state with what the AI service has finished.
+    /// The AI worker drives every ai_jobs row to terminal status (Completed /
+    /// Failed) and writes content into report_chunks / report_ai_contents /
+    /// report_translations. It does NOT update reports.Status, because the
+    /// .NET side owns that lifecycle. This method bridges the gap by moving
+    /// reports out of ProcessingAi once their Ingestion job succeeds, and
+    /// updating in-flight ReportTranslation rows when their matching
+    /// Translation ai_job finishes.
+    /// </summary>
+    public async Task FinalizeCompletedJobsAsync(CancellationToken ct = default)
     {
-        var job = await _db.AiJobs.FirstOrDefaultAsync(j => j.Id == jobId, ct);
-        if (job is null)
-        {
-            _logger.LogWarning("AiJob {JobId} not found — skipping", jobId);
-            return;
-        }
-        if (job.Status != AiJobStatus.Pending)
-        {
-            _logger.LogDebug("AiJob {JobId} already in status {Status} — skipping", jobId, job.Status);
-            return;
-        }
-        if (!job.ReportId.HasValue)
-        {
-            await MarkFailedAsync(job, "AiJob has no ReportId", ct);
-            return;
-        }
+        // Look at terminally-resolved jobs from the last hour. We can't rely on
+        // a "processed" flag here without a schema change, so we re-scan and
+        // make every transition idempotent.
+        var since = DateTime.UtcNow.AddHours(-1);
+        var recent = await _db.AiJobs
+            .Where(j => j.CompletedAt != null
+                     && j.CompletedAt >= since
+                     && (j.Status == AiJobStatus.Completed || j.Status == AiJobStatus.Failed)
+                     && j.ReportId != null)
+            .Select(j => new { j.Id, j.ReportId, j.JobType, j.Status, j.OutputData })
+            .ToListAsync(ct);
 
-        job.Status = AiJobStatus.Processing;
-        job.StartedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        if (recent.Count == 0) return;
 
-        try
-        {
-            switch (job.JobType)
-            {
-                case AiJobType.Ingestion:
-                    await ProcessIngestAsync(job, ct);
-                    break;
-                case AiJobType.Summarization:
-                    await ProcessSummarizeAsync(job, ct);
-                    break;
-                case AiJobType.Translation:
-                    await ProcessTranslateAsync(job, ct);
-                    break;
-                default:
-                    await MarkFailedAsync(job, $"Unsupported job type: {job.JobType}", ct);
-                    return;
-            }
-
-            job.Status = AiJobStatus.Completed;
-            job.CompletedAt = DateTime.UtcNow;
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "AiJob {JobId} ({Type}) failed", job.Id, job.JobType);
-            await MarkFailedAsync(job, ex.Message, ct);
-        }
-    }
-
-    // ── pipeline steps ───────────────────────────────────────────────────────
-
-    private async Task ProcessIngestAsync(AiJob job, CancellationToken ct)
-    {
-        var report = await LoadReportAsync(job, ct);
-        var gsUri = ToGcsUri(report.FileUrl!);
-
-        // Ingest is fire-and-forget on the AI service — the call returns 202
-        // with a job_id and the actual extraction runs in the background. We
-        // record the AI service's job_id on our AiJob row so the operation can
-        // be debugged across services, then poll until it finishes.
-        var enqueued = await _ai.IngestAsync(report.Id, gsUri, ct);
-        job.InputData = JsonSerializer.Serialize(new
-        {
-            file_url = gsUri,
-            ai_service_job_id = enqueued.JobId,
-        });
-        await _db.SaveChangesAsync(ct);
-
-        var snapshot = await PollAiJobAsync(enqueued.JobId, ct);
-
-        if (string.Equals(snapshot.Status, "Failed", StringComparison.OrdinalIgnoreCase))
-        {
-            // Surface the AI-service error verbatim so MarkFailedAsync stores it.
-            throw new InvalidOperationException(
-                $"ai-service ingest failed: {snapshot.ErrorMessage ?? "(no error message)"}");
-        }
-        if (!string.Equals(snapshot.Status, "Completed", StringComparison.OrdinalIgnoreCase))
-        {
-            // PollAiJobAsync only returns on terminal status or timeout — anything
-            // else is a contract bug worth flagging loudly.
-            throw new InvalidOperationException(
-                $"ai-service ingest job {enqueued.JobId} ended in unexpected status '{snapshot.Status}'");
-        }
-
-        // OutputData carries the ingest counters when the job succeeds: the
-        // page-extraction count and the number of chunks persisted for vector
-        // search. Older jobs (before the fire-and-forget switch) returned
-        // pages_processed inline; new ones surface both via /reports/jobs/{id}.
-        // Be tolerant of either shape.
-        var pagesProcessed = TryReadInt(snapshot.OutputData, "pages_processed") ?? 0;
-        var chunksInserted = TryReadInt(snapshot.OutputData, "chunks_inserted") ?? 0;
-        report.PageCount = pagesProcessed;
-        job.OutputData = JsonSerializer.Serialize(new
-        {
-            pages_processed = pagesProcessed,
-            chunks_inserted = chunksInserted,
-            ai_service_job_id = enqueued.JobId,
-        });
-
-        // Chain: Summarize next.
-        EnqueueChild(report, AiJobType.Summarization);
-    }
-
-    /// Block until the AI service reports the job as Completed or Failed (or we
-    /// hit our overall timeout). Polls at AiServiceSettings.IngestPollSeconds.
-    /// Returns the final snapshot — caller branches on Status.
-    private async Task<AiJobStatusSnapshot> PollAiJobAsync(Guid aiJobId, CancellationToken ct)
-    {
-        var pollEvery = TimeSpan.FromSeconds(Math.Max(1, _settings.IngestPollSeconds));
-        var deadline = DateTime.UtcNow.Add(TimeSpan.FromMinutes(Math.Max(1, _settings.IngestPollMaxMinutes)));
-
-        AiJobStatusSnapshot? last = null;
-        while (DateTime.UtcNow < deadline)
+        // Group by report so we make one decision per report regardless of
+        // how many jobs flipped at once.
+        var byReport = recent.GroupBy(j => j.ReportId!.Value);
+        foreach (var grp in byReport)
         {
             ct.ThrowIfCancellationRequested();
-            try
+            var reportId = grp.Key;
+            var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == reportId, ct);
+            if (report is null) continue;
+
+            // Ingestion outcome — flips the report out of ProcessingAi and
+            // (when the AI worker ran the combined ingest+summarize step) copies
+            // the summary into report_ai_contents so the user-facing UI can find
+            // it. The AI service stores its results only in ai_jobs.OutputData;
+            // this side keeps the canonical location for read-side queries.
+            var ingest = grp.FirstOrDefault(j => j.JobType == AiJobType.Ingestion);
+            if (ingest is not null)
             {
-                last = await _ai.GetJobStatusAsync(aiJobId, ct);
+                if (ingest.Status == AiJobStatus.Completed)
+                {
+                    var pages = TryReadIntFromJson(ingest.OutputData, "pages_processed");
+                    if (pages is not null) report.PageCount = pages.Value;
+                    if (report.Status == ReportStatus.ProcessingAi)
+                        report.Status = ReportStatus.Published;
+
+                    await CopySummaryToContentAsync(report, ingest.Id, ingest.OutputData, ct);
+                }
+                else if (ingest.Status == AiJobStatus.Failed && report.Status == ReportStatus.ProcessingAi)
+                {
+                    // Park the report back at Approved so staff can retry the
+                    // pipeline manually instead of leaving it stuck mid-flight.
+                    report.Status = ReportStatus.Approved;
+                }
             }
-            catch (Exception ex)
+
+            // Translation outcome — sync the corresponding ReportTranslation
+            // row so the UI shows the right state and download link.
+            var translate = grp.FirstOrDefault(j => j.JobType == AiJobType.Translation);
+            if (translate is not null)
             {
-                // A single failed poll shouldn't kill the whole job — the AI
-                // service might be briefly restarting. Log and try again next tick.
-                _logger.LogWarning(ex, "Polling AI job {JobId} failed; will retry", aiJobId);
-                await Task.Delay(pollEvery, ct);
-                continue;
+                var translatedUrl = TryReadStringFromJson(translate.OutputData, "translated_file_url");
+                var targetLang = TryReadStringFromJson(translate.OutputData, "target_language")
+                              ?? TryReadStringFromJson(translate.OutputData, "target")
+                              ?? (report.OriginalLanguage == "en" ? "ar" : "en");
+
+                var row = await _db.ReportTranslations
+                    .FirstOrDefaultAsync(t => t.ReportId == reportId && t.Language == targetLang, ct);
+                if (row is null)
+                {
+                    row = new ReportTranslation
+                    {
+                        ReportId = reportId,
+                        Language = targetLang,
+                    };
+                    _db.ReportTranslations.Add(row);
+                }
+
+                if (translate.Status == AiJobStatus.Completed && !string.IsNullOrWhiteSpace(translatedUrl))
+                {
+                    row.TranslatedFileUrl = translatedUrl;
+                    row.TranslationStatus = TranslationStatus.Completed;
+                    row.TranslatedAt ??= DateTime.UtcNow;
+                }
+                else if (translate.Status == AiJobStatus.Failed)
+                {
+                    row.TranslationStatus = TranslationStatus.Failed;
+                }
             }
-
-            if (string.Equals(last.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(last.Status, "Failed", StringComparison.OrdinalIgnoreCase))
-            {
-                return last;
-            }
-
-            await Task.Delay(pollEvery, ct);
         }
 
-        throw new TimeoutException(
-            $"ai-service job {aiJobId} did not finish within {_settings.IngestPollMaxMinutes} minutes " +
-            $"(last status: {last?.Status ?? "unknown"})");
-    }
-
-    private static int? TryReadInt(IReadOnlyDictionary<string, object?>? data, string key)
-    {
-        if (data is null) return null;
-        if (!data.TryGetValue(key, out var raw) || raw is null) return null;
-        return raw switch
-        {
-            int i => i,
-            long l => (int)l,
-            double d => (int)d,
-            string s when int.TryParse(s, out var p) => p,
-            _ => null,
-        };
-    }
-
-    private async Task ProcessSummarizeAsync(AiJob job, CancellationToken ct)
-    {
-        var report = await LoadReportAsync(job, ct);
-
-        // Idempotent: skip the AI call if we already have an Arabic summary.
-        var existing = await _db.ReportAiContents
-            .FirstOrDefaultAsync(c => c.ReportId == report.Id && c.Language == report.OriginalLanguage, ct);
-        if (existing is not null && !string.IsNullOrEmpty(existing.Summary))
-        {
-            EnqueueChild(report, AiJobType.Translation);
-            return;
-        }
-
-        var result = await _ai.SummarizeAsync(report.Id, ct);
-
-        var content = existing ?? new ReportAiContent
-        {
-            ReportId = report.Id,
-            Language = report.OriginalLanguage,
-            AiJobId = job.Id,
-        };
-        content.Summary = result.Summary;
-        content.KeyFindings = JsonSerializer.Serialize(result.KeyFindings);
-        content.Indicators = JsonSerializer.Serialize(result.Topics); // re-using the indicators jsonb column for topics
-        content.GeneratedAt = DateTime.UtcNow;
-        content.AiJobId = job.Id;
-
-        if (existing is null) _db.ReportAiContents.Add(content);
-
-        job.OutputData = JsonSerializer.Serialize(new
-        {
-            summary_chars = result.Summary.Length,
-            key_findings = result.KeyFindings.Count,
-            topics = result.Topics.Count,
-        });
-
-        // Chain: Translate (default to English; if the source IS English we'll
-        // translate to Arabic instead — same logic, opposite direction).
-        EnqueueChild(report, AiJobType.Translation);
-    }
-
-    private async Task ProcessTranslateAsync(AiJob job, CancellationToken ct)
-    {
-        var report = await LoadReportAsync(job, ct);
-
-        // The AI service auto-detects source language from already-ingested
-        // pages and picks the target (ar↔en). We compute the same pair locally
-        // only to address the right ReportTranslation row up-front so the UI
-        // can show "translating" before the request even returns.
-        var sourceLang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
-        var targetLang = sourceLang == "ar" ? DefaultTargetTranslationLanguage : "ar";
-
-        // Idempotent: if a translation row already has a file URL, skip.
-        var existing = await _db.ReportTranslations
-            .FirstOrDefaultAsync(t => t.ReportId == report.Id && t.Language == targetLang, ct);
-        if (existing is not null && !string.IsNullOrWhiteSpace(existing.TranslatedFileUrl))
-        {
-            await PublishAsync(report);
-            return;
-        }
-
-        // Track in-flight state on the translation row from the start so the
-        // status endpoint can show "translating" rather than nothing at all.
-        if (existing is null)
-        {
-            existing = new ReportTranslation
-            {
-                ReportId = report.Id,
-                Language = targetLang,
-                TranslationStatus = TranslationStatus.Processing,
-                AiJobId = job.Id,
-            };
-            _db.ReportTranslations.Add(existing);
-        }
-        else
-        {
-            existing.TranslationStatus = TranslationStatus.Processing;
-            existing.AiJobId = job.Id;
-        }
         await _db.SaveChangesAsync(ct);
+    }
 
-        var gsUri = ToGcsUri(report.FileUrl!);
-        var outputPrefix = BuildTranslationOutputPrefix(report.Id, targetLang);
+    /// <summary>
+    /// When the AI worker runs the combined ingest+summarize step, the summary
+    /// (+ key findings + topics) lands in `ai_jobs.OutputData` only. The .NET
+    /// read path expects them in report_ai_contents (the canonical place that
+    /// GetStatusAsync returns to the UI), so copy them across once the job
+    /// is Completed. Idempotent — re-running on the same row updates existing
+    /// content instead of duplicating rows.
+    /// </summary>
+    private async Task CopySummaryToContentAsync(
+        Report report, Guid jobId, string? rawOutput, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(rawOutput)) return;
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(rawOutput); }
+        catch (JsonException) { return; }
 
-        TranslateResult result;
+        using (doc)
+        {
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
+
+            string? summary = doc.RootElement.TryGetProperty("summary", out var sEl) && sEl.ValueKind == JsonValueKind.String
+                ? sEl.GetString() : null;
+            if (string.IsNullOrWhiteSpace(summary)) return; // ingest-only job, nothing to copy
+
+            var keyFindings = ExtractStringArray(doc.RootElement, "key_findings");
+            var topics = ExtractStringArray(doc.RootElement, "topics");
+
+            var lang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
+            var existing = await _db.ReportAiContents
+                .FirstOrDefaultAsync(c => c.ReportId == report.Id && c.Language == lang, ct);
+
+            if (existing is null)
+            {
+                _db.ReportAiContents.Add(new ReportAiContent
+                {
+                    ReportId = report.Id,
+                    Language = lang,
+                    AiJobId = jobId,
+                    Summary = summary,
+                    KeyFindings = JsonSerializer.Serialize(keyFindings),
+                    Indicators = JsonSerializer.Serialize(topics),
+                    GeneratedAt = DateTime.UtcNow,
+                });
+            }
+            else
+            {
+                existing.Summary = summary;
+                existing.KeyFindings = JsonSerializer.Serialize(keyFindings);
+                existing.Indicators = JsonSerializer.Serialize(topics);
+                existing.GeneratedAt = DateTime.UtcNow;
+                existing.AiJobId = jobId;
+            }
+        }
+    }
+
+    private static List<string> ExtractStringArray(JsonElement root, string key)
+    {
+        var list = new List<string>();
+        if (!root.TryGetProperty(key, out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                var s = item.GetString();
+                if (!string.IsNullOrWhiteSpace(s)) list.Add(s);
+            }
+        }
+        return list;
+    }
+
+    private static int? TryReadIntFromJson(string? raw, string key)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
         try
         {
-            result = await _ai.TranslateAsync(report.Id, gsUri, outputPrefix, ct);
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            if (!doc.RootElement.TryGetProperty(key, out var prop)) return null;
+            return prop.ValueKind switch
+            {
+                JsonValueKind.Number when prop.TryGetInt32(out var i) => i,
+                JsonValueKind.Number => (int)prop.GetDouble(),
+                JsonValueKind.String when int.TryParse(prop.GetString(), out var p) => p,
+                _ => (int?)null,
+            };
         }
-        catch
+        catch (JsonException) { return null; }
+    }
+
+    private static string? TryReadStringFromJson(string? raw, string key)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        try
         {
-            existing.TranslationStatus = TranslationStatus.Failed;
-            await _db.SaveChangesAsync(ct);
-            throw;
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            return doc.RootElement.TryGetProperty(key, out var prop) && prop.ValueKind == JsonValueKind.String
+                ? prop.GetString()
+                : null;
         }
-
-        // The AI service is the source of truth for the actual detected source +
-        // target. If it disagreed with our local guess, prefer its values for
-        // anything we persist on the translation row.
-        var detectedTarget = string.IsNullOrWhiteSpace(result.TargetLanguage) ? targetLang : result.TargetLanguage;
-        existing.Language = detectedTarget;
-        existing.TranslatedFileUrl = result.TranslatedFileUrl;
-        existing.TranslationStatus = TranslationStatus.Completed;
-        existing.TranslatedAt = DateTime.UtcNow;
-
-        job.OutputData = JsonSerializer.Serialize(new
-        {
-            translated_file_url = result.TranslatedFileUrl,
-            target = detectedTarget,
-            source = result.SourceLanguage,
-        });
-
-        await PublishAsync(report);
+        catch (JsonException) { return null; }
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
-
-    private async Task<Report> LoadReportAsync(AiJob job, CancellationToken ct)
-    {
-        var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == job.ReportId!.Value, ct)
-            ?? throw new InvalidOperationException($"Report {job.ReportId} not found for job {job.Id}");
-        if (string.IsNullOrWhiteSpace(report.FileUrl))
-            throw new InvalidOperationException($"Report {report.Id} has no file URL");
-        return report;
-    }
-
-    private void EnqueueChild(Report report, AiJobType nextType)
-    {
-        _db.AiJobs.Add(new AiJob
-        {
-            ReportId = report.Id,
-            OrganizationId = report.OrganizationId,
-            JobType = nextType,
-            Status = AiJobStatus.Pending,
-        });
-    }
-
-    private Task PublishAsync(Report report)
-    {
-        report.Status = ReportStatus.Published;
-        return Task.CompletedTask;
-    }
-
-    private async Task MarkFailedAsync(AiJob job, string error, CancellationToken ct)
-    {
-        job.Status = AiJobStatus.Failed;
-        job.ErrorMessage = error.Length > 4000 ? error[..4000] : error;
-        job.CompletedAt = DateTime.UtcNow;
-        try { await _db.SaveChangesAsync(ct); }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to persist Failed state for AiJob {JobId}", job.Id);
-        }
-    }
 
     private async Task AssertCallerOwnsReportAsync(Guid userId, Guid reportId, CancellationToken ct)
     {

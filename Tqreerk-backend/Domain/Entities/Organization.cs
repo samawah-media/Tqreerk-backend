@@ -18,6 +18,12 @@ public class Organization : SoftDeletableEntity
     public string? Description { get; set; }
     public bool IsPartner { get; set; }
     public bool IsVerified { get; set; }
+    /// Per-org gate for the manual translation feature. When false, the user-side
+    /// "Translate" button is hidden and POST /api/reports/{id}/ai/translate is
+    /// rejected with 403. Toggled from the admin app's Organizations page by
+    /// SuperAdmin / Admin staff. Defaults to false so new orgs can't run AI
+    /// translations until staff explicitly opts them in.
+    public bool TranslationEnabled { get; set; }
     public OrganizationStatus Status { get; set; } = OrganizationStatus.PendingReview;
     /// User who originally registered the organization. Protected from removal
     /// by other members so the org always has an "owner of record".
