@@ -26,6 +26,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
+import sentry_sdk
 from psycopg import AsyncConnection
 
 from core.config import settings
@@ -196,14 +197,22 @@ async def run_ingest_only_job(
         "[job %s] ingest start report=%s file=%s extractor=%s",
         job_id, report_id, file_url, extractor,
     )
-    await mark_processing(job_id)
-    try:
-        result = await ingest_report(report_id, file_url, extractor=extractor)
-        logger.info("[job %s] ingest done %s", job_id, result)
-        await mark_completed(job_id, result)
-    except Exception as exc:
-        logger.exception("[job %s] ingest FAILED: %s", job_id, exc)
-        await mark_failed(job_id, str(exc))
+    with sentry_sdk.start_transaction(op="ingest", name="ingest_report", sampled=True) as txn:
+        txn.set_tag("report_id", str(report_id))
+        txn.set_tag("job_id", str(job_id))
+        txn.set_tag("extractor", extractor)
+        txn.set_data("file_url", file_url)
+        await mark_processing(job_id)
+        try:
+            result = await ingest_report(report_id, file_url, extractor=extractor)
+            logger.info("[job %s] ingest done %s", job_id, result)
+            txn.set_data("result", result)
+            txn.set_tag("extractor_used", result.get("extractor", "unknown"))
+            await mark_completed(job_id, result)
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+            logger.exception("[job %s] ingest FAILED: %s", job_id, exc)
+            await mark_failed(job_id, str(exc))
 
 
 async def run_ingest_summarize_job(
@@ -214,43 +223,53 @@ async def run_ingest_summarize_job(
         "[job %s] ingest+summarize start report=%s file=%s extractor=%s",
         job_id, report_id, file_url, extractor,
     )
-    await mark_processing(job_id)
-    try:
-        ingest_result = await ingest_report(report_id, file_url, extractor=extractor)
-        logger.info("[job %s] ingest phase done: %s", job_id, ingest_result)
+    with sentry_sdk.start_transaction(op="ingest", name="ingest_summarize_report", sampled=True) as txn:
+        txn.set_tag("report_id", str(report_id))
+        txn.set_tag("job_id", str(job_id))
+        txn.set_tag("extractor", extractor)
+        txn.set_data("file_url", file_url)
+        await mark_processing(job_id)
+        try:
+            ingest_result = await ingest_report(report_id, file_url, extractor=extractor)
+            logger.info("[job %s] ingest phase done: %s", job_id, ingest_result)
+            txn.set_tag("extractor_used", ingest_result.get("extractor", "unknown"))
 
-        # Aggregate chunks back to page-level text for the summary prompt.
-        async with conn_ctx() as conn:
-            cur = await conn.execute(
-                """
-                SELECT "PageNumber",
-                       string_agg("Content", E'\n\n' ORDER BY "ChunkIndex") AS content
-                FROM report_chunks
-                WHERE "ReportId" = %s
-                GROUP BY "PageNumber"
-                ORDER BY "PageNumber"
-                """,
-                [str(report_id)],
+            with sentry_sdk.start_span(op="ingest.summarize", description="summarize_report"):
+                async with conn_ctx() as conn:
+                    cur = await conn.execute(
+                        """
+                        SELECT "PageNumber",
+                               string_agg("Content", E'\n\n' ORDER BY "ChunkIndex") AS content
+                        FROM report_chunks
+                        WHERE "ReportId" = %s
+                        GROUP BY "PageNumber"
+                        ORDER BY "PageNumber"
+                        """,
+                        [str(report_id)],
+                    )
+                    page_rows = await cur.fetchall()
+
+                if not page_rows:
+                    raise RuntimeError("Ingest produced no pages")
+
+                summary = summarize_report([content for _, content in page_rows])
+
+            logger.info(
+                "[job %s] summarize done: %d findings, %d topics",
+                job_id, len(summary.key_findings), len(summary.topics),
             )
-            page_rows = await cur.fetchall()
-
-        if not page_rows:
-            raise RuntimeError("Ingest produced no pages")
-
-        summary = summarize_report([content for _, content in page_rows])
-        logger.info(
-            "[job %s] summarize done: %d findings, %d topics",
-            job_id, len(summary.key_findings), len(summary.topics),
-        )
-        await mark_completed(job_id, {
-            **ingest_result,
-            "summary": summary.summary,
-            "key_findings": summary.key_findings,
-            "topics": summary.topics,
-        })
-    except Exception as exc:
-        logger.exception("[job %s] ingest+summarize FAILED: %s", job_id, exc)
-        await mark_failed(job_id, str(exc))
+            result = {
+                **ingest_result,
+                "summary": summary.summary,
+                "key_findings": summary.key_findings,
+                "topics": summary.topics,
+            }
+            txn.set_data("result", {k: v for k, v in result.items() if k != "summary"})
+            await mark_completed(job_id, result)
+        except Exception as exc:
+            sentry_sdk.capture_exception(exc)
+            logger.exception("[job %s] ingest+summarize FAILED: %s", job_id, exc)
+            await mark_failed(job_id, str(exc))
 
 
 async def run_translate_job(

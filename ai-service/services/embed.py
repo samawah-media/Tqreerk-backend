@@ -47,15 +47,13 @@ _TASK_TYPE = {
 }
 
 
-def _embed(texts: list[str], task_type: str) -> list[list[float]]:
-    """Single batched call to the embedding API. Returns a list of float
-    vectors, one per input text, in input order.
+# Vertex AI embedding API hard limit: 250 texts per request.
+_BATCH_SIZE = 250
 
-    The genai SDK accepts a list and batches server-side; for large
-    ingests (hundreds of chunks) we still send one HTTP call. If the
-    server enforces a per-call cap we'll add chunked iteration here —
-    not needed at our current ~100-chunk-per-doc scale.
-    """
+
+def _embed(texts: list[str], task_type: str) -> list[list[float]]:
+    """Batched call to the embedding API. Splits into ≤250-text sub-batches
+    to stay within the Vertex AI limit, then concatenates results in order."""
     if not texts:
         return []
 
@@ -63,22 +61,27 @@ def _embed(texts: list[str], task_type: str) -> list[list[float]]:
         task_type=task_type,
         output_dimensionality=settings.gemini_embed_dim,
     )
+    op = f"embed_{task_type.lower()}"
 
-    response = _call_with_retry(
-        f"embed_{task_type.lower()}",
-        lambda client: client.models.embed_content(
-            model=settings.gemini_embed_model,
-            contents=texts,
-            config=config,
-        ),
-    )
-
-    embeddings = response.embeddings or []
-    if len(embeddings) != len(texts):
-        raise RuntimeError(
-            f"embedding API returned {len(embeddings)} vectors for {len(texts)} inputs"
+    results: list[list[float]] = []
+    for batch_start in range(0, len(texts), _BATCH_SIZE):
+        batch = texts[batch_start : batch_start + _BATCH_SIZE]
+        response = _call_with_retry(
+            op,
+            lambda client, b=batch: client.models.embed_content(
+                model=settings.gemini_embed_model,
+                contents=b,
+                config=config,
+            ),
         )
-    return [list(e.values) for e in embeddings]
+        embeddings = response.embeddings or []
+        if len(embeddings) != len(batch):
+            raise RuntimeError(
+                f"embedding API returned {len(embeddings)} vectors for {len(batch)} inputs"
+            )
+        results.extend(list(e.values) for e in embeddings)
+
+    return results
 
 
 def embed_passages(texts: list[str]) -> list[list[float]]:

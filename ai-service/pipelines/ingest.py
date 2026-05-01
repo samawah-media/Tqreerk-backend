@@ -33,6 +33,7 @@ from uuid import UUID
 import fitz  # PyMuPDF
 import httpx
 import numpy as np
+import sentry_sdk
 from google.cloud import storage
 
 from core.chunking import chunk_blocks_with_meta, chunk_text
@@ -101,7 +102,8 @@ async def ingest_report(
         tags=["ingest", f"extractor:{extractor}"],
     )
 
-    with obs.span(trace, name="download", input={"file_url": file_url}) as sp:
+    with sentry_sdk.start_span(op="ingest.download", description=file_url), \
+         obs.span(trace, name="download", input={"file_url": file_url}) as sp:
         logger.info("[ingest %s] downloading %s", report_id, file_url)
         if file_url.startswith("gs://"):
             pdf_bytes = _download_from_gcs(file_url)
@@ -153,7 +155,8 @@ async def ingest_report_bytes(
     # Branch by extractor toggle, wrapped in a single "extract" span so the
     # trace tree shows extraction time regardless of which path won.
     page_results: list[dict] | None = None
-    with obs.span(trace, name="extract",
+    with sentry_sdk.start_span(op="ingest.extract", description=extractor), \
+         obs.span(trace, name="extract",
                   input={"extractor": extractor, "pages_total": pages_total}) as sp:
         if extractor == "gemini-vision":
             page_results = await _extract_per_page(pdf_bytes, force_gemini=True)
@@ -192,14 +195,16 @@ async def ingest_report_bytes(
     # doc-processor /v1/embed. Single round-trip replaces N Vertex calls and
     # keeps inference inside the same Cloud Run network as extraction.
     logger.info("[ingest %s] chunk+embed phase starting (%d pages)", report_id, len(page_results))
-    with obs.span(trace, name="chunk_and_embed",
+    with sentry_sdk.start_span(op="ingest.chunk_and_embed"), \
+         obs.span(trace, name="chunk_and_embed",
                   input={"n_pages": len(page_results)}) as sp:
         chunk_rows = await _chunk_and_embed(page_results)
         sp.update(output={"n_chunks": len(chunk_rows)})
     logger.info("[ingest %s] chunk+embed produced %d rows", report_id, len(chunk_rows))
 
     # Step 4 — write to report_chunks atomically.
-    with obs.span(trace, name="persist", input={"n_rows": len(chunk_rows)}):
+    with sentry_sdk.start_span(op="ingest.persist"), \
+         obs.span(trace, name="persist", input={"n_rows": len(chunk_rows)}):
         await _persist_chunks(report_id, chunk_rows)
 
     pages_with_chunks = len({row[0] for row in chunk_rows})
