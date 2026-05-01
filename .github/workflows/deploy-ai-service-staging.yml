@@ -71,8 +71,8 @@ jobs:
           flags: >-
             --allow-unauthenticated
             --port=8080
-            --memory=1Gi
-            --cpu=1
+            --memory=2Gi
+            --cpu=2
             --min-instances=0
             --max-instances=3
             --timeout=300
@@ -128,10 +128,10 @@ jobs:
           flags: >-
             --no-allow-unauthenticated
             --port=8080
-            --memory=1Gi
-            --cpu=1
+            --memory=2Gi
+            --cpu=2
             --min-instances=0
-            --max-instances=1
+            --max-instances=3
             --timeout=900
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
