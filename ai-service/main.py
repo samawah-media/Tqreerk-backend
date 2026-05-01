@@ -75,7 +75,11 @@ async def _pending_job_watcher() -> None:
         await asyncio.sleep(60)
         try:
             async with conn_ctx() as conn:
-                # GPU-owned: Pending step=ingest jobs
+                # GPU-owned: Pending step=ingest jobs that have been
+                # waiting for more than 2 minutes.  Freshly-triggered jobs
+                # (accepted by the GPU but not yet claimed) are excluded so
+                # we don't flood the GPU with duplicate triggers during the
+                # few seconds between "202 Accepted" and claim_job().
                 gpu_cur = await conn.execute(
                     """
                     SELECT "Id", "ReportId", "InputData"->>'file_url'
@@ -83,6 +87,7 @@ async def _pending_job_watcher() -> None:
                     WHERE "Status"  = 'Pending'
                       AND "JobType" = 'Ingestion'
                       AND "InputData"->>'step' = 'ingest'
+                      AND "CreatedAt" < now() - interval '2 minutes'
                     """,
                 )
                 gpu_rows = await gpu_cur.fetchall()

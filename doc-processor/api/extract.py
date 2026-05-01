@@ -486,7 +486,18 @@ async def _run_ingest_job_background(body: IngestJobRequest) -> None:
     """Background task: claim → run pipeline → mark terminal state."""
     loop = asyncio.get_running_loop()
 
-    claimed = await loop.run_in_executor(None, claim_job, body.job_id)
+    try:
+        claimed = await loop.run_in_executor(None, claim_job, body.job_id)
+    except Exception as exc:
+        # DB connection failure (wrong DATABASE_URL, Cloud SQL socket issue, etc.)
+        # Log at ERROR so it's visible in Cloud Run structured logs — without this
+        # the exception escapes into uvicorn's handler and is invisible.
+        logger.error(
+            "[ingest_job] job=%s claim_job raised %s: %s — job stays Pending",
+            body.job_id, type(exc).__name__, exc,
+        )
+        return
+
     if not claimed:
         logger.warning(
             "[ingest_job] job=%s already claimed or not Pending — skipping",
