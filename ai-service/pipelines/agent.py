@@ -107,7 +107,36 @@ SYSTEM_PROMPT = """You are the Taqreerk AI research assistant. You help users ex
 You have access to a fixed toolset (search_chunks, get_page, list_reports, get_report_metadata, get_report_summary, get_report_indicators, get_report_trends, get_report_recommendations, get_report_keywords, get_translation, list_saved_reports, list_user_interests, find_similar_reports, get_session_history). Use them to ground every factual claim in retrieved data — do not answer from prior knowledge.
 
 CORE PRINCIPLE — never refuse a question just because pre-baked data is missing.
-Most of the structured tools (`get_report_keywords`, `get_report_summary`, `get_report_indicators`, `get_report_trends`, `get_report_recommendations`) return AI-generated content that may not have been computed yet for a given report. **An empty result from these tools does NOT mean the answer is unavailable — it just means the shortcut isn't ready.** The report's full text is always available via `search_chunks` and `get_page`. When a structured tool is empty, fall back to `search_chunks` and SYNTHESISE the answer yourself from the retrieved chunks. Tell the user what the report says; don't tell them "no data exists."
+Most of the structured tools (`get_report_keywords`, `get_report_summary`, `get_report_indicators`, `get_report_trends`, `get_report_recommendations`) return AI-generated content that may not have been computed yet for a given report. **An empty result from these tools does NOT mean the answer is unavailable — it just means the shortcut isn't ready.** The report's full text is always available via `search_chunks` and `get_page`.
+
+When a structured tool returns empty, you MUST proceed to `search_chunks` in the SAME turn and synthesise the answer from the chunks yourself. Refusing to answer because the shortcut is empty is a failure. "I'll do it next time" / "I should have used search_chunks" is also a failure — do it NOW, in this same turn.
+
+Worked example — DO follow this exact pattern:
+
+  User: "ما هي الكلمات المفتاحية لهذا التقرير؟"
+
+  Hop 1:  get_report_keywords(report_id=X)
+          → {"results":[],"reason":"no keywords have been generated yet"}
+  Hop 2:  get_report_metadata(report_id=X)
+          → {"title":"تقرير الطاقة في السعودية 2024","sector":"الطاقة","country":"SA","year":2024,...}
+  Hop 3:  search_chunks(query="الطاقة المتجددة النفط رؤية 2030 السعودية",
+                        report_id=X, top_k=8)
+          → {"results":[{"page":3,"content":"..."}, ...]}
+
+  Final answer (you write this from the chunks):
+    "الكلمات المفتاحية الرسمية لم تُنشأ بعد لهذا التقرير، لكن من محتواه
+     يتضح أن أبرز الموضوعات هي:
+       • الطاقة المتجددة (الصفحات 3، 12)
+       • رؤية 2030 (الصفحات 7، 18)
+       • تنويع مصادر النفط (الصفحات 22-24)
+       • كفاءة الطاقة (الصفحات 31-33)"
+
+Anti-example — DO NOT do this:
+
+  User: "ما هي الكلمات المفتاحية لهذا التقرير؟"
+  Hop 1:  get_report_keywords(report_id=X) → empty
+  Final: "لم يتم إنشاء كلمات مفتاحية لهذا التقرير بعد."   ← WRONG. Refused
+                                                              with hops to spare.
 
 Fallback ladder (use in this order):
 
@@ -339,6 +368,7 @@ def make_langfuse_handler(
     *,
     user_id: UUID | str,
     session_id: UUID | str,
+    trace_id: str | None = None,
     trace_name: str = "chat_agent",
 ) -> Any | None:
     """Return a Langfuse LangChain CallbackHandler, or None when disabled.
@@ -349,6 +379,14 @@ def make_langfuse_handler(
     inside the run lands under one Langfuse trace tagged with this user
     and session, matching how the legacy chat path traced single-shot
     requests.
+
+    `trace_id` lets the caller pin the trace ID upfront. The agent's
+    spans nest under that trace, AND the Ragas eval job (run later by
+    the worker) can post `score` events against the same id so quality
+    metrics show up inline in the Langfuse dashboard. Without it, the
+    callback handler invents its own trace id at first event and the
+    eval worker has nothing to attach scores to — scores get silently
+    dropped.
     """
     if not settings.langfuse_enabled:
         return None
@@ -359,7 +397,7 @@ def make_langfuse_handler(
     try:
         from langfuse.callback import CallbackHandler  # type: ignore[import-not-found]
 
-        return CallbackHandler(
+        kwargs: dict[str, Any] = dict(
             host=settings.langfuse_host,
             public_key=settings.langfuse_public_key,
             secret_key=settings.langfuse_secret_key,
@@ -368,6 +406,9 @@ def make_langfuse_handler(
             trace_name=trace_name,
             tags=["chat", "agent"],
         )
+        if trace_id:
+            kwargs["trace_id"] = trace_id
+        return CallbackHandler(**kwargs)
     except Exception as exc:
         logger.warning("[agent] langfuse handler init failed: %s", exc)
         return None

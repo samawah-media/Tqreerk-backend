@@ -337,9 +337,17 @@ async def send_message(
     )
 
     # Langfuse: one trace per chat turn, all model + tool spans nested.
+    # We mint the trace_id ourselves rather than letting the CallbackHandler
+    # invent one, because the asynchronous Ragas eval job (enqueued at the
+    # bottom of this handler, run later by the worker) needs the SAME id to
+    # post `score` events against. Without a shared id, eval runs but the
+    # scores get dropped on the floor at obs.score(trace_id="") — see
+    # services/observability.py.
+    trace_id = str(uuid4())
     lf_handler = make_langfuse_handler(
         user_id=user_id,
         session_id=session_id,
+        trace_id=trace_id,
         trace_name="chat_agent",
     )
     callbacks = [lf_handler] if lf_handler is not None else []
@@ -511,11 +519,11 @@ async def send_message(
                         job_type="Evaluation",
                         report_id=report_id,
                         input_data={
-                            # No Langfuse trace_id available from the LangChain
-                            # callback handler at this layer; the worker will
-                            # post scores against session_id + question instead
-                            # and Langfuse joins them via session.
-                            "trace_id":   "",
+                            # Same trace id we pinned on the CallbackHandler
+                            # above. The worker passes it to obs.score() so
+                            # Ragas metrics land directly on the chat trace
+                            # the user just produced.
+                            "trace_id":   trace_id,
                             "question":   body.message,
                             "contexts":   tool_contexts,
                             "answer":     full_answer,
@@ -523,7 +531,10 @@ async def send_message(
                         },
                     )
                     await eval_conn.commit()
-                logger.info("chat[%s] enqueued eval job=%s", sid_short, eval_job_id)
+                logger.info(
+                    "chat[%s] enqueued eval job=%s trace=%s",
+                    sid_short, eval_job_id, trace_id,
+                )
         except Exception as exc:
             logger.warning("chat[%s] enqueue_eval failed: %s", sid_short, exc)
 
