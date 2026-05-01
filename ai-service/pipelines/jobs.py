@@ -461,6 +461,10 @@ async def claim_one_job(conn: AsyncConnection) -> dict | None:
             SELECT "Id"
             FROM ai_jobs
             WHERE "Status" = 'Pending'
+              AND "InputData" IS NOT NULL
+              AND "InputData" != 'null'::jsonb
+              AND ("InputData"->>'file_url' IS NOT NULL
+                   OR "JobType" = 'Evaluation')
             ORDER BY "CreatedAt"
             FOR UPDATE SKIP LOCKED
             LIMIT 1
@@ -558,9 +562,16 @@ async def run_worker_loop() -> None:
             await asyncio.sleep(poll)
             continue
 
+        raw = job.get("input_data") or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = {}
+        step = raw.get("step") or ""
         logger.info(
-            "worker claimed job=%s type=%s report=%s",
-            job["id"], job["job_type"], job["report_id"],
+            "worker claimed job=%s type=%s step=%s report=%s",
+            job["id"], job["job_type"], step or "(none)", job["report_id"],
         )
         try:
             await dispatch(job)
