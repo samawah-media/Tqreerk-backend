@@ -103,6 +103,14 @@ async def _wake_worker() -> None:
     Google-signed ID token (audience = worker URL). Cloud Run validates the
     token at the load balancer; on auth failure the container never starts,
     which would defeat the whole point of this wake-up.
+
+    Timeout sizing: fire-and-forget ping. The HTTP request hitting the Cloud
+    Run frontend is what triggers the worker's cold start, even if our own
+    request times out before the container is ready to respond. So a
+    timeout here is a "false negative" on the log (warning fires, but the
+    wake actually succeeded). 15 s is generous enough to ride out the
+    typical 3-8 s Python cold start AND the ~500 ms ID-token fetch, so
+    when a real failure does fire we can trust it.
     """
     url = settings.worker_url
     if not url:
@@ -122,11 +130,21 @@ async def _wake_worker() -> None:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
 
         import httpx
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url.rstrip("/") + "/health", headers=headers)
         logger.info("[wake] pinged %s -> %d", url, resp.status_code)
     except Exception as exc:
-        logger.warning("[wake] failed pinging %s: %s", url, exc)
+        # Include the exception class name — many httpx / auth exceptions
+        # stringify to an empty body, which makes "failed pinging URL: "
+        # logs unactionable. The class name disambiguates between cold-
+        # start timeout (ReadTimeout / ConnectTimeout — usually a false
+        # negative; the wake still happened), auth failure
+        # (DefaultCredentialsError, RefreshError), and DNS / network
+        # errors.
+        logger.warning(
+            "[wake] failed pinging %s (%s): %s",
+            url, type(exc).__name__, exc or repr(exc),
+        )
 
 
 async def mark_processing(job_id: UUID) -> None:
