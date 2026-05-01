@@ -3,6 +3,48 @@ production with different model variants and thresholds without rebuilds."""
 from pydantic_settings import BaseSettings
 
 
+# Maps .NET / Npgsql connection-string keys to libpq keys so the doc-processor
+# can accept the SAME DATABASE_URL secret the .NET API and ai-service use.
+_DOTNET_TO_LIBPQ = {
+    "host":        "host",
+    "server":      "host",
+    "port":        "port",
+    "database":    "dbname",
+    "username":    "user",
+    "user id":     "user",
+    "password":    "password",
+    "ssl mode":    "sslmode",
+    "sslmode":     "sslmode",
+}
+
+
+def _normalize_database_url(value: str) -> str:
+    """Accept a libpq URI (postgres://...), libpq keyword string, or a .NET
+    Npgsql connection string (Host=...;Database=...;Username=...;Password=...).
+    .NET strings are converted to libpq keyword format that psycopg3 understands.
+    """
+    v = value.strip()
+    if not v:
+        return v
+    if v.startswith(("postgres://", "postgresql://")):
+        return v
+    if "=" in v and ";" in v:   # .NET semicolon-separated format
+        parts = []
+        for chunk in v.split(";"):
+            if "=" not in chunk:
+                continue
+            k, _, val = chunk.partition("=")
+            key = _DOTNET_TO_LIBPQ.get(k.strip().lower())
+            if not key:
+                continue
+            val = val.strip()
+            if any(c in val for c in " '\\"):
+                val = "'" + val.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            parts.append(f"{key}={val}")
+        return " ".join(parts)
+    return v
+
+
 class Settings(BaseSettings):
     # ── Runtime ──────────────────────────────────────────────────────────────
     environment: str = "staging"                 # tags Sentry events
@@ -83,6 +125,9 @@ class Settings(BaseSettings):
     ingest_full_max_chunks: int = 1000
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    def model_post_init(self, __context) -> None:
+        self.database_url = _normalize_database_url(self.database_url)
 
 
 settings = Settings()  # type: ignore[call-arg]
