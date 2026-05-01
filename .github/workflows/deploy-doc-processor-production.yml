@@ -74,7 +74,7 @@ jobs:
             --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT_ID }} \
-            --service-account=${{ secrets.GCP_DOC_PROCESSOR_SA }} \
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }} \
             --gpu=1 \
             --gpu-type=nvidia-l4 \
             --no-gpu-zonal-redundancy \
