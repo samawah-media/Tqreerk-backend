@@ -39,6 +39,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.extract import router as extract_router
+from core.db import close_pool, init_pool
 from models.schema import HealthResponse
 from pipeline import embeddings, figures, formulas, layout, ocr, reranker
 
@@ -53,13 +54,17 @@ app.include_router(extract_router)
 # ── Lifecycle ───────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
-async def _warm_models() -> None:
-    """Load every model up-front so the first real request is fast.
+async def _startup() -> None:
+    """Load every model up-front and open the DB connection pool.
 
     Each init() runs synchronously in this hook so we know the readiness
     state by the time /health is asked. A failed model logs and the service
     starts in degraded mode — the orchestrator's per-stage error handling
     keeps the rest of the pipeline working.
+
+    init_pool() is called here so the pool exists before the first /v1/ingest
+    request arrives.  It uses min_size=0 and open(wait=False) so it does not
+    add to cold-start time.
     """
     for name, fn in [
         ("docling",     layout.init),
@@ -81,6 +86,21 @@ async def _warm_models() -> None:
             logger.exception("warmup: %s failed to initialise: %s", name, exc)
             if settings.sentry_dsn:
                 sentry_sdk.capture_exception(exc)
+
+    init_pool()
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    """Drain the DB connection pool before the container exits.
+
+    Cloud Run sends SIGTERM and waits up to --termination-grace-period-seconds
+    (default 10 s) before issuing SIGKILL.  Closing the pool here sends the
+    PostgreSQL Terminate message over the Unix socket so the Cloud SQL Auth
+    Proxy can cleanly close each connection rather than logging
+    'connection reset by peer'.
+    """
+    close_pool()
 
 
 # ── Health probe ────────────────────────────────────────────────────────────
