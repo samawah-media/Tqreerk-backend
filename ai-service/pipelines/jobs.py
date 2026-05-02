@@ -23,6 +23,7 @@ that both the API endpoints and the worker loop share.
 import asyncio
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -36,6 +37,25 @@ from services.gemini import summarize_report
 from services.translate import detect_source_language, translate_pdf
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_nan(obj):
+    """Recursively replace float NaN / Inf with None before JSON serialization.
+
+    Python's json.dumps emits the literal token `NaN` for float('nan') which
+    is not valid JSON and causes PostgreSQL to reject the value with:
+        "invalid input syntax for type json: Token 'NaN' is invalid."
+
+    This is most visible when Ragas cannot compute a metric (e.g. because the
+    judge LLM timed out) and returns float('nan') as the score.
+    """
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_nan(v) for v in obj]
+    return obj
 
 
 # ── ai_jobs table primitives ─────────────────────────────────────────────────
@@ -165,7 +185,7 @@ async def mark_completed(job_id: UUID, output: dict) -> None:
             SET "Status"='Completed', "OutputData"=%s, "CompletedAt"=now()
             WHERE "Id"=%s
             """,
-            [json.dumps(output), str(job_id)],
+            [json.dumps(_clean_nan(output)), str(job_id)],
         )
         await conn.commit()
 
