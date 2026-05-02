@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     gcp_project_id: str                # e.g. taqrrerk
     gcs_bucket: str                    # taqreerk-uploads (me-central1, Doha)
     translate_location: str = "global" # Google Translate API location
-    vertex_location: str = "us-central1"  # Vertex AI region — us-central1 supports all models (gemini-2.5-flash, gemini-embedding-001, Ranking API)
+    vertex_location: str = "global"  # Vertex AI endpoint — `global` auto-routes every request to the nearest available region. Removes the cross-region read-timeout failures we saw from me-central1 Cloud Run → us-central1 Vertex, and gives the highest aggregate quota of any single endpoint. NOTE: requests can be processed in any Google datacenter worldwide; if a customer contract pins data residency to a specific region, override per-deploy via env var (e.g. VERTEX_LOCATION=asia-south1).
     gemini_api_key: str = ""           # optional: AI Studio key — if set, used INSTEAD of Vertex AI
     internal_api_key: str = ""         # optional: shared secret for .NET → Python calls
 
