@@ -27,6 +27,7 @@ from services import doc_extractor
 from models.ingest import (
     BulkIngestRequest,
     BulkJobsResponse,
+    BulkSummarizeRequest,
     BulkTranslateRequest,
     CompareRequest,
     CompareResponse,
@@ -511,17 +512,27 @@ async def _resolve_languages(
 # Worker isolation removes both problems.
 
 @router.post(
-    "/bulk/ingest-summarize",
+    "/bulk/ingest",
     response_model=BulkJobsResponse,
     status_code=202,
 )
-async def bulk_ingest_summarize(
+async def bulk_ingest(
     body: BulkIngestRequest,
     conn: AsyncConnection = Depends(get_conn),
 ):
-    """Queue ingest+summarize jobs for many reports. Returns immediately.
+    """Queue ingest jobs for many reports — GPU-direct, no worker involved.
 
-    Poll `GET /api/ai/reports/jobs/{job_id}` to check progress on each.
+    Each item triggers `doc_extractor.trigger_ingest` exactly like the
+    single-report `/ingest` endpoint, so all bulk ingests run on the
+    doc-processor GPU container in parallel (the GPU pool autoscales as
+    requests arrive). The worker is never involved.
+
+    To also generate summaries for these reports, call `/bulk/summarize`
+    once each ingest reaches Completed (or accept that the .NET side will
+    enqueue Summarization jobs separately).
+
+    Returns 202 with the list of job_ids — clients poll
+    GET /api/ai/reports/jobs/{job_id} per row.
     """
     created: list[CreatedJob] = []
     for item in body.items:
@@ -531,7 +542,56 @@ async def bulk_ingest_summarize(
             job_id=job_id,
             job_type="Ingestion",
             report_id=item.report_id,
-            input_data={"file_url": item.file_url, "step": "ingest+summarize"},
+            input_data={"file_url": item.file_url, "step": "ingest"},
+        )
+        created.append(CreatedJob(job_id=job_id, report_id=item.report_id))
+    await conn.commit()
+
+    # Fire all GPU triggers concurrently — each one is a fast HTTP POST
+    # to the doc-processor's /v1/ingest_job endpoint, which queues the
+    # work as a background task there. We don't await them sequentially
+    # because each round-trip would otherwise add ~100 ms × N items to
+    # the response time of this endpoint for no benefit.
+    for cj, item in zip(created, body.items):
+        asyncio.create_task(
+            doc_extractor.trigger_ingest(
+                str(cj.job_id), str(item.report_id), item.file_url,
+            ),
+        )
+
+    return BulkJobsResponse(jobs=created)
+
+
+@router.post(
+    "/bulk/summarize",
+    response_model=BulkJobsResponse,
+    status_code=202,
+)
+async def bulk_summarize(
+    body: BulkSummarizeRequest,
+    conn: AsyncConnection = Depends(get_conn),
+):
+    """Queue Summarization jobs for many already-ingested reports.
+
+    Each row inserts a `JobType=Summarization` ai_jobs entry that the
+    worker picks up on its next poll cycle. The worker calls
+    `summarize_report` (combined summary + insights) and writes all five
+    output fields into `ai_jobs.OutputData`. Pre-condition: every report
+    in `items` must already have rows in `report_chunks` — call
+    `/bulk/ingest` first if not.
+
+    Returns 202 with the list of job_ids — clients poll
+    GET /api/ai/reports/jobs/{job_id} per row.
+    """
+    created: list[CreatedJob] = []
+    for item in body.items:
+        job_id = uuid4()
+        await insert_job(
+            conn,
+            job_id=job_id,
+            job_type="Summarization",
+            report_id=item.report_id,
+            input_data={"step": "summarize"},
         )
         created.append(CreatedJob(job_id=job_id, report_id=item.report_id))
     await conn.commit()

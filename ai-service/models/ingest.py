@@ -94,6 +94,17 @@ class BulkIngestRequest(BaseModel):
     items: list[BulkIngestItem]
 
 
+class BulkSummarizeItem(BaseModel):
+    """Summarize-only items don't need file_url — the chunks are already
+    in report_chunks. Just the report_id is enough for the worker to
+    fetch text and run the combined summary+insights call."""
+    report_id: UUID
+
+
+class BulkSummarizeRequest(BaseModel):
+    items: list[BulkSummarizeItem]
+
+
 class BulkTranslateItem(BaseModel):
     report_id: UUID
     file_url: str
