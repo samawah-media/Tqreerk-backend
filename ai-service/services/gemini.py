@@ -38,7 +38,8 @@ def _build_client() -> genai.Client:
     # of hanging indefinitely. _call_with_retry then replaces the client and
     # retries. Without this, embed_content / generate_content can block a
     # thread pool worker forever on TCP half-open connections.
-    http_opts = {"timeout": 120}
+    # NOTE: google-genai http_options timeout is in MILLISECONDS.
+    http_opts = {"timeout": 120_000}
     if settings.gemini_api_key:
         _mode = "api_key"
         logger.info(
