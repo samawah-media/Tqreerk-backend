@@ -275,14 +275,17 @@ async def run_ingest_summarize_job(
                 summary = summarize_report([content for _, content in page_rows])
 
             logger.info(
-                "[job %s] summarize done: %d findings, %d topics",
+                "[job %s] summarize done: %d findings, %d topics, %d indicators, %d trends",
                 job_id, len(summary.key_findings), len(summary.topics),
+                len(summary.indicators), len(summary.trends),
             )
             result = {
                 **ingest_result,
-                "summary": summary.summary,
+                "summary":      summary.summary,
                 "key_findings": summary.key_findings,
-                "topics": summary.topics,
+                "topics":       summary.topics,
+                "indicators":   [i.model_dump(mode="json") for i in summary.indicators],
+                "trends":       [t.model_dump(mode="json") for t in summary.trends],
             }
             txn.set_data("result", {k: v for k, v in result.items() if k != "summary"})
             await mark_completed(job_id, result)
