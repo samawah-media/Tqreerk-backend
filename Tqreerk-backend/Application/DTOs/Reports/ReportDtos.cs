@@ -89,7 +89,10 @@ public record ReportAiStatusDto(
     IReadOnlyList<AiJobStatusDto> Jobs,
     ReportAiContentDto? ArabicContent,
     ReportAiContentDto? EnglishContent,
-    IReadOnlyList<TranslationStatusDto> Translations
+    IReadOnlyList<TranslationStatusDto> Translations,
+    /// True when the owning org has the per-org TranslationEnabled flag set.
+    /// Drives whether the user-side "ترجم التقرير" button is shown.
+    bool TranslationEnabled
 );
 
 public record AiJobStatusDto(

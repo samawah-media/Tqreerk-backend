@@ -83,6 +83,13 @@ app.UseCors("DefaultCors");
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Maintenance gate. Sits after auth so the middleware can identify
+// admin paths (it short-circuits everything except /api/admin/*,
+// /api/auth/*, /healthz, /swagger and /uploads). The IsMaintenanceModeAsync
+// read is cached for 30s in IMemoryCache so per-request overhead is
+// effectively zero.
+app.UseMiddleware<MaintenanceMiddleware>();
+
 // Endpoints must be registered after UseAuthorization()
 app.MapGet("/healthz", async (TaqreerkDbContext db) =>
 {

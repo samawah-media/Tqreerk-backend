@@ -59,19 +59,45 @@ public record PublicReportDetailDto(
     string? Summary,
     IReadOnlyList<string> KeyFindings,
     IReadOnlyList<string> Topics,
+    /// Total number of (non-deleted) comments. Cheap COUNT — included in
+    /// the detail payload so the SPA doesn't have to fan out to fetch it
+    /// before rendering the comments header badge.
+    int CommentCount,
+    /// Total number of users who have recommended this report. Powers
+    /// the "Heart" reaction count in the public page header.
+    int RecommendationCount,
     DateTime CreatedAt
 );
 
 /// Query parameters for the public list. All optional. Filter values use
-/// arrays so multiple sectors/countries can be selected at once.
+/// arrays so multiple sectors/countries/organizations can be selected at once.
 public record PublicReportListRequest(
     string? Q = null,
     Guid[]? Sectors = null,
     Guid[]? Countries = null,
+    Guid[]? Organizations = null,
     int? YearFrom = null,
     int? YearTo = null,
+    /// Inclusive page-count bucket bounds. The library sidebar exposes
+    /// them as radio buttons ("سريعة < 10" / "متوسطة 10-50" / "عميقة > 50")
+    /// — both fields can be null which means "no upper/lower bound".
+    int? PageCountMin = null,
+    int? PageCountMax = null,
     string? Language = null,
     string? Sort = null,
     int Page = 1,
     int PageSize = 12
 );
+
+/// Per-facet count rows the sidebar uses to render the chip badges.
+/// Counts respect every active filter EXCEPT the facet being computed,
+/// otherwise picking a sector would zero out the rest of the sector list
+/// the moment you click it.
+public record PublicReportFacetsDto(
+    IReadOnlyList<FacetItemDto> Sectors,
+    IReadOnlyList<FacetItemDto> Countries,
+    IReadOnlyList<FacetItemDto> Organizations,
+    IReadOnlyList<FacetItemDto> Languages
+);
+
+public record FacetItemDto(string Id, string Name, int Count);

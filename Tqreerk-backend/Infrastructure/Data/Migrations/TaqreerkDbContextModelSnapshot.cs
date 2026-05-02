@@ -597,6 +597,52 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("email_verification_tokens", (string)null);
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.FeaturedReport", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("FeaturedFrom")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("FeaturedUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Section")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("ReportId");
+
+                    b.HasIndex("Section", "IsActive");
+
+                    b.HasIndex("Section", "Position");
+
+                    b.ToTable("featured_reports", (string)null);
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.Infographic", b =>
                 {
                     b.Property<Guid>("Id")
@@ -803,6 +849,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)");
+
+                    b.Property<bool>("TranslationEnabled")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("Type")
                         .IsRequired()
@@ -1184,6 +1233,16 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                             NameAr = "التصنيفات",
                             NameEn = "Categories",
                             SortOrder = 12
+                        },
+                        new
+                        {
+                            Id = new Guid("10000000-0000-0000-0000-00000000000d"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Key = "featured",
+                            NameAr = "المحتوى البارز",
+                            NameEn = "Featured",
+                            SortOrder = 13
                         });
                 });
 
@@ -1805,6 +1864,46 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                             NameAr = "حذف",
                             NameEn = "Delete",
                             PageId = new Guid("10000000-0000-0000-0000-00000000000c")
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000d01"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Key = "view",
+                            NameAr = "عرض",
+                            NameEn = "View",
+                            PageId = new Guid("10000000-0000-0000-0000-00000000000d")
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000d02"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Key = "create",
+                            NameAr = "إنشاء",
+                            NameEn = "Create",
+                            PageId = new Guid("10000000-0000-0000-0000-00000000000d")
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000d03"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Key = "edit",
+                            NameAr = "تعديل",
+                            NameEn = "Edit",
+                            PageId = new Guid("10000000-0000-0000-0000-00000000000d")
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000d04"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            IsSystem = true,
+                            Key = "delete",
+                            NameAr = "حذف",
+                            NameEn = "Delete",
+                            PageId = new Guid("10000000-0000-0000-0000-00000000000d")
                         });
                 });
 
@@ -2109,6 +2208,79 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("report_ai_contents", (string)null);
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportChunk", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<int>("ChunkIndex")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<int>("PageNumber")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReportId", "PageNumber");
+
+                    b.HasIndex("ReportId", "PageNumber", "ChunkIndex")
+                        .IsUnique();
+
+                    b.ToTable("report_chunks", (string)null);
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportComment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("ReportId", "CreatedAt");
+
+                    b.ToTable("report_comments", (string)null);
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportComparison", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2178,41 +2350,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("report_keywords", (string)null);
-                });
-
-            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportChunk", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasDefaultValueSql("gen_random_uuid()");
-
-                    b.Property<int>("ChunkIndex")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Content")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<int>("PageNumber")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("ReportId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ReportId", "PageNumber");
-
-                    b.HasIndex("ReportId", "PageNumber", "ChunkIndex")
-                        .IsUnique();
-
-                    b.ToTable("report_chunks", (string)null);
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportRating", b =>
@@ -2833,6 +2970,30 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         },
                         new
                         {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000001"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000d01"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000001"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000d02"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000001"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000d03"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000001"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000d04"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
                             RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000101"),
                             CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
@@ -3069,6 +3230,30 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         {
                             RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000b04"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000d01"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000d02"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000d03"),
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000d04"),
                             CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
                         },
                         new
@@ -3402,6 +3587,236 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.ToTable("subscriptions", (string)null);
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.SystemSetting", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<bool>("IsSystem")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("ValueType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Category");
+
+                    b.HasIndex("Key")
+                        .IsUnique();
+
+                    b.ToTable("system_settings", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000001"),
+                            Category = "general",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "اسم المنصة الظاهر للمستخدمين.",
+                            IsSystem = true,
+                            Key = "site_name",
+                            Value = "تقريرك",
+                            ValueType = "string"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000002"),
+                            Category = "general",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "اللغة الافتراضية للواجهة (ar / en).",
+                            IsSystem = true,
+                            Key = "default_language",
+                            Value = "ar",
+                            ValueType = "string"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000003"),
+                            Category = "general",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "بريد دعم المنصة.",
+                            IsSystem = true,
+                            Key = "support_email",
+                            Value = "support@taqreerk.com",
+                            ValueType = "string"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000004"),
+                            Category = "limits",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "أقصى عدد تقارير شهريًا للجهات على الباقة المجانية.",
+                            IsSystem = true,
+                            Key = "free_plan_reports_limit",
+                            Value = "5",
+                            ValueType = "int"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000005"),
+                            Category = "limits",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "أقصى عدد طلبات ذكاء اصطناعي شهريًا للباقة المجانية.",
+                            IsSystem = true,
+                            Key = "free_plan_ai_limit",
+                            Value = "3",
+                            ValueType = "int"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000006"),
+                            Category = "reviews",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "بعد كم دقيقة يُعاد إصدار طلب مراجعة عالق.",
+                            IsSystem = true,
+                            Key = "reviews.auto_release_minutes",
+                            Value = "60",
+                            ValueType = "int"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000007"),
+                            Category = "reviews",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "أقصى عدد تقارير يستطيع مراجع فردي مطالبتها بالتوازي.",
+                            IsSystem = true,
+                            Key = "reviews.reviewer_max_concurrent",
+                            Value = "5",
+                            ValueType = "int"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000008"),
+                            Category = "ai",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "حرارة Gemini للملخصات والترجمات.",
+                            IsSystem = true,
+                            Key = "ai.gemini_temperature",
+                            Value = "0.4",
+                            ValueType = "decimal"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000009"),
+                            Category = "ai",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "أقصى عدد توكِن لكل استدعاء AI.",
+                            IsSystem = true,
+                            Key = "ai.max_tokens",
+                            Value = "4096",
+                            ValueType = "int"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-00000000000a"),
+                            Category = "ai",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "عدد محاولات إعادة استدعاء AI عند الفشل.",
+                            IsSystem = true,
+                            Key = "ai.retry_attempts",
+                            Value = "3",
+                            ValueType = "int"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-00000000000b"),
+                            Category = "featured",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "حد البطل الرئيسي.",
+                            IsSystem = true,
+                            Key = "featured.max_homepage_hero",
+                            Value = "3",
+                            ValueType = "int"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-00000000000c"),
+                            Category = "featured",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "حد كاروسيل الصفحة الرئيسية.",
+                            IsSystem = true,
+                            Key = "featured.max_carousel",
+                            Value = "10",
+                            ValueType = "int"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-00000000000d"),
+                            Category = "email",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "اسم المرسل في الإيميلات.",
+                            IsSystem = true,
+                            Key = "email.sender_name",
+                            Value = "تقريرك",
+                            ValueType = "string"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-00000000000e"),
+                            Category = "email",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "عنوان الرد على الإيميلات.",
+                            IsSystem = true,
+                            Key = "email.support_reply_to",
+                            Value = "support@taqreerk.com",
+                            ValueType = "string"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-00000000000f"),
+                            Category = "maintenance",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "وضع الصيانة. عند التفعيل يُحجب المستخدمون العاديون.",
+                            IsSystem = true,
+                            Key = "maintenance.enabled",
+                            Value = "false",
+                            ValueType = "bool"
+                        },
+                        new
+                        {
+                            Id = new Guid("60000000-0000-0000-0000-000000000010"),
+                            Category = "maintenance",
+                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "رسالة عرض الصيانة (تظهر للمستخدمين).",
+                            IsSystem = true,
+                            Key = "maintenance.message",
+                            Value = "المنصة تحت الصيانة، نعود قريبًا.",
+                            ValueType = "string"
+                        });
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3654,6 +4069,24 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.FeaturedReport", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.User", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
+                        .WithMany()
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("CreatedByUser");
+
+                    b.Navigation("Report");
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.Infographic", b =>
                 {
                     b.HasOne("Taqreerk.Domain.Entities.User", "CreatedByUser")
@@ -3883,6 +4316,36 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Report");
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportChunk", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
+                        .WithMany("Chunks")
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Report");
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportComment", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
+                        .WithMany()
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Taqreerk.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Report");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.ReportComparison", b =>
                 {
                     b.HasOne("Taqreerk.Domain.Entities.AiJob", "AiJob")
@@ -3905,17 +4368,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                 {
                     b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
                         .WithMany("Keywords")
-                        .HasForeignKey("ReportId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Report");
-                });
-
-            modelBuilder.Entity("Taqreerk.Domain.Entities.ReportChunk", b =>
-                {
-                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
-                        .WithMany("Chunks")
                         .HasForeignKey("ReportId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

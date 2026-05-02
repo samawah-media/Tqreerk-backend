@@ -89,11 +89,16 @@ public static class ServiceExtensions
         services.AddScoped<IAdminOrganizationsService, AdminOrganizationsService>();
         services.AddScoped<IAdminUsersService, AdminUsersService>();
         services.AddScoped<IAdminCategoriesService, AdminCategoriesService>();
+        services.AddScoped<IAdminFeaturedService, AdminFeaturedService>();
+        services.AddScoped<IAdminStatsService, AdminStatsService>();
+        services.AddScoped<IAdminSettingsService, AdminSettingsService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<IOrganizationService, OrganizationService>();
         services.AddScoped<IDashboardService, DashboardService>();
         services.AddScoped<IReportService, ReportService>();
         services.AddScoped<IPublicReportService, PublicReportService>();
+        services.AddScoped<IReportInteractionsService, ReportInteractionsService>();
+        services.AddScoped<IReportCommentsService, ReportCommentsService>();
         services.AddScoped<IReportAiService, ReportAiService>();
         services.AddScoped<IReviewService, ReviewService>();
         services.AddScoped<IQuotaService, QuotaService>();
@@ -109,6 +114,10 @@ public static class ServiceExtensions
 
         // Background worker that releases stale review claims (>N min idle).
         services.AddHostedService<ClaimAutoReleaseWorker>();
+
+        // Background worker that deactivates featured rows whose schedule
+        // window has elapsed. One-minute poll, idempotent on retry.
+        services.AddHostedService<FeaturedExpiryWorker>();
 
         // File storage: pick GCS when explicitly configured, otherwise local disk.
         // Same fall-through pattern as the email senders.

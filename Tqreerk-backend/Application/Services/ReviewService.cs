@@ -250,24 +250,31 @@ public class ReviewService : IReviewService
         report.ClaimedAt = null;
         await _db.SaveChangesAsync(ct);
 
-        // Best-effort AI kickoff — if the queue insert fails we leave the
-        // report at Approved and surface a manual "retry pipeline" button
-        // in the admin UI later. The approve decision itself stands.
+        // AI kickoff. EnqueueIngestAsync writes a Pending Ingestion row
+        // into ai_jobs (with step=ingest+summarize for the AI worker) and
+        // bumps Report.Status to ProcessingAi internally.
+        //
+        // We split the exceptions deliberately:
+        //   - Structural failures (report missing, file_url null, FK
+        //     violation) are real bugs in the approval flow — let them
+        //     bubble up so the admin sees a 500 with a clear message
+        //     instead of a silently approved report sitting at Approved
+        //     with no AI jobs.
+        //   - Quota exceedance is a recoverable, business-level state —
+        //     log it, leave Report.Status at Approved, and let staff
+        //     re-trigger from the admin UI later.
         try
         {
             await _ai.EnqueueIngestAsync(report.Id, ct);
-            // EnqueueIngestAsync sets status to PendingReview as its own
-            // "queued" sentinel; flip it forward to ProcessingAi so the
-            // org dashboard shows "جاري المعالجة" not "بانتظار المراجعة".
-            report.Status = ReportStatus.ProcessingAi;
-            await _db.SaveChangesAsync(ct);
         }
-        catch (Exception ex)
+        catch (QuotaExceededException ex)
         {
             _logger.LogWarning(ex,
-                "AI pipeline kickoff failed for report {ReportId}; status stays at Approved",
+                "AI pipeline kickoff for report {ReportId} blocked by quota; status stays at Approved",
                 report.Id);
         }
+        // Anything else (KeyNotFoundException / InvalidOperationException /
+        // DbUpdateException / etc.) propagates so the caller sees the cause.
 
         _logger.LogInformation(
             "Reviewer {ReviewerId} APPROVED report {ReportId} (review {ReviewId})",

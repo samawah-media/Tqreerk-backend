@@ -36,6 +36,9 @@ public class TaqreerkDbContext : DbContext
     public DbSet<ReportView> ReportViews => Set<ReportView>();
     public DbSet<SavedReport> SavedReports => Set<SavedReport>();
     public DbSet<Infographic> Infographics => Set<Infographic>();
+    public DbSet<FeaturedReport> FeaturedReports => Set<FeaturedReport>();
+    public DbSet<ReportComment> ReportComments => Set<ReportComment>();
+    public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
 
     // AI
     public DbSet<AiJob> AiJobs => Set<AiJob>();
@@ -82,6 +85,7 @@ public class TaqreerkDbContext : DbContext
         modelBuilder.Entity<ReportTranslation>().HasQueryFilter(e => e.DeletedAt == null);
         modelBuilder.Entity<ReportAiContent>().HasQueryFilter(e => e.DeletedAt == null);
         modelBuilder.Entity<Infographic>().HasQueryFilter(e => e.DeletedAt == null);
+        modelBuilder.Entity<ReportComment>().HasQueryFilter(e => e.DeletedAt == null);
     }
 
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)

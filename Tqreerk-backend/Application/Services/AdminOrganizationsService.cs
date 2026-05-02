@@ -72,6 +72,7 @@ public class AdminOrganizationsService : IAdminOrganizationsService
                 o.Status.ToString(),
                 o.IsVerified,
                 o.IsPartner,
+                o.TranslationEnabled,
                 o.Country != null ? o.Country.IsoCode : null,
                 o.Country != null ? o.Country.NameAr : null,
                 o.City,
@@ -97,7 +98,8 @@ public class AdminOrganizationsService : IAdminOrganizationsService
         var before = new
         {
             org.NameAr, org.NameEn, Type = org.Type.ToString(), org.SectorScope,
-            org.CountryId, org.City, org.Phone, org.WebsiteUrl, org.Description, org.IsPartner
+            org.CountryId, org.City, org.Phone, org.WebsiteUrl, org.Description,
+            org.IsPartner, org.TranslationEnabled
         };
 
         if (req.NameAr is not null) org.NameAr = req.NameAr.Trim();
@@ -111,6 +113,7 @@ public class AdminOrganizationsService : IAdminOrganizationsService
         if (req.WebsiteUrl is not null) org.WebsiteUrl = req.WebsiteUrl.Trim();
         if (req.Description is not null) org.Description = req.Description.Trim();
         if (req.IsPartner.HasValue) org.IsPartner = req.IsPartner.Value;
+        if (req.TranslationEnabled.HasValue) org.TranslationEnabled = req.TranslationEnabled.Value;
 
         org.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -124,7 +127,8 @@ public class AdminOrganizationsService : IAdminOrganizationsService
             afterState: new
             {
                 org.NameAr, org.NameEn, Type = org.Type.ToString(), org.SectorScope,
-                org.CountryId, org.City, org.Phone, org.WebsiteUrl, org.Description, org.IsPartner
+                org.CountryId, org.City, org.Phone, org.WebsiteUrl, org.Description,
+                org.IsPartner, org.TranslationEnabled
             },
             ct: ct);
 
@@ -282,7 +286,7 @@ public class AdminOrganizationsService : IAdminOrganizationsService
                 o.Id, o.NameAr, o.NameEn, o.Slug,
                 Type = o.Type.ToString(),
                 Status = o.Status.ToString(),
-                o.IsVerified, o.IsPartner, o.SectorScope,
+                o.IsVerified, o.IsPartner, o.TranslationEnabled, o.SectorScope,
                 o.CountryId,
                 CountryNameAr = o.Country != null ? o.Country.NameAr : null,
                 o.City, o.Phone, o.WebsiteUrl, o.LogoUrl, o.Description, o.CreatedAt,
@@ -300,6 +304,7 @@ public class AdminOrganizationsService : IAdminOrganizationsService
         return new AdminOrganizationDetailDto(
             detail.Id, detail.NameAr, detail.NameEn, detail.Slug,
             detail.Type, detail.Status, detail.IsVerified, detail.IsPartner,
+            detail.TranslationEnabled,
             detail.SectorScope, detail.CountryId, detail.CountryNameAr,
             detail.City, detail.Phone, detail.WebsiteUrl, detail.LogoUrl, detail.Description,
             detail.CreatedAt, memberCount, reportCount, publishedCount);

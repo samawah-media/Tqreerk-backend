@@ -218,6 +218,25 @@ public class ReportsController : ControllerBase
         return Accepted(status);
     }
 
+    /// <summary>
+    /// Manually queue a translation pass for the report. Gated by the org's
+    /// `Organization.TranslationEnabled` flag (toggled by staff in the admin
+    /// app). Returns 202 with the current AI status; clients poll
+    /// /reports/{id}/ai/status for completion.
+    /// </summary>
+    [HttpPost("{id:guid}/ai/translate")]
+    [ProducesResponseType(typeof(ReportAiStatusDto), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> TranslateAi(Guid id, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        await _ai.EnqueueTranslateAsync(userId, id, ct);
+        var status = await _ai.GetStatusAsync(userId, id, ct);
+        return Accepted(status);
+    }
+
     /// Wraps the multipart form so Swashbuckle can build a single schema for the
     /// upload endpoint. Mixing [FromForm] IFormFile with separate scalar [FromForm]
     /// parameters trips Swashbuckle's parameter-binding inspection.
