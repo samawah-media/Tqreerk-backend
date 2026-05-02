@@ -12,8 +12,9 @@
 # while CUDA initialises and weights stream into VRAM.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-# Full build tools + pip install here. This layer is thrown away; only the
-# installed site-packages are copied to the runtime stage.
+# Install build tools and pip-install everything into a venv. The venv is what
+# we copy across to the runtime stage, so its layout is self-contained and
+# doesn't depend on Debian's site-packages vs dist-packages quirks.
 FROM nvidia/cuda:12.1.0-base-ubuntu22.04 AS builder
 
 ENV PYTHONUNBUFFERED=1 \
@@ -27,18 +28,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
-    && python -m pip install --upgrade pip setuptools wheel
+# Build everything inside /opt/venv so the runtime stage gets a single,
+# self-contained tree to copy. No PYTHONPATH gymnastics needed.
+RUN python3.11 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --upgrade pip setuptools wheel
 
-WORKDIR /install
+WORKDIR /build
 COPY requirements.txt .
-RUN pip install --prefix=/install/pkg -r requirements.txt
+RUN pip install -r requirements.txt
 
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-# Minimal CUDA base — PyTorch bundles its own cuDNN so we don't need the
-# OS-level cudnn8-runtime layer (saves ~1.5 GB). Only OpenCV runtime libs and
-# Python are needed here.
+# Minimal CUDA base — PyTorch bundles its own cuDNN, so we don't need the
+# OS-level cudnn8-runtime layer (saves ~1.5 GB vs the previous base image).
+# Only OpenCV runtime libs and Python are needed here.
 FROM nvidia/cuda:12.1.0-base-ubuntu22.04 AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
@@ -47,23 +51,24 @@ ENV PYTHONUNBUFFERED=1 \
     TRANSFORMERS_OFFLINE=0 \
     HF_HOME=/app/.hf-cache \
     EASYOCR_MODULE_PATH=/app/.easyocr-cache \
-    PYTHONPATH=/app/pkg/lib/python3.11/site-packages
+    PATH="/opt/venv/bin:$PATH"
 
+# python3.11 (no pip, no venv tooling) + OpenCV runtime libs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.11 python3-pip \
+        python3.11 \
         libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+# Copy the venv from the builder. Because PATH starts with /opt/venv/bin, every
+# `python` / `pip` call resolves to the venv and finds the installed packages
+# automatically — no PYTHONPATH overrides needed.
+COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 
-# Copy installed packages from builder — no build tools follow into runtime.
-COPY --from=builder /install/pkg /app/pkg
-
-# Pre-download model weights at build time so cold start only pays VRAM
-# transfer, not network I/O. snapshot_download fetches files only; the actual
-# model init (which requires a real CUDA driver) happens at container startup.
+# Pre-download model weights so cold start only pays for VRAM transfer, not
+# network I/O. snapshot_download fetches files only; the actual model init
+# (which needs a real CUDA driver) happens at container startup.
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download(repo_id='microsoft/Florence-2-base-ft')" \
     && python -c "import easyocr; easyocr.Reader(['ar', 'en'], gpu=False, download_enabled=True)"
