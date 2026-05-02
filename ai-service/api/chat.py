@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from psycopg import AsyncConnection
 
 from core.config import settings
@@ -65,6 +65,51 @@ from services.quota import assert_under_chat_quota
 from services.tools import ToolContext
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+# ── Session summary cache ────────────────────────────────────────────────────
+# Key: (session_id, older_msg_count // 10 * 10) — regenerates every ~5 new
+# turns so the summary stays fresh without a Gemini call on every single turn.
+# Bounded at 500 entries to prevent unbounded memory growth in long-running pods.
+_SUMMARY_CACHE_MAX = 500
+_summary_cache: dict[tuple[str, int], str] = {}
+
+
+async def _build_session_summary(
+    older_rows: list[tuple[str, str]],
+    session_id: str,
+) -> str:
+    """Summarise older conversation turns into 3-5 sentences with Gemini Flash.
+
+    Runs as a one-shot non-streaming call — no tool loop, no state. Offloaded
+    to a thread so the async handler isn't blocked by the sync SDK call.
+    """
+    from langchain_core.messages import HumanMessage as LCHumanMessage
+    from langchain_google_vertexai import ChatVertexAI
+
+    transcript = "\n".join(
+        f"{'User' if role == 'user' else 'Assistant'}: {content[:400]}"
+        for role, content in older_rows[:20]  # cap at 20 messages input
+    )
+    prompt = (
+        "Summarize the following conversation in 3–5 concise sentences. "
+        "Capture: which reports were discussed, the key questions asked, "
+        "and any important facts or conclusions that were established. "
+        "Reply in the same language as the conversation.\n\n"
+        f"CONVERSATION:\n{transcript}"
+    )
+
+    def _call() -> str:
+        model = ChatVertexAI(
+            model=settings.gemini_summary_model,
+            project=settings.gcp_project_id,
+            location=settings.vertex_location,
+            temperature=0.1,
+            max_output_tokens=512,
+        )
+        resp = model.invoke([LCHumanMessage(content=prompt)])
+        return getattr(resp, "content", "") or ""
+
+    return await asyncio.to_thread(_call)
 
 
 # ── Session CRUD ───────────────────────────────────────────────────────────
@@ -232,7 +277,15 @@ async def send_message(
     # ── Quota gate (per-user daily chat cap) ───────────────────────────────
     await assert_under_chat_quota(conn, user_id)
 
-    # ── Load conversation history (last 10 → 5 turns) ──────────────────────
+    # ── Load conversation history + optional summary of older turns ──────────
+    # Count total messages so we know whether a summary is needed.
+    count_cur = await conn.execute(
+        'SELECT COUNT(*) FROM chat_messages WHERE "SessionId" = %s',
+        [sid],
+    )
+    total_msg_count = (await count_cur.fetchone())[0]
+
+    # Always load the last 10 messages as the hot context window.
     hist_cur = await conn.execute(
         """
         SELECT "Role", "Content" FROM (
@@ -247,10 +300,45 @@ async def send_message(
         [sid],
     )
     history_rows = await hist_cur.fetchall()
-    history_msgs = [
+
+    # If the session is longer than 10 messages, summarise the older turns
+    # and prepend as a SystemMessage so the agent retains earlier context.
+    # Cache key rounds down to nearest 10 so we only rebuild every ~5 new turns.
+    history_msgs: list = [
         HumanMessage(content=c) if r == "user" else AIMessage(content=c)
         for r, c in history_rows
     ]
+    if total_msg_count > 10:
+        older_count = total_msg_count - 10
+        cache_key = (sid, (older_count // 10) * 10)
+        cached_summary = _summary_cache.get(cache_key)
+        if cached_summary is None:
+            try:
+                older_cur = await conn.execute(
+                    """
+                    SELECT "Role", "Content"
+                    FROM chat_messages
+                    WHERE "SessionId" = %s
+                    ORDER BY "CreatedAt" ASC
+                    LIMIT %s
+                    """,
+                    [sid, older_count],
+                )
+                older_rows = await older_cur.fetchall()
+                if older_rows:
+                    cached_summary = await _build_session_summary(list(older_rows), sid)
+                    if cached_summary:
+                        if len(_summary_cache) >= _SUMMARY_CACHE_MAX:
+                            _summary_cache.pop(next(iter(_summary_cache)))
+                        _summary_cache[cache_key] = cached_summary
+            except Exception as exc:
+                logger.warning("chat[%s] session_summary failed: %s", sid_short, exc)
+        if cached_summary:
+            history_msgs = [
+                SystemMessage(content=f"[Summary of earlier conversation]\n{cached_summary}"),
+                *history_msgs,
+            ]
+
     t2 = _mark("load_history", t1)
 
     # ── Resolve the user's accessible report set (Published OR own org) ───

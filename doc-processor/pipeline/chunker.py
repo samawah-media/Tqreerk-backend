@@ -1,37 +1,41 @@
-"""Sub-page chunking — kept byte-identical to ai-service/core/chunking.py.
+"""Sub-page chunking — canonical copy lives in ai-service/core/chunking.py.
 
-Why this exists here
-====================
-Option B of the ingest redesign moves chunking + embedding into the
-doc-processor so we don't ship 100 MB of structured blocks back over HTTP.
-The chunking algorithm MUST match what ai-service produced previously,
-otherwise existing report_chunks rows would be incompatible with newly
-ingested ones (different chunk boundaries → different retrieval).
+SYNC RULE: keep this file byte-identical to ai-service/core/chunking.py
+(below the module docstring). The two services run in separate containers
+so they can't share a package, but chunk boundaries MUST be identical —
+any divergence makes existing report_chunks rows incompatible with newly
+ingested ones. Edit both files together, then re-ingest affected reports.
 
-If you change anything here, change it in ai-service/core/chunking.py too
-and re-ingest — or move that file to call into here at import time.
+A CI check (scripts/check_chunker_sync.py) enforces this at pull-request
+time so drift is caught before it reaches production.
 """
 from __future__ import annotations
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-DEFAULT_CHUNK_CHARS = 2000
-DEFAULT_OVERLAP_CHARS = 200
+DEFAULT_CHUNK_CHARS = 2000   # ~500 tokens
+DEFAULT_OVERLAP_CHARS = 200  # ~50 tokens of context bleed
 
+# Block types that must never be split mid-content. Their `content` is
+# already chunk-friendly (GFM markdown for tables, "[Figure: caption]\n
+# extracted text" for figures, "$$ ... $$" for formulas) and splitting
+# would break either the markup or the semantic unit.
 _ATOMIC_BLOCK_TYPES = frozenset({"table", "figure", "formula"})
 
+# Separator priority: largest semantic unit first. Arabic punctuation (؟ ۔)
+# included alongside Latin so sentence-aware splits work for both scripts.
 _SEPARATORS = [
-    "\n\n",
-    "\n",
-    ". ",
-    "؟ ",
-    "۔ ",
+    "\n\n",   # paragraph break
+    "\n",     # line break
+    ". ",     # English sentence end
+    "؟ ",     # Arabic question mark
+    "۔ ",     # Urdu / Arabic full stop
     "! ",
     "? ",
-    "؛ ",
+    "؛ ",     # Arabic semicolon
     "; ",
-    " ",
-    "",
+    " ",      # word break
+    "",       # hard char cut (last resort)
 ]
 
 _splitter = RecursiveCharacterTextSplitter(
@@ -44,20 +48,42 @@ _splitter = RecursiveCharacterTextSplitter(
 
 
 def chunk_text(text: str) -> list[str]:
+    """Split `text` into ~500-token chunks with ~50-token overlap.
+
+    Empty / whitespace-only input → []. Single short text → [text].
+    """
     text = (text or "").strip()
     if not text:
         return []
     return _splitter.split_text(text)
 
 
-def chunk_blocks_with_meta(blocks: list[dict]) -> list[dict]:
-    """Pack a page's structured blocks into chunks with per-chunk metadata.
+# ── Structure-aware chunker ─────────────────────────────────────────────────
 
-    Returns: list of `{content, block_types, section_title}`.
+
+def chunk_blocks(blocks: list[dict]) -> list[str]:
+    """Pack a page's structured blocks into chunk strings (text only).
+
+    Convenience wrapper around `chunk_blocks_with_meta` for callers that
+    don't need per-chunk metadata.
+    """
+    return [c["content"] for c in chunk_blocks_with_meta(blocks)]
+
+
+def chunk_blocks_with_meta(blocks: list[dict]) -> list[dict]:
+    """Same as chunk_blocks but each result is `{content, block_types,
+    section_title}` so the persist layer can attach per-chunk metadata.
+
+    `block_types` lists the kinds of blocks that contributed to this chunk,
+    in order. `section_title` is the most recent heading seen at or before
+    the start of this chunk (empty string if none yet).
     """
     if not blocks:
         return []
 
+    # Sort by reading_order so multi-column or RTL layouts stay coherent.
+    # The orchestrator already returns blocks in reading order, but be
+    # defensive — the cost is negligible.
     sorted_blocks = sorted(
         (b for b in blocks if (b.get("content") or "").strip()),
         key=lambda b: int(b.get("reading_order") or 0),
@@ -69,7 +95,7 @@ def chunk_blocks_with_meta(blocks: list[dict]) -> list[dict]:
     current_text = ""
     current_types: list[str] = []
     current_section = ""
-    last_section = ""
+    last_section = ""  # tracks heading-as-section for chunks AFTER the heading too
 
     def flush() -> None:
         nonlocal current_text, current_types
@@ -88,6 +114,9 @@ def chunk_blocks_with_meta(blocks: list[dict]) -> list[dict]:
         if not text:
             continue
 
+        # Atomic blocks: emit any pending chunk, then emit this block as its
+        # own chunk regardless of size. Splitting a table mid-row or a
+        # formula mid-LaTeX is worse than an oversized chunk.
         if btype in _ATOMIC_BLOCK_TYPES:
             flush()
             chunks.append({
@@ -97,6 +126,7 @@ def chunk_blocks_with_meta(blocks: list[dict]) -> list[dict]:
             })
             continue
 
+        # Headings start a new chunk and become the running section title.
         if btype == "heading":
             flush()
             last_section = text[:300]
@@ -105,6 +135,9 @@ def chunk_blocks_with_meta(blocks: list[dict]) -> list[dict]:
             current_types = ["heading"]
             continue
 
+        # Plain text / footer block. If it alone exceeds the chunk size,
+        # split it with the recursive splitter and emit each piece as its
+        # own chunk (the section_title still applies).
         if len(text) > DEFAULT_CHUNK_CHARS:
             flush()
             for piece in _splitter.split_text(text):
@@ -118,6 +151,8 @@ def chunk_blocks_with_meta(blocks: list[dict]) -> list[dict]:
                 })
             continue
 
+        # Greedy pack: append to the current chunk if it fits, else flush
+        # and start a new one with this block.
         joined = (current_text + "\n\n" + text) if current_text else text
         if len(joined) <= DEFAULT_CHUNK_CHARS:
             current_text = joined

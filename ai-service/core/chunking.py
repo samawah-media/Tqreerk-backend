@@ -1,4 +1,8 @@
-"""Sub-page chunking for RAG.
+"""Sub-page chunking for RAG — canonical source; doc-processor/pipeline/chunker.py must stay in sync.
+
+SYNC RULE: keep doc-processor/pipeline/chunker.py byte-identical to this file
+(below its module docstring). Edit both together. A CI check
+(scripts/check_chunker_sync.py) enforces this at pull-request time.
 
 Two entry points
 ================
