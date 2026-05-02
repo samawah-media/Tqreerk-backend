@@ -29,6 +29,7 @@ get_report_indicators    — extracted KPIs / numbers
 get_report_trends        — extracted trends
 get_report_recommendations — extracted recommendations
 get_report_keywords      — keywords + language
+get_report_topics        — high-level topics / sectors covered (per-language)
 get_translation          — translated TITLE / DESCRIPTION / SUMMARY (text only,
                             never a download URL — locked-in policy)
 list_saved_reports       — current user's bookmarks
@@ -754,21 +755,37 @@ class FindSimilarReportsArgs(BaseModel):
 
 
 async def _find_similar_reports_impl(ctx: ToolContext, args: FindSimilarReportsArgs) -> str:
+    """Hybrid similarity search combining three signals:
+
+      1. Embedding centroid cosine — semantic similarity over chunk content.
+         Structural chunks (table/figure/formula) excluded so the centroid
+         reflects narrative content, not page furniture.
+      2. Shared topics — count of overlapping high-level topics from
+         report_ai_contents.Topics (case-insensitive). Direct evidence the
+         summarizer thinks the two reports are about the same things.
+      3. Shared keywords — count of overlapping report_keywords entries
+         (case-insensitive). Catches similarity even when summaries phrase
+         themes differently.
+
+    Final score = embed_sim + 0.05·shared_topics + 0.02·shared_keywords.
+    The boost weights are intentionally small so embedding still dominates,
+    but a few overlapping topics can promote a strong topical match past a
+    slightly-more-similar-by-vector but topically-unrelated report.
+
+    Both shared counts are returned to the agent so it can explain WHY two
+    reports were grouped (e.g. "they share the topic 'renewable energy'
+    and 7 keywords").
+    """
     if args.report_id not in ctx.accessible_ids:
         return _no_results("report_id is outside accessible scope")
     if not ctx.accessible_ids:
         return _no_results("no accessible reports to compare against")
 
-    # Source report's "centroid" embedding = average of its chunk vectors.
-    # Cosine similarity to other reports' centroids is a coarse but useful
-    # similarity signal, and it runs entirely in-DB.
     async with conn_ctx() as conn:
         cur = await conn.execute(
             """
-            WITH src AS (
-                -- Exclude table / figure / formula chunks from the centroid.
-                -- Structural chunks (page numbers, captions, cell values) add
-                -- domain-irrelevant signal that dilutes the topical embedding.
+            WITH src_v AS (
+                -- Embedding centroid over narrative chunks only.
                 SELECT AVG(embedding)::vector AS v
                 FROM report_chunks
                 WHERE "ReportId" = %s
@@ -776,27 +793,80 @@ async def _find_similar_reports_impl(ctx: ToolContext, args: FindSimilarReportsA
                   AND NOT (metadata @> '{"block_types":["table"]}'::jsonb)
                   AND NOT (metadata @> '{"block_types":["figure"]}'::jsonb)
                   AND NOT (metadata @> '{"block_types":["formula"]}'::jsonb)
+            ),
+            src_topics AS (
+                -- Topics from the source report's AI content (any language).
+                -- LATERAL unnest of the Topics jsonb array → one row per topic.
+                SELECT DISTINCT lower(t.value) AS topic
+                FROM report_ai_contents rac
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    COALESCE(rac."Topics"::jsonb, '[]'::jsonb)
+                ) AS t(value)
+                WHERE rac."ReportId" = %s
+                  AND rac."DeletedAt" IS NULL
+            ),
+            src_kw AS (
+                -- Keywords for the source report (case-folded for matching).
+                SELECT DISTINCT lower("Keyword") AS kw
+                FROM report_keywords
+                WHERE "ReportId" = %s
+            ),
+            candidates AS (
+                -- Per-candidate embedding similarity.
+                SELECT r."Id" AS rid,
+                       r."Title", r."PublicationYear",
+                       o."NameAr", o."NameEn",
+                       1 - (AVG(rc.embedding) <=> (SELECT v FROM src_v)) AS embed_sim
+                FROM report_chunks rc
+                JOIN reports r ON r."Id" = rc."ReportId"
+                LEFT JOIN organizations o ON o."Id" = r."OrganizationId"
+                WHERE rc."ReportId" <> %s
+                  AND rc."ReportId" = ANY(%s)
+                  AND rc.embedding IS NOT NULL
+                  AND NOT (rc.metadata @> '{"block_types":["table"]}'::jsonb)
+                  AND NOT (rc.metadata @> '{"block_types":["figure"]}'::jsonb)
+                  AND NOT (rc.metadata @> '{"block_types":["formula"]}'::jsonb)
+                  AND r."Status"     = 'Published'
+                  AND r."DeletedAt" IS NULL
+                GROUP BY r."Id", r."Title", r."PublicationYear", o."NameAr", o."NameEn"
+                HAVING (SELECT v FROM src_v) IS NOT NULL
+            ),
+            topic_overlap AS (
+                -- Count topics each candidate shares with the source.
+                SELECT c.rid, COUNT(DISTINCT lower(t.value)) AS n
+                FROM candidates c
+                JOIN report_ai_contents rac
+                  ON rac."ReportId" = c.rid AND rac."DeletedAt" IS NULL
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    COALESCE(rac."Topics"::jsonb, '[]'::jsonb)
+                ) AS t(value)
+                WHERE lower(t.value) IN (SELECT topic FROM src_topics)
+                GROUP BY c.rid
+            ),
+            kw_overlap AS (
+                -- Count keywords each candidate shares with the source.
+                SELECT c.rid, COUNT(DISTINCT lower(rk."Keyword")) AS n
+                FROM candidates c
+                JOIN report_keywords rk ON rk."ReportId" = c.rid
+                WHERE lower(rk."Keyword") IN (SELECT kw FROM src_kw)
+                GROUP BY c.rid
             )
-            SELECT r."Id", r."Title", r."PublicationYear",
-                   o."NameAr", o."NameEn",
-                   1 - (AVG(rc.embedding) <=> (SELECT v FROM src)) AS similarity
-            FROM report_chunks rc
-            JOIN reports r       ON r."Id" = rc."ReportId"
-            LEFT JOIN organizations o ON o."Id" = r."OrganizationId"
-            WHERE rc."ReportId" <> %s
-              AND rc."ReportId" = ANY(%s)
-              AND rc.embedding IS NOT NULL
-              AND NOT (rc.metadata @> '{"block_types":["table"]}'::jsonb)
-              AND NOT (rc.metadata @> '{"block_types":["figure"]}'::jsonb)
-              AND NOT (rc.metadata @> '{"block_types":["formula"]}'::jsonb)
-              AND r."Status" = 'Published'
-              AND r."DeletedAt" IS NULL
-            GROUP BY r."Id", r."Title", r."PublicationYear", o."NameAr", o."NameEn"
-            HAVING (SELECT v FROM src) IS NOT NULL
-            ORDER BY similarity DESC
+            SELECT c.rid, c."Title", c."PublicationYear",
+                   c."NameAr", c."NameEn",
+                   c.embed_sim,
+                   COALESCE(t.n, 0) AS shared_topics,
+                   COALESCE(k.n, 0) AS shared_keywords,
+                   (c.embed_sim
+                    + 0.05 * COALESCE(t.n, 0)
+                    + 0.02 * COALESCE(k.n, 0)) AS score
+            FROM candidates c
+            LEFT JOIN topic_overlap t ON t.rid = c.rid
+            LEFT JOIN kw_overlap    k ON k.rid = c.rid
+            ORDER BY score DESC NULLS LAST
             LIMIT %s
             """,
-            [args.report_id, args.report_id, ctx.accessible_ids, args.top_k],
+            [args.report_id, args.report_id, args.report_id,
+             args.report_id, ctx.accessible_ids, args.top_k],
         )
         rows = await cur.fetchall()
 
@@ -809,11 +879,14 @@ async def _find_similar_reports_impl(ctx: ToolContext, args: FindSimilarReportsA
     return _serialize({
         "results": [
             {
-                "report_id":    str(r[0]),
-                "title":        r[1],
-                "year":         r[2],
-                "organization": r[3] or r[4],
-                "similarity":   round(float(r[5]), 4) if r[5] is not None else None,
+                "report_id":       str(r[0]),
+                "title":           r[1],
+                "year":            r[2],
+                "organization":    r[3] or r[4],
+                "similarity":      round(float(r[5]), 4) if r[5] is not None else None,
+                "shared_topics":   int(r[6]),
+                "shared_keywords": int(r[7]),
+                "score":           round(float(r[8]), 4) if r[8] is not None else None,
             }
             for r in rows
         ],
@@ -979,6 +1052,12 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
          "Auto-tagged keywords (Arabic + English) for a report.",
          GetKeywordsArgs,
          _get_report_keywords_impl),
+
+        ("get_report_topics",
+         "High-level topics / sectors covered by a report (per-language). "
+         "Use for 'what is this report about?' overview questions.",
+         GetAiContentArgs,
+         lambda c, a: _get_ai_content_field(c, a, "Topics")),
 
         ("get_translation",
          "Translated title / description / AI summary for a report. RETURNS TEXT ONLY — never a download link.",
