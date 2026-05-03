@@ -30,7 +30,7 @@ from typing import Literal
 from google.genai import types
 
 from core.config import settings
-from services.gemini import _call_with_retry
+from services.gemini import _call_with_retry, _log_genai_usage
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,12 @@ def _embed(texts: list[str], task_type: str) -> list[list[float]]:
                 contents=b,
                 config=config,
             ),
+        )
+        _log_genai_usage(
+            response,
+            name=op,
+            model=settings.gemini_embed_model,
+            metadata={"batch_size": len(batch)},
         )
         embeddings = response.embeddings or []
         if len(embeddings) != len(batch):

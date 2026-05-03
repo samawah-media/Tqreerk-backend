@@ -13,6 +13,7 @@ import json
 import logging
 import threading
 import time
+from typing import Any
 
 from google import genai
 from google.genai import types
@@ -20,8 +21,60 @@ from pydantic import BaseModel
 
 from core import prompts
 from core.config import settings
+from services import observability as obs
 
 logger = logging.getLogger(__name__)
+
+
+# ── Langfuse cost tracking helpers ──────────────────────────────────────────
+# Direct google-genai SDK calls don't flow through LangChain's CallbackHandler,
+# so without these helpers their token usage never reaches Langfuse and the
+# cost dashboard undercounts the bill. We extract usage_metadata from each
+# response and emit a stand-alone Langfuse generation event. Failures are
+# swallowed inside obs.record_generation, so a Langfuse outage never breaks
+# the user request.
+
+def _extract_usage(response: Any) -> dict | None:
+    """Pull token counts from a google-genai response into the dict shape
+    Langfuse 2.x expects. Returns None when the SDK didn't include usage,
+    which makes the caller skip the recording rather than emit zeros that
+    would skew dashboards."""
+    md = getattr(response, "usage_metadata", None)
+    if md is None:
+        return None
+    in_tokens = getattr(md, "prompt_token_count", None)
+    out_tokens = getattr(md, "candidates_token_count", None)
+    total = getattr(md, "total_token_count", None)
+    if in_tokens is None and out_tokens is None and total is None:
+        return None
+    in_tokens = in_tokens or 0
+    out_tokens = out_tokens or 0
+    return {
+        "input": in_tokens,
+        "output": out_tokens,
+        "total": total if total is not None else (in_tokens + out_tokens),
+        "unit": "TOKENS",
+    }
+
+
+def _log_genai_usage(
+    response: Any,
+    *,
+    name: str,
+    model: str,
+    metadata: dict | None = None,
+) -> None:
+    """Record a Langfuse generation event for a google-genai response. No-op
+    when usage is missing or Langfuse is disabled."""
+    usage = _extract_usage(response)
+    if usage is None:
+        return
+    obs.record_generation(
+        name=name,
+        model=model,
+        usage=usage,
+        metadata=metadata,
+    )
 
 _initialized = False
 _client: genai.Client | None = None
@@ -187,6 +240,7 @@ def simple_completion(prompt: str, temperature: float = 0.0) -> str:
             config=types.GenerateContentConfig(temperature=temperature),
         ),
     )
+    _log_genai_usage(response, name="simple_completion", model=settings.gemini_chat_model)
     return (response.text or "").strip()
 
 
@@ -222,6 +276,7 @@ def describe_page_image(png_bytes: bytes) -> dict:
             ),
         ),
     )
+    _log_genai_usage(response, name="describe_page_image", model=settings.gemini_vision_model)
     parsed = json.loads(response.text)
     parts = [parsed.get("text", "")] + parsed.get("visual_elements", [])
     content = "\n\n".join(p for p in parts if p)
@@ -259,6 +314,7 @@ def embed_text(text: str) -> list[float]:
             contents=text,
         ),
     )
+    _log_genai_usage(response, name="embed_text", model=settings.gemini_embed_model)
     return response.embeddings[0].values
 
 
@@ -289,6 +345,7 @@ def chat_with_context(
             config=types.GenerateContentConfig(temperature=0.2),
         ),
     )
+    _log_genai_usage(response, name="chat_with_context", model=settings.gemini_chat_model)
     return response.text.strip(), source_pages
 
 
@@ -328,9 +385,18 @@ def chat_with_context_stream(
             config=types.GenerateContentConfig(temperature=0.2),
         ),
     )
+    last_with_usage: Any = None
     for chunk in stream:
+        if getattr(chunk, "usage_metadata", None) is not None:
+            last_with_usage = chunk
         if chunk.text:
             yield chunk.text
+    if last_with_usage is not None:
+        _log_genai_usage(
+            last_with_usage,
+            name="chat_with_context_stream",
+            model=settings.gemini_chat_model,
+        )
 
 
 def verify_translation(
@@ -375,6 +441,7 @@ def verify_translation(
             ),
         ),
     )
+    _log_genai_usage(response, name="verify_translation", model=settings.gemini_summary_model)
     parsed = json.loads(response.text)
     return bool(parsed.get("translated", False))
 
@@ -410,6 +477,7 @@ def translate_pdf_content(pdf_bytes: bytes, target_language: str) -> list[str]:
             ),
         ),
     )
+    _log_genai_usage(response, name="translate_pdf_content", model=settings.gemini_summary_model)
     parsed = json.loads(response.text)
     return parsed.get("pages", [])
 
@@ -433,6 +501,7 @@ def extract_insights(pages_content: list[str]) -> dict:
             ),
         ),
     )
+    _log_genai_usage(response, name="extract_insights", model=settings.gemini_summary_model)
     return json.loads(response.text)
 
 
@@ -465,6 +534,7 @@ def compare_reports(reports: list[dict]) -> dict:
             ),
         ),
     )
+    _log_genai_usage(response, name="compare_reports", model=settings.gemini_summary_model)
     return json.loads(response.text)
 
 
@@ -483,4 +553,5 @@ def summarize_report(pages_content: list[str]) -> ReportSummary:
             ),
         ),
     )
+    _log_genai_usage(response, name="summarize_report", model=settings.gemini_summary_model)
     return ReportSummary.model_validate_json(response.text)

@@ -239,6 +239,41 @@ def generation(
         return _NOOP
 
 
+def record_generation(
+    *,
+    name: str,
+    model: str,
+    input: Any | None = None,
+    output: Any | None = None,
+    usage: dict | None = None,
+    metadata: dict | None = None,
+    parent: Any | None = None,
+) -> None:
+    """Record a generation event for a direct LLM-SDK call (i.e. one that
+    doesn't go through LangChain's CallbackHandler). With no `parent`, creates
+    a stand-alone trace so the generation still appears in the cost dashboard;
+    pass `parent` (a trace or span) to nest the generation under an existing
+    trace tree.
+
+    Failure here is silent — observability MUST NEVER break the user request."""
+    if not settings.langfuse_enabled:
+        return
+    try:
+        target: Any = parent if parent is not None and parent is not _NOOP else _client_or_none()
+        if target is None:
+            return
+        target.generation(
+            name=name,
+            model=model,
+            input=input,
+            output=output,
+            usage=usage,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        logger.debug("[obs] record_generation(%s) failed: %s", name, exc)
+
+
 def score(
     *,
     trace_id: str,

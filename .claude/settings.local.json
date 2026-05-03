@@ -3,7 +3,14 @@
     "allow": [
       "Bash(dotnet build *)",
       "Bash(dotnet ef *)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\sheha\\\\OneDrive\\\\Documents\\\\Tqreerk-backend\\\\Tqreerk-backend\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(xargs grep *)",
+      "Bash(python -c \"import docx; print\\(docx.__version__\\)\")",
+      "Bash(python3 -c \"import docx; print\\(docx.__version__\\)\")",
+      "Bash(python docs/generate_rag_doc.py)",
+      "Bash(xargs wc *)"
     ]
   }
 }
