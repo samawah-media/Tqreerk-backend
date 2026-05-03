@@ -14,6 +14,11 @@ public class Plan : BaseEntity
     public int ReportsDownloadLimit { get; set; }
     public int AiCallsLimit { get; set; }
     public int FeaturedReportsMonthly { get; set; }
+
+    // -1 = unlimited, 0 = blocked. Apply to individual plans only; org
+    // plans use their own user/report counters.
+    public int IndividualReadsLimit { get; set; }
+    public int IndividualSavedReportsLimit { get; set; }
     public string AiAccessLevel { get; set; } = "basic";
     public bool ApiAccess { get; set; }
     public bool IsActive { get; set; } = true;
