@@ -37,6 +37,8 @@ import random
 import time
 from uuid import UUID, uuid4
 
+import sentry_sdk
+
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -59,7 +61,7 @@ from pipelines.agent import (
     make_langfuse_handler,
 )
 from pipelines.jobs import insert_job
-from services import observability as obs
+from services import chat_cache, groundedness, observability as obs
 from services.access import accessible_report_ids
 from services.quota import assert_under_chat_quota
 from services.tools import ToolContext
@@ -395,6 +397,61 @@ async def send_message(
     t3 = _mark("save_user_msg", t2)
     logger.info("chat[%s] pre_stream_total: %.0f ms", sid_short, (t3 - t0) * 1000)
 
+    # ── Chat-cache short-circuit (Layer 1: exact match) ───────────────────
+    # Check for a cached answer for this exact question on this report. Hits
+    # skip the entire agent loop — no rewriter, no retrieval, no LLM call —
+    # and stream the cached answer back as SSE so the client UI handles it
+    # identically to a fresh response. Layer 2 (semantic match) is intentionally
+    # skipped here: it requires the question embedding, which we don't yet
+    # compute outside the agent. Layer 1 alone catches exact verbatim repeats
+    # — the bulk of repeated traffic.
+    cache_hit: chat_cache.CacheHit | None = None
+    if report_id is not None and settings.chat_cache_enabled:
+        try:
+            cache_hit = await chat_cache.lookup(conn, report_id, body.message)
+        except Exception as exc:
+            logger.warning("chat[%s] cache_lookup_failed: %s", sid_short, exc)
+
+    if cache_hit is not None:
+        logger.info(
+            "chat[%s] cache_hit tier=%s — skipping agent",
+            sid_short, cache_hit.tier,
+        )
+        # Persist the assistant message before streaming so the row exists
+        # even if the client disconnects mid-stream.
+        try:
+            await conn.execute(
+                """
+                INSERT INTO chat_messages ("Id", "SessionId", "Role", "Content", "SourcePages", "CreatedAt")
+                VALUES (gen_random_uuid(), %s, 'assistant', %s, %s, now())
+                """,
+                [sid, cache_hit.answer, json.dumps(cache_hit.source_pages)],
+            )
+            await conn.commit()
+        except Exception as exc:
+            logger.warning("chat[%s] cache_hit_save_msg_failed: %s", sid_short, exc)
+
+        cached_answer = cache_hit.answer
+        cached_pages = cache_hit.source_pages
+        cached_tier = cache_hit.tier
+
+        async def cached_stream():
+            yield "data: " + json.dumps(
+                {"type": "sources", "pages": cached_pages}
+            ) + "\n\n"
+            yield "data: " + json.dumps(
+                {"type": "token", "text": cached_answer}, ensure_ascii=False,
+            ) + "\n\n"
+            yield "data: " + json.dumps(
+                {"type": "done", "cache_tier": cached_tier}
+            ) + "\n\n"
+
+        return StreamingResponse(
+            cached_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     # ── Build the agent ────────────────────────────────────────────────────
     ctx = ToolContext(
         user_id=user_id if isinstance(user_id, UUID) else UUID(str(user_id)),
@@ -556,6 +613,47 @@ async def send_message(
                 deduped = _dedup_in_order(all_pages)
                 yield "data: " + json.dumps({"type": "sources", "pages": deduped}) + "\n\n"
 
+            # ── Inline groundedness check ─────────────────────────────────
+            # One Flash call after the answer streams. The user has already
+            # seen the full response, so this only delays the `done` event by
+            # ~600ms. On low-faithfulness, emit a `warning` event the UI can
+            # display next to the answer and log to Sentry for dashboarding.
+            full_answer_so_far = "".join(full_answer_parts).strip()
+            if full_answer_so_far and tool_contexts:
+                grounding = await groundedness.check(
+                    answer=full_answer_so_far,
+                    contexts=tool_contexts,
+                )
+                if grounding is not None and grounding.is_warning:
+                    logger.warning(
+                        "chat[%s] low_groundedness score=%.2f unsupported=%s",
+                        sid_short, grounding.score, grounding.unsupported,
+                    )
+                    try:
+                        sentry_sdk.capture_message(
+                            "chat: low_groundedness",
+                            level="warning",
+                            extras={
+                                "session_id":  sid,
+                                "score":       grounding.score,
+                                "unsupported": grounding.unsupported,
+                                "question":    body.message[:500],
+                            },
+                        )
+                    except Exception:
+                        pass
+                    yield "data: " + json.dumps({
+                        "type":        "warning",
+                        "kind":        "low_groundedness",
+                        "score":       round(grounding.score, 2),
+                        "unsupported": grounding.unsupported,
+                        "message":     (
+                            "بعض الادعاءات في هذه الإجابة قد لا تكون مدعومة "
+                            "بشكل كامل بمحتوى التقارير المسترجَعة. يُنصح بالتحقق "
+                            "من المصادر."
+                        ),
+                    }, ensure_ascii=False) + "\n\n"
+
             yield "data: " + json.dumps({"type": "done"}) + "\n\n"
 
             stream_end = time.perf_counter()
@@ -586,6 +684,26 @@ async def send_message(
                 await save_conn.commit()
         except Exception as exc:
             logger.warning("chat[%s] save_assistant_msg failed: %s", sid_short, exc)
+
+        # ── Cache the answer (best-effort) ────────────────────────────────
+        # Runs after the user has already received the full streamed response,
+        # so a slow store call adds zero perceived latency. We pass
+        # question_embedding=None — see chat_cache.lookup above for the
+        # rationale on why Layer 2 is currently disabled.
+        if (report_id is not None
+                and full_answer
+                and settings.chat_cache_enabled):
+            try:
+                async with conn_ctx() as cache_conn:
+                    await chat_cache.store(
+                        cache_conn,
+                        report_id=report_id,
+                        question=body.message,
+                        answer=full_answer,
+                        source_pages=source_pages,
+                    )
+            except Exception as exc:
+                logger.warning("chat[%s] cache_store_failed: %s", sid_short, exc)
 
         # ── Flush Langfuse + enqueue eval ─────────────────────────────────
         try:

@@ -22,7 +22,7 @@ requests extractor="gemini-vision":
 import asyncio
 import json
 import logging
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import fitz  # PyMuPDF
 import httpx
@@ -33,7 +33,7 @@ from google.cloud import storage
 from core.chunking import chunk_text
 from core.config import settings
 from core.db import conn_ctx
-from services import doc_extractor, embed, observability as obs
+from services import doc_extractor, embed, hyqe, observability as obs
 
 logger = logging.getLogger(__name__)
 
@@ -189,22 +189,30 @@ async def _ingest_gemini_vision(
     with sentry_sdk.start_span(op="ingest.chunk_and_embed"), \
          obs.span(trace, name="chunk_and_embed",
                   input={"n_pages": len(page_results)}) as sp:
-        chunk_rows = await _chunk_and_embed(page_results)
-        sp.update(output={"n_chunks": len(chunk_rows)})
+        parent_rows, hyqe_rows = await _chunk_and_embed(page_results)
+        sp.update(output={
+            "n_parent_chunks": len(parent_rows),
+            "n_hyqe_chunks":   len(hyqe_rows),
+        })
 
     with sentry_sdk.start_span(op="ingest.persist"), \
-         obs.span(trace, name="persist", input={"n_rows": len(chunk_rows)}):
-        await _persist_chunks(report_id, chunk_rows)
+         obs.span(trace, name="persist",
+                  input={"n_parents": len(parent_rows),
+                         "n_hyqe":    len(hyqe_rows)}):
+        total_inserted = await _persist_chunks(report_id, parent_rows, hyqe_rows)
 
-    pages_with_chunks = len({row[0] for row in chunk_rows})
+    # parent_rows tuple: (id, page_num, chunk_idx, content, emb, metadata)
+    pages_with_chunks = len({row[1] for row in parent_rows})
     extractor_tag = _dominant_extractor(page_results)
     logger.info(
-        "ingest report=%s complete (gemini-vision): %d chunks / %d/%d pages",
-        report_id, len(chunk_rows), pages_with_chunks, pages_total,
+        "ingest report=%s complete (gemini-vision): %d parents + %d hyqe / %d/%d pages",
+        report_id, len(parent_rows), len(hyqe_rows), pages_with_chunks, pages_total,
     )
     return {
         "pages_processed": pages_with_chunks,
-        "chunks_inserted": len(chunk_rows),
+        "chunks_inserted": total_inserted,
+        "parent_chunks":   len(parent_rows),
+        "hyqe_chunks":     len(hyqe_rows),
         "pages_total":     pages_total,
         "extractor":       extractor_tag,
     }
@@ -266,19 +274,38 @@ async def _extract_per_page(
 
 # ── Chunking + embedding ────────────────────────────────────────────────────
 
+# ParentRow:    (id, page_num, chunk_index, content, embedding, metadata)
+# HyqeRow:      (parent_id, page_num, chunk_index, question_text, embedding, metadata)
+# Hypothetical chunk_index uses the offset namespace defined below so it
+# never collides with real chunk indices on the (ReportId, PageNumber,
+# ChunkIndex) unique index.
+_HYQE_CHUNK_INDEX_OFFSET = 100_000  # Way above any plausible real chunk count.
+
+
 async def _chunk_and_embed(
     page_results: list[dict],
-) -> list[tuple[int, int, str, np.ndarray, dict]]:
-    """Convert Gemini Vision per-page output into chunk rows (fallback path only).
+) -> tuple[list[tuple], list[tuple]]:
+    """Build (parent_rows, hyqe_rows) from per-page extractor output.
 
-    The GPU path never calls this — doc-processor chunks and embeds on the
-    GPU side. This is used only when extractor="gemini-vision" or doc-processor
-    is disabled. Gemini Vision returns plain text (no structured blocks), so
-    we always use the recursive char splitter here.
+    Used by the Gemini Vision fallback path only. doc-processor's GPU path
+    chunks + embeds on its own side and bypasses this module entirely.
 
-    Returns rows sorted by (page_number, chunk_index) for deterministic insert.
+    Pipeline:
+      1. Recursive-split each page's content into chunks (~500 tokens each).
+      2. Embed every chunk via the cached passage embedder.
+      3. If `settings.hyqe_enabled`, for each chunk generate up to N
+         hypothetical questions (one Flash call per chunk, bounded
+         concurrency) and embed those as additional rows linked to the
+         parent via `parent_id`. Hypothetical rows reuse the
+         (ReportId, PageNumber, ChunkIndex) unique constraint by offsetting
+         their ChunkIndex into _HYQE_CHUNK_INDEX_OFFSET space.
+
+    Returns:
+        parent_rows = [(id, page_num, chunk_index, content, emb, metadata), ...]
+        hyqe_rows   = [(parent_id, page_num, chunk_index, question, emb, metadata), ...]
     """
-    pending: list[tuple[int, int, str, dict]] = []
+    # ── Step 1: recursive split ──────────────────────────────────────────────
+    pending: list[tuple[int, int, str, dict]] = []  # (page_num, idx, text, metadata)
     for page in page_results:
         page_num = int(page.get("page_number") or 0) or None
         content: str = page.get("content") or ""
@@ -290,7 +317,7 @@ async def _chunk_and_embed(
                 pending.append((page_num, idx, ch, metadata))
 
     if not pending:
-        return []
+        return [], []
 
     texts = [p[2] for p in pending]
     logger.info(
@@ -298,37 +325,95 @@ async def _chunk_and_embed(
         len(texts),
     )
 
-    # Step 2 — embed all chunks via the managed embedding API. The genai
-    # SDK batches server-side; we send one HTTP call. _call_with_retry inside
-    # the wrapper handles SSL EOFs and connection resets the same way as
-    # every other Gemini call.
-    loop = asyncio.get_running_loop()
-    vectors = await loop.run_in_executor(
-        None, embed.embed_passages, texts,
-    )
-
+    # ── Step 2: embed parents (cache-aware) ──────────────────────────────────
+    vectors = await embed.embed_passages_async(texts)
     if len(vectors) != len(pending):
         raise RuntimeError(
             f"embed batch returned {len(vectors)} vectors for {len(pending)} chunks"
         )
 
-    # Step 3 — assemble final rows, already in chunk order.
-    rows: list[tuple[int, int, str, np.ndarray, dict]] = [
-        (page_num, idx, ch, np.array(vec, dtype=np.float32), metadata)
-        for (page_num, idx, ch, metadata), vec in zip(pending, vectors)
-    ]
-    rows.sort(key=lambda x: (x[0], x[1]))
-    return rows
+    parent_rows: list[tuple] = []
+    parent_ids: list[UUID] = []
+    for (page_num, idx, ch, metadata), vec in zip(pending, vectors):
+        pid = uuid4()
+        parent_ids.append(pid)
+        parent_rows.append((
+            pid, page_num, idx, ch,
+            np.array(vec, dtype=np.float32),
+            metadata,
+        ))
+    parent_rows.sort(key=lambda x: (x[1], x[2]))
+
+    # ── Step 3: HyQE — generate + embed hypothetical questions ───────────────
+    hyqe_rows: list[tuple] = []
+    if settings.hyqe_enabled:
+        try:
+            questions_per_parent = await hyqe.generate_for_chunks(texts)
+        except Exception as exc:
+            logger.warning("[ingest] hyqe batch failed: %s — skipping HyQE", exc)
+            questions_per_parent = [[] for _ in texts]
+
+        # Flatten into a single list aligned with parent indices for embedding.
+        flat_q: list[str] = []
+        flat_loc: list[tuple[int, int]] = []  # (parent_idx_in_pending, q_offset)
+        for parent_idx, qs in enumerate(questions_per_parent):
+            for q_off, q in enumerate(qs):
+                flat_q.append(q)
+                flat_loc.append((parent_idx, q_off))
+
+        if flat_q:
+            try:
+                q_vecs = await embed.embed_passages_async(flat_q)
+            except Exception as exc:
+                logger.warning("[ingest] hyqe embed batch failed: %s — skipping HyQE", exc)
+                q_vecs = []
+
+            if len(q_vecs) == len(flat_q):
+                # Map pending-index → parent_row tuple. parent_rows was sorted
+                # by (page, idx); pending was iteration order. Build a lookup.
+                parent_by_pending_idx: dict[int, tuple] = {}
+                for i, (page_num, idx, _ch, _metadata) in enumerate(pending):
+                    # Find the matching parent_row (same page/idx).
+                    for pr in parent_rows:
+                        if pr[1] == page_num and pr[2] == idx:
+                            parent_by_pending_idx[i] = pr
+                            break
+
+                for q, vec, (pending_idx, q_off) in zip(flat_q, q_vecs, flat_loc):
+                    parent = parent_by_pending_idx.get(pending_idx)
+                    if parent is None:
+                        continue
+                    parent_id, parent_page, parent_idx_real, _content, _emb, parent_meta = parent
+                    hyqe_chunk_index = (
+                        _HYQE_CHUNK_INDEX_OFFSET + parent_idx_real * 10 + q_off
+                    )
+                    hyqe_meta = dict(parent_meta or {})
+                    hyqe_meta["is_hypothetical"] = True
+                    hyqe_meta["parent_chunk_index"] = parent_idx_real
+                    hyqe_rows.append((
+                        parent_id, parent_page, hyqe_chunk_index, q,
+                        np.array(vec, dtype=np.float32),
+                        hyqe_meta,
+                    ))
+        logger.info(
+            "[ingest] hyqe: generated %d hypothetical question rows for %d parents",
+            len(hyqe_rows), len(parent_rows),
+        )
+
+    return parent_rows, hyqe_rows
 
 
 # ── Persistence ─────────────────────────────────────────────────────────────
 
 async def _persist_chunks(
     report_id: UUID,
-    rows: list[tuple[int, int, str, np.ndarray, dict]],
-) -> None:
-    """Replace this report's chunks in a single transaction. The DELETE
-    keeps re-ingest idempotent — safe to retry without producing duplicates.
+    parent_rows: list[tuple],
+    hyqe_rows: list[tuple],
+) -> int:
+    """Replace this report's chunks (and their hypothetical descendants) in a
+    single transaction. The DELETE keeps re-ingest idempotent — safe to retry
+    without producing duplicates. Returns the total number of rows inserted
+    (parents + hyqe).
     """
     async with conn_ctx() as conn:
         cur = await conn.execute(
@@ -336,28 +421,51 @@ async def _persist_chunks(
             [str(report_id)],
         )
         deleted = cur.rowcount or 0
-        for page_num, chunk_idx, content, embedding_vec, metadata in rows:
+
+        # Step 1 — insert parents with explicit Id so HyQE rows can reference
+        # them. ParentChunkId is NULL for parent rows.
+        for chunk_id, page_num, chunk_idx, content, emb, metadata in parent_rows:
+            await conn.execute(
+                """
+                INSERT INTO report_chunks
+                    ("Id", "ReportId", "PageNumber", "ChunkIndex", "Content",
+                     embedding, metadata, "CreatedAt", "ParentChunkId")
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, now(), NULL)
+                """,
+                [
+                    str(chunk_id), str(report_id),
+                    page_num, chunk_idx, content, emb,
+                    json.dumps(metadata),
+                ],
+            )
+
+        # Step 2 — insert HyQE rows with ParentChunkId pointing at the parent
+        # we just inserted. Cascade ON DELETE on the FK keeps the "DELETE then
+        # re-INSERT" pattern correct.
+        for parent_id, page_num, chunk_idx, question, emb, metadata in hyqe_rows:
             await conn.execute(
                 """
                 INSERT INTO report_chunks
                     ("ReportId", "PageNumber", "ChunkIndex", "Content",
-                     embedding, metadata, "CreatedAt")
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb, now())
+                     embedding, metadata, "CreatedAt", "ParentChunkId")
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, now(), %s)
                 """,
                 [
                     str(report_id),
-                    page_num,
-                    chunk_idx,
-                    content,
-                    embedding_vec,
+                    page_num, chunk_idx, question, emb,
                     json.dumps(metadata),
+                    str(parent_id),
                 ],
             )
+
         await conn.commit()
+
+    total_inserted = len(parent_rows) + len(hyqe_rows)
     logger.info(
-        "[ingest %s] persist done: deleted %d old, inserted %d new",
-        report_id, deleted, len(rows),
+        "[ingest %s] persist done: deleted %d old, inserted %d parents + %d hyqe",
+        report_id, deleted, len(parent_rows), len(hyqe_rows),
     )
+    return total_inserted
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

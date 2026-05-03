@@ -14,7 +14,14 @@ from __future__ import annotations
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 DEFAULT_CHUNK_CHARS = 2000   # ~500 tokens
-DEFAULT_OVERLAP_CHARS = 200  # ~50 tokens of context bleed
+DEFAULT_OVERLAP_CHARS = 800  # ~200 tokens of context bleed
+# Why 200 tokens (not 50): a sentence split across a chunk boundary is
+# invisible to a 50-token overlap — the next chunk starts halfway through
+# the next paragraph and BM25 / dense retrieval miss the half that lives
+# upstream. 200 tokens guarantees any sentence under ~150 tokens appears
+# fully in two adjacent chunks, so retrieval recovers either side. Storage
+# grows ~10% (each chunk shares 800/2000 chars with its neighbour).
+# Re-ingest required for chunks already in the DB to pick up the new size.
 
 # Block types that must never be split mid-content. Their `content` is
 # already chunk-friendly (GFM markdown for tables, "[Figure: caption]\n

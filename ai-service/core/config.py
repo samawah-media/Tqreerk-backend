@@ -93,6 +93,63 @@ class Settings(BaseSettings):
     reranker_candidate_pool: int = 20    # how many to fetch from hybrid before rerank
     reranker_top_k: int          = 5     # how many to keep after rerank
 
+    # ── Query rewriter (bilingual + decomposition) ───────────────────────────
+    # One Gemini Flash call before retrieval that produces up to N variants
+    # of the user's question — typically the cross-language counterpart
+    # (Arabic↔English) plus optional decomposition for multi-part questions.
+    # The original query is always kept; variants are added on top.
+    # Disable with query_rewriter_enabled=false to A/B compare retrieval
+    # quality without the extra API call.
+    query_rewriter_enabled: bool      = True
+    query_rewriter_model: str         = "gemini-2.5-flash"  # cheap + low-latency
+    query_rewriter_max_variants: int  = 2     # variants beyond the original
+    query_rewriter_timeout_seconds: float = 4.0  # hard cap so it never blocks chat for long
+
+    # ── Hybrid retrieval — BM25 vector floor ─────────────────────────────────
+    # BM25 alone happily promotes keyword-heavy noise (page numbers, footers,
+    # boilerplate) that has no semantic relevance. With this floor active, a
+    # BM25 candidate only contributes to RRF if its vector cosine similarity
+    # to the query is at least `hybrid_bm25_vector_floor`. Set 0.0 to disable
+    # the gate (revert to legacy behaviour). Cosine of 0.3 keeps real Arabic
+    # / English keyword hits while filtering pure-keyword junk.
+    hybrid_bm25_vector_floor: float = 0.3
+
+    # ── HyQE (Hypothetical-Question Embeddings, ingest-time) ─────────────────
+    # For each real chunk, ask a fast LLM for N questions the chunk answers,
+    # embed those questions, and persist them as additional rows linked to
+    # the parent chunk via ParentChunkId. At retrieval time the SQL swaps the
+    # parent's content in for any hypothetical hit, so the agent only sees
+    # real prose. Cost: 1 Flash call per chunk at ingest, plus extra
+    # embeddings + storage. Recall lift on Q-style queries: ~15-30% in
+    # practice. Disable with hyqe_enabled=false to revert to chunk-only embeds.
+    hyqe_enabled: bool                = True
+    hyqe_model: str                   = "gemini-2.5-flash-lite"  # cheap, fast
+    hyqe_questions_per_chunk: int     = 3
+    hyqe_max_concurrency: int         = 5     # parallel Flash calls during ingest
+    hyqe_timeout_seconds: float       = 10.0  # per-chunk hard cap
+
+    # ── Groundedness check (inline post-stream) ──────────────────────────────
+    # One Gemini Flash call after the answer streams: scores 0..1 whether the
+    # answer's factual claims appear in the retrieved chunks. If the score
+    # drops below `groundedness_warn_threshold`, the chat endpoint emits an
+    # extra SSE `warning` event AFTER `done` and logs to Sentry. Adds ~600ms
+    # AFTER the user already received the answer — never blocks first token.
+    groundedness_check_enabled: bool          = True
+    groundedness_check_model: str             = "gemini-2.5-flash"
+    groundedness_check_timeout_seconds: float = 5.0
+    groundedness_warn_threshold: float        = 0.7   # below → emit warning + Sentry
+
+    # ── Parent-section retrieval ─────────────────────────────────────────────
+    # When a chunk hits, also fetch every other chunk on the same page that
+    # shares its section_title and concatenate them as `section_content`.
+    # This gives the LLM the full section context (charts + their caption,
+    # bullet list + its intro, table + its surrounding paragraphs) without
+    # blowing up top_k. Capped at `parent_section_max_chars` so a giant
+    # section doesn't poison the context window.
+    parent_section_enabled: bool      = True
+    parent_section_max_chars: int     = 4000   # ~1000 tokens
+    parent_section_max_chunks: int    = 8      # absolute cap on chunks merged
+
     # ── Worker mode ──────────────────────────────────────────────────────────
     # "api"    → FastAPI server (the default Cloud Run service)
     # "worker" → background loop that polls ai_jobs and runs ingest/translate

@@ -226,6 +226,12 @@ Selection guidelines:
   • Prefer the structured shortcut tool when it works — it's faster and the answer is editorial-grade. But always be ready to fall back to `search_chunks`.
   • If the user mentions a report by name but you don't have its id, call `list_reports` first with a keyword filter to resolve the id before any per-report tool.
   • Cite the source(s) you used: report title and page numbers when the answer comes from `search_chunks` / `get_page`.
+  • INLINE CITATIONS (REQUIRED). Every factual claim must end with a `[p.X]` citation referencing the page from `search_chunks` / `get_page` results. Multi-page facts use `[p.X, p.Y]`. A sentence without a citation will be considered ungrounded and may be flagged. Examples:
+      ✓ "ارتفع الناتج المحلي 3.2% خلال 2024 [p.12]."
+      ✓ "Total revenue reached SAR 14B [p.7], up from SAR 12B the prior year [p.6]."
+      ✗ "ارتفع الناتج المحلي 3.2% خلال 2024."   ← missing [p.X]
+      ✗ "According to the report, revenue grew." ← vague + uncited
+    Editorial / opening sentences that are NOT factual claims (e.g. "Here is a summary of the key findings:") don't need citations. Everything that asserts a number, date, name, or fact does.
   • `find_similar_reports` returns `similarity` (embedding cosine), `shared_topics` (count), `shared_keywords` (count), and a combined `score`. When recommending similar reports, mention WHY they're related — e.g. "shares 3 topics with your report" — using the shared_* counts.
 
 Other rules:

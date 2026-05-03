@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
@@ -54,7 +55,7 @@ from pydantic import BaseModel, Field
 from core.chunking import DEFAULT_CHUNK_CHARS  # for size hints
 from core.config import settings
 from core.db import conn_ctx
-from services import embed, reranker
+from services import embed, query_rewriter, reranker
 from services.access import accessible_report_ids
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,226 @@ def _scope_clause_for_chunks(ctx: ToolContext, table_alias: str = "r") -> tuple[
     return f'AND {table_alias}."Id" = ANY(%s)', [ctx.accessible_ids]
 
 
+def _collect_section_keys(
+    candidates: list[dict[str, Any]],
+) -> list[tuple[str, int, str]]:
+    """Distinct (report_id, page_number, section_title) tuples for the
+    candidates that have a non-empty section_title. Hits with empty section
+    titles fall back to single-chunk content (the section fetch can't
+    sensibly group them)."""
+    seen: set[tuple[str, int, str]] = set()
+    keys: list[tuple[str, int, str]] = []
+    for c in candidates:
+        rid = c.get("report_id")
+        pg = c.get("page_number")
+        sec = (c.get("section_title") or "").strip()
+        if not rid or pg is None or not sec:
+            continue
+        key = (str(rid), int(pg), sec)
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys
+
+
+async def _fetch_section_chunks(
+    *,
+    section_keys: list[tuple[str, int, str]],
+    target_ids: list[str],
+    max_chars: int,
+    max_chunks: int,
+) -> dict[tuple[str, int, str], str]:
+    """For each (report, page, section) group, return chunks concatenated in
+    chunk_index order, capped at `max_chars` total and `max_chunks` chunks.
+
+    Uses one round-trip with a VALUES join. The LIMIT is applied per group
+    via ROW_NUMBER, so a single huge section can't blow the result set.
+    """
+    if not section_keys:
+        return {}
+
+    vals_sql = ", ".join("(%s::uuid, %s::int, %s)" for _ in section_keys)
+    vals_params: list[Any] = [x for t in section_keys for x in t]
+
+    async with conn_ctx() as conn:
+        cur = await conn.execute(
+            f"""
+            WITH want(rid, pg, sec) AS (VALUES {vals_sql}),
+            ranked AS (
+                SELECT rc."ReportId"::text AS rid,
+                       rc."PageNumber"     AS pg,
+                       w.sec               AS sec,
+                       rc."ChunkIndex"     AS ci,
+                       rc."Content"        AS content,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY rc."ReportId", rc."PageNumber", w.sec
+                           ORDER BY rc."ChunkIndex"
+                       ) AS rnk
+                FROM report_chunks rc
+                JOIN want w
+                  ON rc."ReportId"::text = w.rid
+                 AND rc."PageNumber"     = w.pg
+                 AND COALESCE(rc.metadata->>'section_title', '') = w.sec
+                WHERE rc."ReportId" = ANY(%s)
+                  AND rc."ParentChunkId" IS NULL
+            )
+            SELECT rid, pg, sec, ci, content
+              FROM ranked
+             WHERE rnk <= %s
+             ORDER BY rid, pg, sec, ci
+            """,
+            [*vals_params, target_ids, max_chunks],
+        )
+        rows = await cur.fetchall()
+
+    grouped: dict[tuple[str, int, str], list[str]] = {}
+    for r in rows:
+        key = (str(r[0]), int(r[1]), r[2])
+        grouped.setdefault(key, []).append(r[4] or "")
+
+    out: dict[tuple[str, int, str], str] = {}
+    for key, chunks in grouped.items():
+        joined = "\n\n".join(c for c in chunks if c.strip())
+        if len(joined) > max_chars:
+            joined = joined[:max_chars] + "\n…[section truncated]"
+        out[key] = joined
+    return out
+
+
+async def _hybrid_retrieve_one(
+    *,
+    target_ids: list[str],
+    query_text: str,
+    qvec: list[float],
+    pool: int,
+    bt_sql: str,
+    bt_params: list[Any],
+) -> list[dict[str, Any]]:
+    """Run dense + BM25 + RRF for one query variant.
+
+    The BM25 arm includes a vector-cosine floor: a sparse candidate only
+    contributes to RRF when its embedding is at least
+    `settings.hybrid_bm25_vector_floor` cosine-similar to `qvec`. This stops
+    keyword-heavy noise (page numbers, footers, repeated boilerplate) from
+    riding BM25 alone into the top-K. Setting the floor to 0.0 disables the
+    gate and reverts to legacy hybrid behaviour.
+    """
+    rrf_k = 60
+    fts_query = _normalize_query_for_fts(query_text)
+    bm25_floor = float(settings.hybrid_bm25_vector_floor)
+
+    async with conn_ctx() as conn:
+        cur = await conn.execute(
+            f"""
+            WITH dense AS (
+                SELECT rc."Id", rc."ReportId", rc."PageNumber", rc."ChunkIndex",
+                       rc."Content", rc."ParentChunkId",
+                       rc.metadata->>'section_title' AS section_title,
+                       ROW_NUMBER() OVER (ORDER BY rc.embedding <=> %s::vector) AS rnk
+                FROM report_chunks rc
+                WHERE rc."ReportId" = ANY(%s)
+                  AND rc.embedding IS NOT NULL
+                  {bt_sql}
+                ORDER BY rc.embedding <=> %s::vector
+                LIMIT %s
+            ),
+            sparse AS (
+                SELECT rc."Id", rc."ReportId", rc."PageNumber", rc."ChunkIndex",
+                       rc."Content", rc."ParentChunkId",
+                       rc.metadata->>'section_title' AS section_title,
+                       ROW_NUMBER() OVER (
+                           ORDER BY ts_rank(
+                               rc.search_vector,
+                               websearch_to_tsquery('arabic',  %s) ||
+                               websearch_to_tsquery('english', %s)
+                           ) DESC
+                       ) AS rnk
+                FROM report_chunks rc
+                WHERE rc."ReportId" = ANY(%s)
+                  AND rc.search_vector @@ (
+                      websearch_to_tsquery('arabic',  %s) ||
+                      websearch_to_tsquery('english', %s)
+                  )
+                  AND rc.embedding IS NOT NULL
+                  AND (1 - (rc.embedding <=> %s::vector)) >= %s
+                  {bt_sql}
+                LIMIT %s
+            ),
+            fused AS (
+                SELECT COALESCE(d."Id",            s."Id")            AS hit_id,
+                       COALESCE(d."ReportId",      s."ReportId")      AS report_id,
+                       COALESCE(d."PageNumber",    s."PageNumber")    AS page_number,
+                       COALESCE(d."ChunkIndex",    s."ChunkIndex")    AS chunk_index,
+                       COALESCE(d."Content",       s."Content")       AS content,
+                       COALESCE(d."ParentChunkId", s."ParentChunkId") AS parent_chunk_id,
+                       COALESCE(d.section_title,   s.section_title)   AS section_title,
+                       COALESCE(1.0 / (%s + d.rnk), 0)
+                     + COALESCE(1.0 / (%s + s.rnk), 0)               AS rrf_score
+                FROM dense d
+                FULL OUTER JOIN sparse s ON d."Id" = s."Id"
+            ),
+            -- HyQE substitution: when a hit row has ParentChunkId set (i.e.
+            -- a hypothetical question), swap in the parent chunk's identity
+            -- (ReportId, PageNumber, ChunkIndex, Content, section_title) so
+            -- the agent only ever sees real prose. Real-chunk hits pass
+            -- through unchanged.
+            resolved AS (
+                SELECT
+                    COALESCE(p."ReportId",   f.report_id)                   AS report_id,
+                    COALESCE(p."PageNumber", f.page_number)                 AS page_number,
+                    COALESCE(p."ChunkIndex", f.chunk_index)                 AS chunk_index,
+                    COALESCE(p."Content",    f.content)                     AS content,
+                    COALESCE(p.metadata->>'section_title', f.section_title) AS section_title,
+                    f.rrf_score
+                FROM fused f
+                LEFT JOIN report_chunks p ON p."Id" = f.parent_chunk_id
+            ),
+            -- After substitution, the same parent might be represented by
+            -- multiple hits (real chunk + its hypothetical questions). Keep
+            -- only the best score per (report, page, chunk).
+            deduped AS (
+                SELECT report_id, page_number, chunk_index,
+                       content, section_title,
+                       MAX(rrf_score) AS rrf_score
+                FROM resolved
+                GROUP BY report_id, page_number, chunk_index, content, section_title
+            )
+            SELECT d.report_id, d.page_number, d.chunk_index, d.content,
+                   r."Title" AS report_title, d.rrf_score, d.section_title
+            FROM deduped d
+            JOIN reports r ON r."Id" = d.report_id
+            ORDER BY d.rrf_score DESC
+            LIMIT %s
+            """,
+            [
+                # dense: vec, ids, [bt?], vec, pool
+                qvec, target_ids, *bt_params, qvec, pool,
+                # sparse: fts x2 (ts_rank), ids, fts x2 (@@), vec, floor, [bt?], pool
+                fts_query, fts_query, target_ids,
+                fts_query, fts_query, qvec, bm25_floor, *bt_params, pool,
+                # rrf k x2
+                rrf_k, rrf_k,
+                # final limit
+                pool,
+            ],
+        )
+        rows = await cur.fetchall()
+
+    return [
+        {
+            "report_id":     str(r[0]),
+            "page_number":   int(r[1]) if r[1] is not None else None,
+            "chunk_index":   int(r[2]) if r[2] is not None else None,
+            "content":       r[3],
+            "report_title":  r[4],
+            "rrf_score":     float(r[5]),
+            "section_title": r[6] or "",
+        }
+        for r in rows
+    ]
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 1. search_chunks
 # ────────────────────────────────────────────────────────────────────────────
@@ -155,21 +376,37 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
     """Hybrid retrieval over `report_chunks` (dense + sparse fused via RRF)
     optionally reranked by the Vertex AI Ranking API.
 
-    Pipeline:
-      1. Embed query (gemini-embedding-001, RETRIEVAL_QUERY, 768-d).
-      2. Hybrid retrieval:
-           • Dense ANN  — cosine over `embedding` (semantic match)
-           • BM25 sparse — websearch_to_tsquery on `search_vector` (exact-
-             keyword, phrase, Arabic + English). Query is NFKC-normalised and
-             diacritic-stripped to match how passages were indexed.
-      3. RRF fusion (k=60) — scale-invariant combination of both arms.
-      4. Optional block_types filter — restricts both arms to chunks whose
+    Latency-shaped pipeline (fan-out + merge):
+
+      Two pipelines run **in parallel via asyncio.gather** so the user-perceived
+      latency is max(orig, variants), not orig + variants.
+
+      • Original-query pipeline:
+          1. Embed the user's question (gemini-embedding-001 RETRIEVAL_QUERY).
+          2. Hybrid retrieval (dense ANN + BM25 sparse + RRF k=60). The BM25
+             arm is gated by `hybrid_bm25_vector_floor` so keyword-only noise
+             (page numbers, boilerplate) cannot enter the candidate pool.
+
+      • Variant pipeline:
+          1. `query_rewriter.rewrite_query` produces 0-N bilingual /
+             decomposed variants with its own internal timeout. Failure or
+             timeout collapses to "no extra retrievals."
+          2. Variants are de-duped against the original (case-insensitive),
+             embedded in one batched call, then each runs the same hybrid
+             retrieval in parallel.
+
+    Both pipelines write into a single merge step: keep the BEST RRF score per
+    (report, page, chunk_index). Then:
+
+      3. Optional block_types filter — restricts both arms to chunks whose
          metadata JSONB contains all requested types (e.g. ["table"]).
-      5. Cross-encoder rerank via Vertex AI Ranking API.
-      6. Neighbor context — for each top-k hit, the immediately preceding and
+      4. Cross-encoder rerank via Vertex AI Ranking API. We pass the
+         ORIGINAL query — the variants are a recall device, not a relevance
+         signal; the reranker is the truth-teller.
+      5. Neighbor context — for each top-k hit, the immediately preceding and
          following chunks on the same page are fetched and attached as
-         `prev_content` / `next_content`. This lets the LLM see complete
-         thoughts that straddle a chunk boundary without inflating top_k.
+         `prev_content` / `next_content` so the LLM sees complete thoughts
+         that straddle a chunk boundary.
     """
     if not ctx.accessible_ids:
         return _no_results("user has no accessible reports")
@@ -180,19 +417,10 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
             return _no_results("report_id is outside accessible scope")
         target_ids = [args.report_id]
 
-    qvec = await asyncio.to_thread(embed.embed_query, args.query)
-    if not qvec:
-        return _no_results("embedding failed")
-
     pool = (
         max(settings.reranker_candidate_pool, args.top_k)
         if settings.reranker_enabled else args.top_k
     )
-    rrf_k = 60
-
-    # Normalise query for BM25: collapse Arabic presentation forms and strip
-    # diacritics so the query token space matches the indexed passages.
-    fts_query = _normalize_query_for_fts(args.query)
 
     # Optional block_types filter — checks that the chunk's metadata JSONB
     # array contains every requested type. Uses GIN index on metadata.
@@ -202,88 +430,70 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
         bt_sql = "AND rc.metadata @> %s::jsonb"
         bt_params = [json.dumps({"block_types": args.block_types})]
 
-    async with conn_ctx() as conn:
-        cur = await conn.execute(
-            f"""
-            WITH dense AS (
-                SELECT rc."ReportId", rc."PageNumber", rc."ChunkIndex",
-                       rc."Content",
-                       rc.metadata->>'section_title' AS section_title,
-                       ROW_NUMBER() OVER (ORDER BY rc.embedding <=> %s::vector) AS rnk
-                FROM report_chunks rc
-                WHERE rc."ReportId" = ANY(%s)
-                  AND rc.embedding IS NOT NULL
-                  {bt_sql}
-                ORDER BY rc.embedding <=> %s::vector
-                LIMIT %s
-            ),
-            sparse AS (
-                SELECT rc."ReportId", rc."PageNumber", rc."ChunkIndex",
-                       rc."Content",
-                       rc.metadata->>'section_title' AS section_title,
-                       ROW_NUMBER() OVER (
-                           ORDER BY ts_rank(
-                               rc.search_vector,
-                               websearch_to_tsquery('arabic',  %s) ||
-                               websearch_to_tsquery('english', %s)
-                           ) DESC
-                       ) AS rnk
-                FROM report_chunks rc
-                WHERE rc."ReportId" = ANY(%s)
-                  AND rc.search_vector @@ (
-                      websearch_to_tsquery('arabic',  %s) ||
-                      websearch_to_tsquery('english', %s)
-                  )
-                  {bt_sql}
-                LIMIT %s
-            ),
-            fused AS (
-                SELECT COALESCE(d."ReportId",    s."ReportId")    AS report_id,
-                       COALESCE(d."PageNumber",  s."PageNumber")  AS page_number,
-                       COALESCE(d."ChunkIndex",  s."ChunkIndex")  AS chunk_index,
-                       COALESCE(d."Content",     s."Content")     AS content,
-                       COALESCE(d.section_title, s.section_title) AS section_title,
-                       COALESCE(1.0 / (%s + d.rnk), 0)
-                     + COALESCE(1.0 / (%s + s.rnk), 0)           AS rrf_score
-                FROM dense d
-                FULL OUTER JOIN sparse s
-                  ON  d."ReportId"   = s."ReportId"
-                  AND d."PageNumber" = s."PageNumber"
-                  AND d."ChunkIndex" = s."ChunkIndex"
-            )
-            SELECT f.report_id, f.page_number, f.chunk_index, f.content,
-                   r."Title" AS report_title, f.rrf_score, f.section_title
-            FROM fused f
-            JOIN reports r ON r."Id" = f.report_id
-            ORDER BY f.rrf_score DESC
-            LIMIT %s
-            """,
-            [
-                # dense: vec, ids, [bt?], vec, pool
-                qvec, target_ids, *bt_params, qvec, pool,
-                # sparse: fts x2 (ts_rank), ids, fts x2 (@@), [bt?], pool
-                fts_query, fts_query, target_ids,
-                fts_query, fts_query, *bt_params, pool,
-                # rrf k x2
-                rrf_k, rrf_k,
-                # final limit
-                pool,
-            ],
+    # Step 1 + 2 — fan out: original-query retrieval AND rewriter run in
+    # parallel. User-perceived latency is max(orig_pipeline, rewrite_pipeline)
+    # rather than orig + rewrite. The reranker downstream is the truth-teller,
+    # so handing it 30 candidates from two query branches instead of 20 from
+    # one is fine.
+    async def _orig_pipeline() -> list[dict[str, Any]]:
+        qvec = await asyncio.to_thread(embed.embed_query, args.query)
+        if not qvec:
+            return []
+        return await _hybrid_retrieve_one(
+            target_ids=target_ids,
+            query_text=args.query,
+            qvec=qvec,
+            pool=pool,
+            bt_sql=bt_sql,
+            bt_params=bt_params,
         )
-        rows = await cur.fetchall()
 
-    candidates = [
-        {
-            "report_id":     str(r[0]),
-            "page_number":   int(r[1]) if r[1] is not None else None,
-            "chunk_index":   int(r[2]) if r[2] is not None else None,
-            "content":       r[3],
-            "report_title":  r[4],
-            "rrf_score":     float(r[5]),
-            "section_title": r[6] or "",
-        }
-        for r in rows
-    ]
+    async def _variants_pipeline() -> list[list[dict[str, Any]]]:
+        # Rewriter has its own internal timeout; on failure it returns
+        # [original] which we then dedupe out below — net effect is no extra
+        # retrievals fired.
+        variants = await query_rewriter.rewrite_query(args.query)
+        # Drop the original (case-insensitive, whitespace-collapsed) — it's
+        # already covered by _orig_pipeline.
+        orig_norm = re.sub(r"\s+", " ", args.query.strip().lower())
+        extra = [
+            v for v in variants
+            if re.sub(r"\s+", " ", v.strip().lower()) != orig_norm
+        ]
+        if not extra:
+            return []
+        vecs = await asyncio.to_thread(embed.embed_queries, extra)
+        return list(await asyncio.gather(*[
+            _hybrid_retrieve_one(
+                target_ids=target_ids,
+                query_text=v_text,
+                qvec=v_vec,
+                pool=pool,
+                bt_sql=bt_sql,
+                bt_params=bt_params,
+            )
+            for v_text, v_vec in zip(extra, vecs)
+            if v_vec
+        ]))
+
+    orig_candidates, variant_batches = await asyncio.gather(
+        _orig_pipeline(),
+        _variants_pipeline(),
+    )
+
+    # Step 3 — merge: keep the BEST rrf_score per (report, page, chunk).
+    all_batches = [orig_candidates, *variant_batches]
+    merged: dict[tuple[str, int | None, int | None], dict[str, Any]] = {}
+    for batch in all_batches:
+        for c in batch:
+            key = (c["report_id"], c["page_number"], c["chunk_index"])
+            existing = merged.get(key)
+            if existing is None or c["rrf_score"] > existing["rrf_score"]:
+                merged[key] = c
+    candidates = sorted(
+        merged.values(), key=lambda c: c["rrf_score"], reverse=True,
+    )[:pool]
+
     if not candidates:
         return _no_results("no matching chunks")
 
@@ -294,12 +504,41 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
         )
     final = final[: args.top_k]
 
-    # ── Neighbor context fetch ────────────────────────────────────────────────
-    # For each hit, retrieve the chunk immediately before and after it on the
-    # same page (same ReportId + PageNumber, ChunkIndex ± 1). These are
-    # attached as prev_content / next_content so the LLM sees complete thoughts
-    # that straddle a chunk boundary. Truncated to 500 chars to stay within
-    # the per-tool output cap.
+    # ── Parent-section context fetch ──────────────────────────────────────────
+    # For each hit, retrieve every chunk on the same page that shares the hit's
+    # section_title and concatenate them in chunk_index order as
+    # `section_content`. The LLM gets the full section (charts + caption,
+    # bullet list + intro, table + surrounding paragraphs) instead of an
+    # arbitrary ±1 window. Capped at `parent_section_max_chars` /
+    # `parent_section_max_chunks` so a giant chapter can't poison the context
+    # window. Disabled → fall back to the original ±1 neighbour fetch.
+    if settings.parent_section_enabled:
+        section_keys = _collect_section_keys(final)
+        section_map = await _fetch_section_chunks(
+            section_keys=section_keys,
+            target_ids=target_ids,
+            max_chars=settings.parent_section_max_chars,
+            max_chunks=settings.parent_section_max_chunks,
+        )
+        results = []
+        for c in final:
+            rid = c["report_id"]
+            pg = c.get("page_number")
+            sec = (c.get("section_title") or "").strip()
+            entry: dict[str, Any] = {
+                "report_id":     rid,
+                "report_title":  c.get("report_title"),
+                "page":          pg,
+                "section_title": c.get("section_title") or None,
+                "content":       c.get("content"),
+            }
+            section_content = section_map.get((rid, pg, sec)) if pg is not None else None
+            if section_content and section_content != c.get("content"):
+                entry["section_content"] = section_content
+            results.append(entry)
+        return _serialize({"results": results})
+
+    # ── Legacy neighbour fetch (parent_section_enabled=false) ─────────────────
     returned_keys = {
         (c["report_id"], c.get("page_number"), c.get("chunk_index"))
         for c in final
@@ -384,6 +623,7 @@ async def _get_page_impl(ctx: ToolContext, args: GetPageArgs) -> str:
             FROM report_chunks
             WHERE "ReportId" = %s
               AND "PageNumber" = %s
+              AND "ParentChunkId" IS NULL
             """,
             [args.report_id, args.page_number],
         )
@@ -786,10 +1026,13 @@ async def _find_similar_reports_impl(ctx: ToolContext, args: FindSimilarReportsA
             """
             WITH src_v AS (
                 -- Embedding centroid over narrative chunks only.
+                -- ParentChunkId IS NULL excludes HyQE hypothetical rows so
+                -- the centroid stays in chunk-text space, not question-space.
                 SELECT AVG(embedding)::vector AS v
                 FROM report_chunks
                 WHERE "ReportId" = %s
                   AND embedding IS NOT NULL
+                  AND "ParentChunkId" IS NULL
                   AND NOT (metadata @> '{"block_types":["table"]}'::jsonb)
                   AND NOT (metadata @> '{"block_types":["figure"]}'::jsonb)
                   AND NOT (metadata @> '{"block_types":["formula"]}'::jsonb)
@@ -823,6 +1066,7 @@ async def _find_similar_reports_impl(ctx: ToolContext, args: FindSimilarReportsA
                 WHERE rc."ReportId" <> %s
                   AND rc."ReportId" = ANY(%s)
                   AND rc.embedding IS NOT NULL
+                  AND rc."ParentChunkId" IS NULL
                   AND NOT (rc.metadata @> '{"block_types":["table"]}'::jsonb)
                   AND NOT (rc.metadata @> '{"block_types":["figure"]}'::jsonb)
                   AND NOT (rc.metadata @> '{"block_types":["formula"]}'::jsonb)

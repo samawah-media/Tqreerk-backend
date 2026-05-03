@@ -24,12 +24,15 @@ are handled identically to chat / vision calls.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
 from google.genai import types
 
 from core.config import settings
+from core.db import conn_ctx
+from services import embedding_cache
 from services.gemini import _call_with_retry, _log_genai_usage
 
 logger = logging.getLogger(__name__)
@@ -91,8 +94,72 @@ def _embed(texts: list[str], task_type: str) -> list[list[float]]:
 
 
 def embed_passages(texts: list[str]) -> list[list[float]]:
-    """Embed chunk passages for ingest-time storage in report_chunks."""
+    """Embed chunk passages for ingest-time storage in report_chunks.
+
+    Synchronous variant — kept for callers that aren't on the event loop.
+    Prefer `embed_passages_async` from async ingest paths so the
+    chunk_embedding_cache short-circuits already-seen text.
+    """
     return _embed(texts, _TASK_TYPE["passage"])
+
+
+async def embed_passages_async(texts: list[str]) -> list[list[float]]:
+    """Async passage embedding with content-addressable caching.
+
+    Pipeline:
+      1. Hash each input text (NFKC + strip; spec = model|task|dim).
+      2. SELECT cached embeddings for known hashes (one round-trip).
+      3. For misses only, run the live Vertex API in a worker thread.
+      4. Write the new embeddings back to chunk_embedding_cache.
+      5. Reassemble vectors in the original input order.
+
+    The cache is best-effort: any DB error logs and falls through to a
+    full live embed so ingest never breaks because the cache is unhealthy.
+    """
+    if not texts:
+        return []
+
+    model = settings.gemini_embed_model
+    task = _TASK_TYPE["passage"]
+    dim = settings.gemini_embed_dim
+
+    cached: dict[int, list[float]] = {}
+    try:
+        async with conn_ctx() as conn:
+            cached = await embedding_cache.lookup_many(
+                conn, model=model, task_type=task, dim=dim, texts=texts,
+            )
+            await conn.commit()
+    except Exception as exc:
+        logger.warning("[embed] cache lookup failed, falling through: %s", exc)
+
+    miss_indices = [i for i in range(len(texts)) if i not in cached]
+    miss_texts = [texts[i] for i in miss_indices]
+
+    new_vectors: list[list[float]] = []
+    if miss_texts:
+        loop = asyncio.get_running_loop()
+        new_vectors = await loop.run_in_executor(
+            None, _embed, miss_texts, task,
+        )
+        if len(new_vectors) != len(miss_texts):
+            raise RuntimeError(
+                f"_embed returned {len(new_vectors)} vectors for "
+                f"{len(miss_texts)} miss inputs"
+            )
+        try:
+            async with conn_ctx() as conn:
+                await embedding_cache.insert_many(
+                    conn,
+                    model=model, task_type=task, dim=dim,
+                    items=list(zip(miss_texts, new_vectors)),
+                )
+                await conn.commit()
+        except Exception as exc:
+            logger.warning("[embed] cache write failed: %s", exc)
+
+    miss_map = dict(zip(miss_indices, new_vectors))
+    return [cached[i] if i in cached else miss_map[i] for i in range(len(texts))]
 
 
 def embed_query(text: str) -> list[float]:
