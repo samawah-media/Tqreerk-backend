@@ -51,8 +51,6 @@ from pipeline.ingest import (
     claim_job,
     mark_job_completed,
     mark_job_failed,
-    reset_job_for_embed_retry,
-    _load_chunk_checkpoint,
     run_ingest,
 )
 from pipeline.orchestrator import process_document, process_page
@@ -490,19 +488,29 @@ async def ingest_job(
 
 
 async def _run_ingest_job_background(body: IngestJobRequest) -> None:
-    """Background task: claim → run pipeline → mark terminal state."""
+    """Background task: claim → run pipeline → mark terminal state.
+
+    Any failure in any stage (claim, download, extract, chunk, embed,
+    persist) marks the job Failed immediately — no retries.
+    """
     loop = asyncio.get_running_loop()
 
     try:
         claimed = await loop.run_in_executor(None, claim_job, body.job_id)
     except Exception as exc:
-        # DB connection failure (wrong DATABASE_URL, Cloud SQL socket issue, etc.)
-        # Log at ERROR so it's visible in Cloud Run structured logs — without this
-        # the exception escapes into uvicorn's handler and is invisible.
         logger.error(
-            "[ingest_job] job=%s claim_job raised %s: %s — job stays Pending",
+            "[ingest_job] job=%s claim_job raised %s: %s — marking Failed",
             body.job_id, type(exc).__name__, exc,
         )
+        try:
+            await loop.run_in_executor(
+                None, mark_job_failed, body.job_id, f"claim failed: {exc}",
+            )
+        except Exception as mark_exc:
+            logger.error(
+                "[ingest_job] job=%s also failed to mark Failed: %s",
+                body.job_id, mark_exc,
+            )
         return
 
     if not claimed:
@@ -527,23 +535,13 @@ async def _run_ingest_job_background(body: IngestJobRequest) -> None:
         )
     except Exception as exc:
         logger.exception("[ingest_job] job=%s pipeline failed: %s", body.job_id, exc)
-        # If a chunk checkpoint was saved (embedding failed after extract/chunk
-        # completed), reset to Pending so the watcher re-triggers embedding
-        # without repeating the expensive download→extract→chunk stages.
-        checkpoint = await loop.run_in_executor(
-            None, _load_chunk_checkpoint, body.job_id,
-        )
-        if checkpoint:
-            logger.info(
-                "[ingest_job] job=%s has chunk checkpoint — resetting to Pending "
-                "for embed retry (watcher will re-trigger in ≤2 min)",
-                body.job_id,
-            )
-            await loop.run_in_executor(
-                None, reset_job_for_embed_retry, body.job_id, str(exc),
-            )
-        else:
+        try:
             await loop.run_in_executor(None, mark_job_failed, body.job_id, str(exc))
+        except Exception as mark_exc:
+            logger.error(
+                "[ingest_job] job=%s also failed to mark Failed: %s",
+                body.job_id, mark_exc,
+            )
 
 
 def _check_token(provided: str | None) -> None:

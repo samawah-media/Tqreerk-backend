@@ -394,7 +394,10 @@ async def trigger_ingest(job_id: str, report_id: str, file_url: str) -> None:
         )
 
 
-# ── Full GPU ingest (sync, used by worker for ingest+summarize) ──────────────
+# ── Full GPU ingest (sync, currently unused; kept as a fallback path) ───────
+# All Ingestion jobs now go through trigger_ingest -> /v1/ingest_job (async,
+# GPU writes ai_jobs directly). The sync ingest_via_gpu helper below remains
+# in case we ever need a synchronous-response ingest path again.
 
 def ingest_via_gpu(report_id: str, file_url: str) -> dict:
     """POST to doc-processor /v1/ingest.

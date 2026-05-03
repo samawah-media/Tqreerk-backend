@@ -35,11 +35,33 @@ class SummarizeRequest(BaseModel):
     report_id: UUID
 
 
+class IndicatorItem(BaseModel):
+    name: str
+    value: str
+    unit: str | None = None
+    time_period: str | None = None
+    context: str | None = None
+
+
+class TrendItem(BaseModel):
+    topic: str
+    direction: str
+    time_span: str | None = None
+    magnitude: str | None = None
+    explanation: str | None = None
+
+
 class SummarizeResponse(BaseModel):
+    """Combined summary + insights output. One Gemini call now produces all
+    five fields (summary, key_findings, topics, indicators, trends), and they
+    all get returned to the caller so the .NET finalizer (or any direct
+    consumer) can persist them in one round-trip."""
     report_id: UUID
     summary: str
     key_findings: list[str]
     topics: list[str]
+    indicators: list[IndicatorItem] = []
+    trends: list[TrendItem] = []
 
 
 class TranslateRequest(BaseModel):
@@ -70,6 +92,17 @@ class BulkIngestItem(BaseModel):
 
 class BulkIngestRequest(BaseModel):
     items: list[BulkIngestItem]
+
+
+class BulkSummarizeItem(BaseModel):
+    """Summarize-only items don't need file_url — the chunks are already
+    in report_chunks. Just the report_id is enough for the worker to
+    fetch text and run the combined summary+insights call."""
+    report_id: UUID
+
+
+class BulkSummarizeRequest(BaseModel):
+    items: list[BulkSummarizeItem]
 
 
 class BulkTranslateItem(BaseModel):

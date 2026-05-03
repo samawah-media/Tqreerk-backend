@@ -63,12 +63,23 @@ def chat_user_message(system_prompt: str, user_question: str) -> str:
 # ── Summarization ────────────────────────────────────────────────────────────
 
 def summarize_prompt(combined_text: str) -> str:
+    """Combined summary + insights prompt — one Gemini call returns all 5 fields:
+    summary, key_findings, topics, indicators, trends. Replaces the previous
+    two-call design (summarize + extract_insights) so a single ingest job
+    populates every report_ai_contents column."""
     return (
-        "You are analyzing a research report. Based on the full text below, produce:\n"
+        "You are analyzing a research report. Based on the full text below, produce a JSON object with these fields:\n"
+        "\n"
         "- summary: a concise executive summary (3-5 paragraphs).\n"
-        "- key_findings: 5-10 most important findings as a list.\n"
-        "- topics: main topics/sectors covered as a list.\n"
-        "Respond in the same language as the report text.\n\n"
+        "- key_findings: 5-10 most important findings as a list of strings.\n"
+        "- topics: main topics/sectors covered as a list of strings.\n"
+        "- indicators: concrete quantitative figures present in the report. Each item must include: "
+        "name, value, unit (if any), time_period (if any), context (country/sector/scope if any).\n"
+        "- trends: qualitative directional patterns over time. Each item must include: "
+        "topic, direction (one of: increasing/decreasing/stable/volatile/mixed), time_span, "
+        "magnitude (e.g. 'from 5% to 2%'), and a 1-2 sentence explanation.\n"
+        "\n"
+        "Respond in the same language as the report text. Output JSON only — no commentary.\n\n"
         f"REPORT TEXT:\n{combined_text}"
     )
 
@@ -76,11 +87,39 @@ def summarize_prompt(combined_text: str) -> str:
 REPORT_SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string"},
+        "summary":      {"type": "string"},
         "key_findings": {"type": "array", "items": {"type": "string"}},
-        "topics": {"type": "array", "items": {"type": "string"}},
+        "topics":       {"type": "array", "items": {"type": "string"}},
+        "indicators": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name":        {"type": "string"},
+                    "value":       {"type": "string"},
+                    "unit":        {"type": "string"},
+                    "time_period": {"type": "string"},
+                    "context":     {"type": "string"},
+                },
+                "required": ["name", "value"],
+            },
+        },
+        "trends": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "topic":       {"type": "string"},
+                    "direction":   {"type": "string"},
+                    "time_span":   {"type": "string"},
+                    "magnitude":   {"type": "string"},
+                    "explanation": {"type": "string"},
+                },
+                "required": ["topic", "direction"],
+            },
+        },
     },
-    "required": ["summary", "key_findings", "topics"],
+    "required": ["summary", "key_findings", "topics", "indicators", "trends"],
 }
 
 

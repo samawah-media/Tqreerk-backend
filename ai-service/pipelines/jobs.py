@@ -23,6 +23,7 @@ that both the API endpoints and the worker loop share.
 import asyncio
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -31,11 +32,29 @@ from psycopg import AsyncConnection
 
 from core.config import settings
 from core.db import conn_ctx
-from pipelines.ingest import ingest_report
 from services.gemini import summarize_report
 from services.translate import detect_source_language, translate_pdf
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_nan(obj):
+    """Recursively replace float NaN / Inf with None before JSON serialization.
+
+    Python's json.dumps emits the literal token `NaN` for float('nan') which
+    is not valid JSON and causes PostgreSQL to reject the value with:
+        "invalid input syntax for type json: Token 'NaN' is invalid."
+
+    This is most visible when Ragas cannot compute a metric (e.g. because the
+    judge LLM timed out) and returns float('nan') as the score.
+    """
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_nan(v) for v in obj]
+    return obj
 
 
 # ── ai_jobs table primitives ─────────────────────────────────────────────────
@@ -165,7 +184,7 @@ async def mark_completed(job_id: UUID, output: dict) -> None:
             SET "Status"='Completed', "OutputData"=%s, "CompletedAt"=now()
             WHERE "Id"=%s
             """,
-            [json.dumps(output), str(job_id)],
+            [json.dumps(_clean_nan(output)), str(job_id)],
         )
         await conn.commit()
 
@@ -189,87 +208,60 @@ async def mark_failed(job_id: UUID, error: str) -> None:
 # in-process task — i.e. they always mark Processing → Completed/Failed and
 # never raise back to the caller.
 
-async def run_ingest_only_job(
-    job_id: UUID, report_id: UUID, file_url: str,
-    extractor: str = "auto",
-) -> None:
-    logger.info(
-        "[job %s] ingest start report=%s file=%s extractor=%s",
-        job_id, report_id, file_url, extractor,
-    )
-    with sentry_sdk.start_transaction(op="ingest", name="ingest_report", sampled=True) as txn:
-        txn.set_tag("report_id", str(report_id))
-        txn.set_tag("job_id", str(job_id))
-        txn.set_tag("extractor", extractor)
-        txn.set_data("file_url", file_url)
-        await mark_processing(job_id)
-        try:
-            result = await ingest_report(report_id, file_url, extractor=extractor)
-            logger.info("[job %s] ingest done %s", job_id, result)
-            txn.set_data("result", result)
-            txn.set_tag("extractor_used", result.get("extractor", "unknown"))
-            await mark_completed(job_id, result)
-        except Exception as exc:
-            sentry_sdk.capture_exception(exc)
-            logger.exception("[job %s] ingest FAILED: %s", job_id, exc)
-            await mark_failed(job_id, str(exc))
+async def run_summarize_job(job_id: UUID, report_id: UUID) -> None:
+    """Generate the combined summary + insights for an already-ingested report.
 
+    Runs in the worker, mirrors `run_translate_job`'s shape: claim, do work,
+    write all 5 output fields (summary, key_findings, topics, indicators,
+    trends) into ai_jobs.OutputData. The C# finalizer
+    (CopySummaryToContentAsync) then copies them across to
+    report_ai_contents.
 
-async def run_ingest_summarize_job(
-    job_id: UUID, report_id: UUID, file_url: str,
-    extractor: str = "auto",
-) -> None:
-    logger.info(
-        "[job %s] ingest+summarize start report=%s file=%s extractor=%s",
-        job_id, report_id, file_url, extractor,
-    )
-    with sentry_sdk.start_transaction(op="ingest", name="ingest_summarize_report", sampled=True) as txn:
-        txn.set_tag("report_id", str(report_id))
-        txn.set_tag("job_id", str(job_id))
-        txn.set_tag("extractor", extractor)
-        txn.set_data("file_url", file_url)
-        await mark_processing(job_id)
-        try:
-            ingest_result = await ingest_report(report_id, file_url, extractor=extractor)
-            logger.info("[job %s] ingest phase done: %s", job_id, ingest_result)
-            txn.set_tag("extractor_used", ingest_result.get("extractor", "unknown"))
-
-            with sentry_sdk.start_span(op="ingest.summarize", description="summarize_report"):
-                async with conn_ctx() as conn:
-                    cur = await conn.execute(
-                        """
-                        SELECT "PageNumber",
-                               string_agg("Content", E'\n\n' ORDER BY "ChunkIndex") AS content
-                        FROM report_chunks
-                        WHERE "ReportId" = %s
-                        GROUP BY "PageNumber"
-                        ORDER BY "PageNumber"
-                        """,
-                        [str(report_id)],
-                    )
-                    page_rows = await cur.fetchall()
-
-                if not page_rows:
-                    raise RuntimeError("Ingest produced no pages")
-
-                summary = summarize_report([content for _, content in page_rows])
-
-            logger.info(
-                "[job %s] summarize done: %d findings, %d topics",
-                job_id, len(summary.key_findings), len(summary.topics),
+    Pre-condition: the report's chunks must already exist in report_chunks
+    (i.e. ingest has completed). If chunks are missing the job fails fast so
+    the operator can re-run after the ingest finishes — we don't want to
+    silently retry-loop while ingest catches up.
+    """
+    logger.info("[job %s] summarize start report=%s", job_id, report_id)
+    await mark_processing(job_id)
+    try:
+        async with conn_ctx() as conn:
+            cur = await conn.execute(
+                """
+                SELECT "PageNumber",
+                       string_agg("Content", E'\n\n' ORDER BY "ChunkIndex") AS content
+                FROM report_chunks
+                WHERE "ReportId" = %s
+                GROUP BY "PageNumber"
+                ORDER BY "PageNumber"
+                """,
+                [str(report_id)],
             )
-            result = {
-                **ingest_result,
-                "summary": summary.summary,
-                "key_findings": summary.key_findings,
-                "topics": summary.topics,
-            }
-            txn.set_data("result", {k: v for k, v in result.items() if k != "summary"})
-            await mark_completed(job_id, result)
-        except Exception as exc:
-            sentry_sdk.capture_exception(exc)
-            logger.exception("[job %s] ingest+summarize FAILED: %s", job_id, exc)
-            await mark_failed(job_id, str(exc))
+            page_rows = await cur.fetchall()
+
+        if not page_rows:
+            raise RuntimeError(
+                "Report has no chunks — ingest must run before summarize"
+            )
+
+        summary = summarize_report([content for _, content in page_rows])
+
+        logger.info(
+            "[job %s] summarize done: %d findings, %d topics, %d indicators, %d trends",
+            job_id, len(summary.key_findings), len(summary.topics),
+            len(summary.indicators), len(summary.trends),
+        )
+
+        await mark_completed(job_id, {
+            "summary":      summary.summary,
+            "key_findings": summary.key_findings,
+            "topics":       summary.topics,
+            "indicators":   [i.model_dump(mode="json") for i in summary.indicators],
+            "trends":       [t.model_dump(mode="json") for t in summary.trends],
+        })
+    except Exception as exc:
+        logger.exception("[job %s] summarize FAILED: %s", job_id, exc)
+        await mark_failed(job_id, str(exc))
 
 
 async def run_translate_job(
@@ -414,14 +406,20 @@ async def dispatch(job: dict) -> None:
     extractor = (raw_input.get("extractor") or "auto").lower()
 
     if job_type == "Ingestion":
-        if not file_url:
-            await mark_failed(job_id, "Ingestion job missing file_url in input_data")
-            return
-        if step == "ingest":
-            await run_ingest_only_job(job_id, report_id, file_url, extractor=extractor)
-        else:
-            
-            await run_ingest_summarize_job(job_id, report_id, file_url, extractor=extractor)
+        # All ingest jobs run on the GPU service (doc-processor) directly —
+        # the API fires `trigger_ingest` at enqueue time. The worker should
+        # never see an Ingestion row pass its claim filter, but we keep the
+        # branch so a malformed row fails loudly instead of silently looping.
+        await mark_failed(
+            job_id,
+            "Ingestion jobs are GPU-owned; the worker should not dispatch them. "
+            "If you see this error, check that /reports/ingest is firing "
+            "doc_extractor.trigger_ingest at enqueue time.",
+        )
+        return
+
+    if job_type == "Summarization":
+        await run_summarize_job(job_id, report_id)
         return
 
     if job_type == "Translation":
@@ -464,15 +462,15 @@ async def claim_one_job(conn: AsyncConnection) -> dict | None:
             WHERE "Status" = 'Pending'
               AND "InputData" IS NOT NULL
               AND "InputData" != 'null'::jsonb
+              -- file_url is required for Translation; Evaluation has its own
+              -- input shape (trace_id + chat); Summarization works off the
+              -- already-ingested report_chunks rows so no file_url is needed.
               AND ("InputData"->>'file_url' IS NOT NULL
-                   OR "JobType" = 'Evaluation')
-              -- step=ingest jobs are handled directly by the GPU service
-              -- (doc-processor /v1/ingest_job). Exclude them so the worker
-              -- never races with the GPU for the same row.
-              AND NOT (
-                    "JobType" = 'Ingestion'
-                    AND "InputData"->>'step' = 'ingest'
-              )
+                   OR "JobType" IN ('Evaluation', 'Summarization'))
+              -- All Ingestion jobs run on the GPU service (doc-processor)
+              -- directly via /v1/ingest_job. The worker never claims them so
+              -- it can never race with the GPU for the same row.
+              AND "JobType" <> 'Ingestion'
             ORDER BY "CreatedAt"
             FOR UPDATE SKIP LOCKED
             LIMIT 1

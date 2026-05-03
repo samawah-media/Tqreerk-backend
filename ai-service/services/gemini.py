@@ -38,7 +38,8 @@ def _build_client() -> genai.Client:
     # of hanging indefinitely. _call_with_retry then replaces the client and
     # retries. Without this, embed_content / generate_content can block a
     # thread pool worker forever on TCP half-open connections.
-    http_opts = {"timeout": 120}
+    # NOTE: google-genai http_options timeout is in MILLISECONDS.
+    http_opts = {"timeout": 120_000}
     if settings.gemini_api_key:
         _mode = "api_key"
         logger.info(
@@ -145,10 +146,31 @@ def _call_with_retry(operation: str, fn):
     raise last_exc
 
 
+class IndicatorItem(BaseModel):
+    name: str
+    value: str
+    unit: str | None = None
+    time_period: str | None = None
+    context: str | None = None
+
+
+class TrendItem(BaseModel):
+    topic: str
+    direction: str
+    time_span: str | None = None
+    magnitude: str | None = None
+    explanation: str | None = None
+
+
 class ReportSummary(BaseModel):
+    """Combined summarization + insights output. One Gemini call populates
+    every report_ai_contents column (summary, key_findings, topics,
+    indicators, trends) so the C# finalizer can copy them all in one pass."""
     summary: str
     key_findings: list[str]
     topics: list[str]
+    indicators: list[IndicatorItem] = []
+    trends: list[TrendItem] = []
 
 
 # ── Plain text completion (used by Ragas judge) ─────────────────────────────

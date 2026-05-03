@@ -430,8 +430,13 @@ public class ReportAiService : IReportAiService
                 ? sEl.GetString() : null;
             if (string.IsNullOrWhiteSpace(summary)) return; // ingest-only job, nothing to copy
 
-            var keyFindings = ExtractStringArray(doc.RootElement, "key_findings");
-            var topics = ExtractStringArray(doc.RootElement, "topics");
+            // Combined summarize+insights output (one Gemini call, 5 fields).
+            // Indicators / trends arrive as arrays of objects, so we copy the
+            // raw JSON sub-tree rather than re-serialising into strings.
+            var keyFindings   = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "key_findings"));
+            var topics        = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "topics"));
+            var indicatorsRaw = ExtractJsonArrayRaw(doc.RootElement, "indicators");
+            var trendsRaw     = ExtractJsonArrayRaw(doc.RootElement, "trends");
 
             var lang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
             var existing = await _db.ReportAiContents
@@ -441,22 +446,26 @@ public class ReportAiService : IReportAiService
             {
                 _db.ReportAiContents.Add(new ReportAiContent
                 {
-                    ReportId = report.Id,
-                    Language = lang,
-                    AiJobId = jobId,
-                    Summary = summary,
-                    KeyFindings = JsonSerializer.Serialize(keyFindings),
-                    Indicators = JsonSerializer.Serialize(topics),
+                    ReportId    = report.Id,
+                    Language    = lang,
+                    AiJobId     = jobId,
+                    Summary     = summary,
+                    KeyFindings = keyFindings,
+                    Topics      = topics,
+                    Indicators  = indicatorsRaw,
+                    Trends      = trendsRaw,
                     GeneratedAt = DateTime.UtcNow,
                 });
             }
             else
             {
-                existing.Summary = summary;
-                existing.KeyFindings = JsonSerializer.Serialize(keyFindings);
-                existing.Indicators = JsonSerializer.Serialize(topics);
+                existing.Summary     = summary;
+                existing.KeyFindings = keyFindings;
+                existing.Topics      = topics;
+                existing.Indicators  = indicatorsRaw;
+                existing.Trends      = trendsRaw;
                 existing.GeneratedAt = DateTime.UtcNow;
-                existing.AiJobId = jobId;
+                existing.AiJobId     = jobId;
             }
         }
     }
@@ -474,6 +483,19 @@ public class ReportAiService : IReportAiService
             }
         }
         return list;
+    }
+
+    /// <summary>
+    /// Returns the raw JSON text of an array property — preserves nested objects
+    /// so jsonb columns receive the structure as Gemini emitted it. Returns
+    /// "[]" when the property is missing or not an array, so jsonb stays
+    /// queryable and never NULL.
+    /// </summary>
+    private static string ExtractJsonArrayRaw(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var el) || el.ValueKind != JsonValueKind.Array)
+            return "[]";
+        return el.GetRawText();
     }
 
     private static int? TryReadIntFromJson(string? raw, string key)

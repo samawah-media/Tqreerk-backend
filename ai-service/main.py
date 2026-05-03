@@ -59,12 +59,12 @@ async def _pending_job_watcher() -> None:
 
     Two recovery paths, checked every 60 s:
 
-    1. step=ingest jobs (GPU-owned):
+    1. Ingestion jobs (GPU-owned, every Ingestion row):
        Re-fires trigger_ingest() for each stuck job so the GPU can claim and
        process it. Handles the case where the initial trigger (fired at job
        creation) failed because the GPU was cold/unavailable.
 
-    2. Other Pending jobs (worker-owned: translate, ingest+summarize, etc.):
+    2. Other Pending jobs (worker-owned: Summarization, Translation, Evaluation):
        Wakes the worker service via a health ping so it polls and claims them.
     """
     from core.db import conn_ctx

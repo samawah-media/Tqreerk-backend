@@ -29,6 +29,7 @@ get_report_indicators    — extracted KPIs / numbers
 get_report_trends        — extracted trends
 get_report_recommendations — extracted recommendations
 get_report_keywords      — keywords + language
+get_report_topics        — high-level topics / sectors covered (per-language)
 get_translation          — translated TITLE / DESCRIPTION / SUMMARY (text only,
                             never a download URL — locked-in policy)
 list_saved_reports       — current user's bookmarks
@@ -41,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -79,6 +81,23 @@ class ToolContext:
 # Hard cap on what any single tool returns to the agent, in characters.
 # Prevents one bad list_reports from flooding the context window.
 _MAX_TOOL_OUTPUT_CHARS = 8000
+
+
+def _normalize_query_for_fts(text: str) -> str:
+    """Prepare a user query string for PostgreSQL full-text search.
+
+    Two passes:
+      1. NFKC — collapses Arabic presentation forms (U+FB50–FEFF) to standard
+         codepoints, matching how passages were normalised at index time.
+      2. Strip Arabic diacritics (harakat, U+064B–U+065F) — users often omit
+         them; indexed text may or may not include them, so stripping both sides
+         aligns the token spaces.
+
+    We do NOT reverse RTL order: user keyboard input is already in logical
+    Unicode order (unlike PDF glyph extraction, which arrives in visual order).
+    """
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if not (0x064B <= ord(ch) <= 0x065F))
 
 
 def _truncate(s: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> str:
@@ -123,33 +142,34 @@ class SearchChunksArgs(BaseModel):
         None, description="Optional report to search within. Omit to search across all reports the user can access.",
     )
     top_k: int = Field(5, ge=1, le=20, description="How many chunks to return.")
+    block_types: list[str] | None = Field(
+        None,
+        description=(
+            "Optional content-type filter. Pass ['table'] for KPI/number questions, "
+            "['figure'] for chart questions. Omit to search all content types."
+        ),
+    )
 
 
 async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
     """Hybrid retrieval over `report_chunks` (dense + sparse fused via RRF)
     optionally reranked by the Vertex AI Ranking API.
 
-    This is the agent's **only** retrieval tool, so it must reproduce the
-    full quality of the legacy single-shot pipeline:
-
-      1. Embed the query into the same vector space as the stored chunks
-         (`gemini-embedding-001`, `task=RETRIEVAL_QUERY`, 768-d).
-      2. Fetch top-N candidates by both:
-           • dense cosine over `embedding`           (semantic match)
-           • BM25 over `search_vector`               (Arabic + English
-                                                       ts_rank, exact-keyword)
-      3. Fuse via Reciprocal Rank Fusion (k=60). Scale-invariant — won't
-         be dominated by whichever scoring scale has more dynamic range,
-         which is what kills naive weighted-sum hybrids.
-      4. If `reranker_enabled`, hand the candidate pool to the Vertex
-         Ranking cross-encoder for the final top-K. Falls back to RRF
-         order if Vertex returns an error (handled inside the wrapper).
-
-    Why all three layers: dense alone misses exact-string queries (Arabic
-    proper nouns, KPI names); BM25 alone misses paraphrases; cross-encoder
-    rerank fixes the fact that ANN retrieval is "approximately right" —
-    the right chunk is usually in the top-20 but rarely the literal top-1.
-    Dropping any of these layers measurably hurts answer quality.
+    Pipeline:
+      1. Embed query (gemini-embedding-001, RETRIEVAL_QUERY, 768-d).
+      2. Hybrid retrieval:
+           • Dense ANN  — cosine over `embedding` (semantic match)
+           • BM25 sparse — websearch_to_tsquery on `search_vector` (exact-
+             keyword, phrase, Arabic + English). Query is NFKC-normalised and
+             diacritic-stripped to match how passages were indexed.
+      3. RRF fusion (k=60) — scale-invariant combination of both arms.
+      4. Optional block_types filter — restricts both arms to chunks whose
+         metadata JSONB contains all requested types (e.g. ["table"]).
+      5. Cross-encoder rerank via Vertex AI Ranking API.
+      6. Neighbor context — for each top-k hit, the immediately preceding and
+         following chunks on the same page are fetched and attached as
+         `prev_content` / `next_content`. This lets the LLM see complete
+         thoughts that straddle a chunk boundary without inflating top_k.
     """
     if not ctx.accessible_ids:
         return _no_results("user has no accessible reports")
@@ -160,60 +180,71 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
             return _no_results("report_id is outside accessible scope")
         target_ids = [args.report_id]
 
-    # Embed the query. `embed.embed_query` is a sync Vertex call (~150 ms
-    # warm); offload to a thread so we don't stall the event loop while
-    # the RPC is in flight.
     qvec = await asyncio.to_thread(embed.embed_query, args.query)
     if not qvec:
         return _no_results("embedding failed")
 
-    # Pull a wider candidate pool when reranking is on, so the cross-
-    # encoder has room to shuffle. When rerank is off, the pool == top_k
-    # and we trust RRF directly.
     pool = (
         max(settings.reranker_candidate_pool, args.top_k)
         if settings.reranker_enabled else args.top_k
     )
-    rrf_k = 60  # canonical RRF constant — see legacy api/chat.py for rationale
+    rrf_k = 60
+
+    # Normalise query for BM25: collapse Arabic presentation forms and strip
+    # diacritics so the query token space matches the indexed passages.
+    fts_query = _normalize_query_for_fts(args.query)
+
+    # Optional block_types filter — checks that the chunk's metadata JSONB
+    # array contains every requested type. Uses GIN index on metadata.
+    bt_sql = ""
+    bt_params: list[Any] = []
+    if args.block_types:
+        bt_sql = "AND rc.metadata @> %s::jsonb"
+        bt_params = [json.dumps({"block_types": args.block_types})]
 
     async with conn_ctx() as conn:
         cur = await conn.execute(
-            """
+            f"""
             WITH dense AS (
                 SELECT rc."ReportId", rc."PageNumber", rc."ChunkIndex",
                        rc."Content",
+                       rc.metadata->>'section_title' AS section_title,
                        ROW_NUMBER() OVER (ORDER BY rc.embedding <=> %s::vector) AS rnk
                 FROM report_chunks rc
                 WHERE rc."ReportId" = ANY(%s)
                   AND rc.embedding IS NOT NULL
+                  {bt_sql}
                 ORDER BY rc.embedding <=> %s::vector
                 LIMIT %s
             ),
             sparse AS (
                 SELECT rc."ReportId", rc."PageNumber", rc."ChunkIndex",
                        rc."Content",
+                       rc.metadata->>'section_title' AS section_title,
                        ROW_NUMBER() OVER (
                            ORDER BY ts_rank(
                                rc.search_vector,
-                               plainto_tsquery('arabic',  %s) ||
-                               plainto_tsquery('english', %s)
+                               websearch_to_tsquery('arabic',  %s) ||
+                               websearch_to_tsquery('english', %s)
                            ) DESC
                        ) AS rnk
                 FROM report_chunks rc
                 WHERE rc."ReportId" = ANY(%s)
                   AND rc.search_vector @@ (
-                      plainto_tsquery('arabic',  %s) ||
-                      plainto_tsquery('english', %s)
+                      websearch_to_tsquery('arabic',  %s) ||
+                      websearch_to_tsquery('english', %s)
                   )
+                  {bt_sql}
                 LIMIT %s
             ),
             fused AS (
-                SELECT COALESCE(d."ReportId",   s."ReportId")   AS report_id,
-                       COALESCE(d."PageNumber", s."PageNumber") AS page_number,
-                       COALESCE(d."ChunkIndex", s."ChunkIndex") AS chunk_index,
-                       COALESCE(d."Content",    s."Content")    AS content,
+                SELECT COALESCE(d."ReportId",    s."ReportId")    AS report_id,
+                       COALESCE(d."PageNumber",  s."PageNumber")  AS page_number,
+                       COALESCE(d."ChunkIndex",  s."ChunkIndex")  AS chunk_index,
+                       COALESCE(d."Content",     s."Content")     AS content,
+                       COALESCE(d.section_title, s.section_title) AS section_title,
                        COALESCE(1.0 / (%s + d.rnk), 0)
-                     + COALESCE(1.0 / (%s + s.rnk), 0)          AS rrf_score
+                     + COALESCE(1.0 / (%s + s.rnk), 0)           AS rrf_score
                 FROM dense d
                 FULL OUTER JOIN sparse s
                   ON  d."ReportId"   = s."ReportId"
@@ -221,21 +252,21 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
                   AND d."ChunkIndex" = s."ChunkIndex"
             )
             SELECT f.report_id, f.page_number, f.chunk_index, f.content,
-                   r."Title" AS report_title, f.rrf_score
+                   r."Title" AS report_title, f.rrf_score, f.section_title
             FROM fused f
             JOIN reports r ON r."Id" = f.report_id
             ORDER BY f.rrf_score DESC
             LIMIT %s
             """,
             [
-                # dense
-                qvec, target_ids, qvec, pool,
-                # sparse
-                args.query, args.query, target_ids,
-                args.query, args.query, pool,
-                # rrf
+                # dense: vec, ids, [bt?], vec, pool
+                qvec, target_ids, *bt_params, qvec, pool,
+                # sparse: fts x2 (ts_rank), ids, fts x2 (@@), [bt?], pool
+                fts_query, fts_query, target_ids,
+                fts_query, fts_query, *bt_params, pool,
+                # rrf k x2
                 rrf_k, rrf_k,
-                # final pool size
+                # final limit
                 pool,
             ],
         )
@@ -243,21 +274,19 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
 
     candidates = [
         {
-            "report_id":    str(r[0]),
-            "page_number":  int(r[1]) if r[1] is not None else None,
-            "chunk_index":  int(r[2]) if r[2] is not None else None,
-            "content":      r[3],
-            "report_title": r[4],
-            "rrf_score":    float(r[5]),
+            "report_id":     str(r[0]),
+            "page_number":   int(r[1]) if r[1] is not None else None,
+            "chunk_index":   int(r[2]) if r[2] is not None else None,
+            "content":       r[3],
+            "report_title":  r[4],
+            "rrf_score":     float(r[5]),
+            "section_title": r[6] or "",
         }
         for r in rows
     ]
     if not candidates:
         return _no_results("no matching chunks")
 
-    # Cross-encoder rerank — Vertex Ranking API. Sync client, so offload.
-    # On Vertex error the wrapper falls back to RRF order, so we never
-    # worsen quality below the hybrid baseline.
     final = candidates
     if settings.reranker_enabled and len(candidates) > args.top_k:
         final = await asyncio.to_thread(
@@ -265,16 +294,73 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
         )
     final = final[: args.top_k]
 
-    results = [
-        {
-            "report_id":    c["report_id"],
-            "report_title": c.get("report_title"),
-            "page":         c.get("page_number"),
-            "chunk_index":  c.get("chunk_index"),
-            "content":      c.get("content"),
-        }
+    # ── Neighbor context fetch ────────────────────────────────────────────────
+    # For each hit, retrieve the chunk immediately before and after it on the
+    # same page (same ReportId + PageNumber, ChunkIndex ± 1). These are
+    # attached as prev_content / next_content so the LLM sees complete thoughts
+    # that straddle a chunk boundary. Truncated to 500 chars to stay within
+    # the per-tool output cap.
+    returned_keys = {
+        (c["report_id"], c.get("page_number"), c.get("chunk_index"))
         for c in final
-    ]
+        if c.get("page_number") is not None and c.get("chunk_index") is not None
+    }
+    neighbor_keys: list[tuple[str, int, int]] = []
+    for c in final:
+        rid, pg, ci = c["report_id"], c.get("page_number"), c.get("chunk_index")
+        if pg is None or ci is None:
+            continue
+        for nci in (ci - 1, ci + 1):
+            if nci >= 0:
+                key = (rid, pg, nci)
+                if key not in returned_keys and key not in neighbor_keys:
+                    neighbor_keys.append(key)
+
+    neighbor_map: dict[tuple[str, int, int], str] = {}
+    if neighbor_keys:
+        vals_sql = ", ".join("(%s::uuid, %s::int, %s::int)" for _ in neighbor_keys)
+        vals_params: list[Any] = [x for t in neighbor_keys for x in t]
+        async with conn_ctx() as nb_conn:
+            nb_cur = await nb_conn.execute(
+                f"""
+                WITH want(rid, pg, ci) AS (VALUES {vals_sql})
+                SELECT rc."ReportId"::text, rc."PageNumber", rc."ChunkIndex",
+                       left(rc."Content", 500)
+                FROM report_chunks rc
+                JOIN want
+                  ON rc."ReportId"::text = want.rid
+                 AND rc."PageNumber"     = want.pg
+                 AND rc."ChunkIndex"     = want.ci
+                WHERE rc."ReportId" = ANY(%s)
+                """,
+                [*vals_params, target_ids],
+            )
+            for nb_row in await nb_cur.fetchall():
+                neighbor_map[
+                    (str(nb_row[0]), int(nb_row[1]), int(nb_row[2]))
+                ] = nb_row[3] or ""
+
+    results = []
+    for c in final:
+        rid   = c["report_id"]
+        pg    = c.get("page_number")
+        ci    = c.get("chunk_index")
+        entry: dict[str, Any] = {
+            "report_id":     rid,
+            "report_title":  c.get("report_title"),
+            "page":          pg,
+            "section_title": c.get("section_title") or None,
+            "content":       c.get("content"),
+        }
+        if pg is not None and ci is not None:
+            prev_text = neighbor_map.get((rid, pg, ci - 1))
+            next_text = neighbor_map.get((rid, pg, ci + 1))
+            if prev_text:
+                entry["prev_content"] = prev_text
+            if next_text:
+                entry["next_content"] = next_text
+        results.append(entry)
+
     return _serialize({"results": results})
 
 
@@ -669,40 +755,118 @@ class FindSimilarReportsArgs(BaseModel):
 
 
 async def _find_similar_reports_impl(ctx: ToolContext, args: FindSimilarReportsArgs) -> str:
+    """Hybrid similarity search combining three signals:
+
+      1. Embedding centroid cosine — semantic similarity over chunk content.
+         Structural chunks (table/figure/formula) excluded so the centroid
+         reflects narrative content, not page furniture.
+      2. Shared topics — count of overlapping high-level topics from
+         report_ai_contents.Topics (case-insensitive). Direct evidence the
+         summarizer thinks the two reports are about the same things.
+      3. Shared keywords — count of overlapping report_keywords entries
+         (case-insensitive). Catches similarity even when summaries phrase
+         themes differently.
+
+    Final score = embed_sim + 0.05·shared_topics + 0.02·shared_keywords.
+    The boost weights are intentionally small so embedding still dominates,
+    but a few overlapping topics can promote a strong topical match past a
+    slightly-more-similar-by-vector but topically-unrelated report.
+
+    Both shared counts are returned to the agent so it can explain WHY two
+    reports were grouped (e.g. "they share the topic 'renewable energy'
+    and 7 keywords").
+    """
     if args.report_id not in ctx.accessible_ids:
         return _no_results("report_id is outside accessible scope")
     if not ctx.accessible_ids:
         return _no_results("no accessible reports to compare against")
 
-    # Source report's "centroid" embedding = average of its chunk vectors.
-    # Cosine similarity to other reports' centroids is a coarse but useful
-    # similarity signal, and it runs entirely in-DB.
     async with conn_ctx() as conn:
         cur = await conn.execute(
             """
-            WITH src AS (
+            WITH src_v AS (
+                -- Embedding centroid over narrative chunks only.
                 SELECT AVG(embedding)::vector AS v
                 FROM report_chunks
                 WHERE "ReportId" = %s
                   AND embedding IS NOT NULL
+                  AND NOT (metadata @> '{"block_types":["table"]}'::jsonb)
+                  AND NOT (metadata @> '{"block_types":["figure"]}'::jsonb)
+                  AND NOT (metadata @> '{"block_types":["formula"]}'::jsonb)
+            ),
+            src_topics AS (
+                -- Topics from the source report's AI content (any language).
+                -- LATERAL unnest of the Topics jsonb array → one row per topic.
+                SELECT DISTINCT lower(t.value) AS topic
+                FROM report_ai_contents rac
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    COALESCE(rac."Topics"::jsonb, '[]'::jsonb)
+                ) AS t(value)
+                WHERE rac."ReportId" = %s
+                  AND rac."DeletedAt" IS NULL
+            ),
+            src_kw AS (
+                -- Keywords for the source report (case-folded for matching).
+                SELECT DISTINCT lower("Keyword") AS kw
+                FROM report_keywords
+                WHERE "ReportId" = %s
+            ),
+            candidates AS (
+                -- Per-candidate embedding similarity.
+                SELECT r."Id" AS rid,
+                       r."Title", r."PublicationYear",
+                       o."NameAr", o."NameEn",
+                       1 - (AVG(rc.embedding) <=> (SELECT v FROM src_v)) AS embed_sim
+                FROM report_chunks rc
+                JOIN reports r ON r."Id" = rc."ReportId"
+                LEFT JOIN organizations o ON o."Id" = r."OrganizationId"
+                WHERE rc."ReportId" <> %s
+                  AND rc."ReportId" = ANY(%s)
+                  AND rc.embedding IS NOT NULL
+                  AND NOT (rc.metadata @> '{"block_types":["table"]}'::jsonb)
+                  AND NOT (rc.metadata @> '{"block_types":["figure"]}'::jsonb)
+                  AND NOT (rc.metadata @> '{"block_types":["formula"]}'::jsonb)
+                  AND r."Status"     = 'Published'
+                  AND r."DeletedAt" IS NULL
+                GROUP BY r."Id", r."Title", r."PublicationYear", o."NameAr", o."NameEn"
+                HAVING (SELECT v FROM src_v) IS NOT NULL
+            ),
+            topic_overlap AS (
+                -- Count topics each candidate shares with the source.
+                SELECT c.rid, COUNT(DISTINCT lower(t.value)) AS n
+                FROM candidates c
+                JOIN report_ai_contents rac
+                  ON rac."ReportId" = c.rid AND rac."DeletedAt" IS NULL
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    COALESCE(rac."Topics"::jsonb, '[]'::jsonb)
+                ) AS t(value)
+                WHERE lower(t.value) IN (SELECT topic FROM src_topics)
+                GROUP BY c.rid
+            ),
+            kw_overlap AS (
+                -- Count keywords each candidate shares with the source.
+                SELECT c.rid, COUNT(DISTINCT lower(rk."Keyword")) AS n
+                FROM candidates c
+                JOIN report_keywords rk ON rk."ReportId" = c.rid
+                WHERE lower(rk."Keyword") IN (SELECT kw FROM src_kw)
+                GROUP BY c.rid
             )
-            SELECT r."Id", r."Title", r."PublicationYear",
-                   o."NameAr", o."NameEn",
-                   1 - (AVG(rc.embedding) <=> (SELECT v FROM src)) AS similarity
-            FROM report_chunks rc
-            JOIN reports r       ON r."Id" = rc."ReportId"
-            LEFT JOIN organizations o ON o."Id" = r."OrganizationId"
-            WHERE rc."ReportId" <> %s
-              AND rc."ReportId" = ANY(%s)
-              AND rc.embedding IS NOT NULL
-              AND r."Status" = 'Published'        -- "Published only" rule
-              AND r."DeletedAt" IS NULL
-            GROUP BY r."Id", r."Title", r."PublicationYear", o."NameAr", o."NameEn"
-            HAVING (SELECT v FROM src) IS NOT NULL
-            ORDER BY similarity DESC
+            SELECT c.rid, c."Title", c."PublicationYear",
+                   c."NameAr", c."NameEn",
+                   c.embed_sim,
+                   COALESCE(t.n, 0) AS shared_topics,
+                   COALESCE(k.n, 0) AS shared_keywords,
+                   (c.embed_sim
+                    + 0.05 * COALESCE(t.n, 0)
+                    + 0.02 * COALESCE(k.n, 0)) AS score
+            FROM candidates c
+            LEFT JOIN topic_overlap t ON t.rid = c.rid
+            LEFT JOIN kw_overlap    k ON k.rid = c.rid
+            ORDER BY score DESC NULLS LAST
             LIMIT %s
             """,
-            [args.report_id, args.report_id, ctx.accessible_ids, args.top_k],
+            [args.report_id, args.report_id, args.report_id,
+             args.report_id, ctx.accessible_ids, args.top_k],
         )
         rows = await cur.fetchall()
 
@@ -715,11 +879,14 @@ async def _find_similar_reports_impl(ctx: ToolContext, args: FindSimilarReportsA
     return _serialize({
         "results": [
             {
-                "report_id":    str(r[0]),
-                "title":        r[1],
-                "year":         r[2],
-                "organization": r[3] or r[4],
-                "similarity":   round(float(r[5]), 4) if r[5] is not None else None,
+                "report_id":       str(r[0]),
+                "title":           r[1],
+                "year":            r[2],
+                "organization":    r[3] or r[4],
+                "similarity":      round(float(r[5]), 4) if r[5] is not None else None,
+                "shared_topics":   int(r[6]),
+                "shared_keywords": int(r[7]),
+                "score":           round(float(r[8]), 4) if r[8] is not None else None,
             }
             for r in rows
         ],
@@ -885,6 +1052,12 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
          "Auto-tagged keywords (Arabic + English) for a report.",
          GetKeywordsArgs,
          _get_report_keywords_impl),
+
+        ("get_report_topics",
+         "High-level topics / sectors covered by a report (per-language). "
+         "Use for 'what is this report about?' overview questions.",
+         GetAiContentArgs,
+         lambda c, a: _get_ai_content_field(c, a, "Topics")),
 
         ("get_translation",
          "Translated title / description / AI summary for a report. RETURNS TEXT ONLY — never a download link.",

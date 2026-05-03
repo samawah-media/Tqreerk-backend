@@ -113,7 +113,11 @@ class Settings(BaseSettings):
     # embeddings stay in the same vector space as the existing report_chunks
     # rows. Same model + dim as ai-service; no DB migration needed.
     gcp_project_id: str = ""
-    vertex_location: str = "us-central1"
+    # `global` auto-routes to the nearest available region — removes the
+    # cross-region read-timeout failures and gives the highest aggregate
+    # quota. Override via env var (VERTEX_LOCATION=asia-south1, etc.) if a
+    # customer contract pins data residency to a specific region.
+    vertex_location: str = "global"
     embed_vertex_model: str = "gemini-embedding-001"
     embed_vertex_dim: int   = 768
 
