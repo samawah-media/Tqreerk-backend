@@ -27,8 +27,7 @@ public class Plan : BaseEntity
     // the [EnforceUsageLimit] attribute checks the current counter
     // against the user's plan. Org plans use ReportsDownloadLimit /
     // AiCallsLimit instead, so these stay 0 there.
-    public int IndividualReadsLimit { get; set; }
-    public int IndividualSavedReportsLimit { get; set; }
+
 
     public ICollection<Subscription> Subscriptions { get; set; } = [];
 }
