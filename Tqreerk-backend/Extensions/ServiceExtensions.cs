@@ -103,6 +103,15 @@ public static class ServiceExtensions
         services.AddScoped<IReviewService, ReviewService>();
         services.AddScoped<IQuotaService, QuotaService>();
 
+        // Freemium gate, points ledger, "/me/*" surface and report
+        // annotations / personal notes (Phase 1 features 1.1, 1.2a, 1.2b).
+        // The [EnforceUsageLimit] action filter resolves IUsageService
+        // per-request, so this MUST be Scoped — not Singleton.
+        services.AddScoped<IUsageService, UsageService>();
+        services.AddScoped<IPointsService, PointsService>();
+        services.AddScoped<IMeService, MeService>();
+        services.AddScoped<IAnnotationsService, AnnotationsService>();
+
         // Typed HttpClient for the external Python ai-service. Each call is a
         // long-running RPC (ingest can take minutes); the per-call timeout is
         // controlled via AiServiceSettings.TimeoutSeconds inside the client.

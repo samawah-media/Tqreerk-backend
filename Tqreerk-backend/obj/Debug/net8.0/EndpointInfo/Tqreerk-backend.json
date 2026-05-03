@@ -2463,6 +2463,371 @@
         }
       }
     },
+    "/api/me/reports/{reportId}/editor": {
+      "get": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditorBootstrapDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/reports/{reportId}/annotations": {
+      "get": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AnnotationDto"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAnnotationRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAnnotationRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAnnotationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnotationDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/reports/{reportId}/annotations/{annotationId}": {
+      "patch": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "annotationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAnnotationRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAnnotationRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAnnotationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnotationDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "annotationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/reports/{reportId}/note": {
+      "get": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalNoteDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePersonalNoteRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePersonalNoteRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePersonalNoteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalNoteDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/register/individual": {
       "post": {
         "tags": [
@@ -3126,6 +3491,72 @@
         }
       }
     },
+    "/api/me/saved-reports": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "parameters": [
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MySavedReportDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/activity": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "parameters": [
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 10
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MyActivityItemDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/organizations/me": {
       "get": {
         "tags": [
@@ -3573,6 +4004,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/points": {
+      "get": {
+        "tags": [
+          "Points"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PointsBalanceDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/points/history": {
+      "get": {
+        "tags": [
+          "Points"
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PointsHistoryPageDto"
                 }
               }
             }
@@ -5528,6 +6017,64 @@
         }
       }
     },
+    "/api/usage/me": {
+      "get": {
+        "tags": [
+          "Usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummaryDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/usage/me/history": {
+      "get": {
+        "tags": [
+          "Usage"
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageHistoryPageDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users/me": {
       "get": {
         "tags": [
@@ -6467,6 +7014,55 @@
         },
         "additionalProperties": false
       },
+      "AnnotationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AnnotationType"
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "selectionText": {
+            "type": "string",
+            "nullable": true
+          },
+          "selectionRect": {
+            "type": "string",
+            "nullable": true
+          },
+          "color": {
+            "type": "string",
+            "nullable": true
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnnotationType": {
+        "enum": [
+          "Highlight",
+          "Note"
+        ],
+        "type": "string"
+      },
       "ApproveDecisionRequest": {
         "type": "object",
         "properties": {
@@ -6538,6 +7134,35 @@
             "nullable": true
           },
           "isoCode": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateAnnotationRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/AnnotationType"
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "selectionText": {
+            "type": "string",
+            "nullable": true
+          },
+          "selectionRect": {
+            "type": "string",
+            "nullable": true
+          },
+          "color": {
+            "type": "string",
+            "nullable": true
+          },
+          "note": {
             "type": "string",
             "nullable": true
           }
@@ -6717,6 +7342,50 @@
             "nullable": true
           },
           "roleName": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "EditorBootstrapDto": {
+        "type": "object",
+        "properties": {
+          "report": {
+            "$ref": "#/components/schemas/PublicReportDetailDto"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/EditorPlanInfo"
+          },
+          "annotations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnnotationDto"
+            },
+            "nullable": true
+          },
+          "note": {
+            "$ref": "#/components/schemas/PersonalNoteDto"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EditorPlanInfo": {
+        "type": "object",
+        "properties": {
+          "planId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tier": {
+            "type": "string",
+            "nullable": true
+          },
+          "planNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "planNameEn": {
             "type": "string",
             "nullable": true
           }
@@ -6940,6 +7609,36 @@
         },
         "additionalProperties": false
       },
+      "MyActivityItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "actionType": {
+            "$ref": "#/components/schemas/UsageActionType"
+          },
+          "resourceId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "reportTitle": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportSlug": {
+            "type": "string",
+            "nullable": true
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
       "MyReportInteractionDto": {
         "type": "object",
         "properties": {
@@ -6957,6 +7656,62 @@
           "myReview": {
             "type": "string",
             "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "MySavedReportDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "slug": {
+            "type": "string",
+            "nullable": true
+          },
+          "coverImageUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "sectorNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "countryNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "publicationYear": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "pageCount": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "viewsCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "organizationNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "organizationLogoUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "savedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "additionalProperties": false
@@ -7259,13 +8014,12 @@
       },
       "OrganizationType": {
         "enum": [
-          0,
-          1,
-          2,
-          3
+          "Governmental",
+          "Private",
+          "Nonprofit",
+          "Educational"
         ],
-        "type": "integer",
-        "format": "int32"
+        "type": "string"
       },
       "PageDto": {
         "type": "object",
@@ -7336,6 +8090,98 @@
           },
           "isSystem": {
             "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PersonalNoteDto": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "nullable": true
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PointTransactionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "balanceAfter": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "actionType": {
+            "$ref": "#/components/schemas/UsageActionType"
+          },
+          "resourceId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PointsBalanceDto": {
+        "type": "object",
+        "properties": {
+          "balance": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "welcomeBalance": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PointsHistoryPageDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PointTransactionDto"
+            },
+            "nullable": true
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pageSize": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalItems": {
+            "type": "integer",
+            "format": "int32"
           }
         },
         "additionalProperties": false
@@ -8683,11 +9529,10 @@
       },
       "RoleScope": {
         "enum": [
-          0,
-          1
+          "Platform",
+          "Organization"
         ],
-        "type": "integer",
-        "format": "int32"
+        "type": "string"
       },
       "SectorDto": {
         "type": "object",
@@ -9100,6 +9945,20 @@
         },
         "additionalProperties": false
       },
+      "UpdateAnnotationRequest": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "type": "string",
+            "nullable": true
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateCountryRequest": {
         "type": "object",
         "properties": {
@@ -9271,6 +10130,16 @@
         },
         "additionalProperties": false
       },
+      "UpdatePersonalNoteRequest": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateProfileRequest": {
         "type": "object",
         "properties": {
@@ -9360,6 +10229,127 @@
         "properties": {
           "roleName": {
             "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageActionType": {
+        "enum": [
+          "ReportFullAccess",
+          "ReportDownload",
+          "AiTranslate",
+          "AiCompare",
+          "SaveReport"
+        ],
+        "type": "string"
+      },
+      "UsageCounterDto": {
+        "type": "object",
+        "properties": {
+          "actionType": {
+            "$ref": "#/components/schemas/UsageActionType"
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "used": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "remaining": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "isUnlimited": {
+            "type": "boolean"
+          },
+          "isExceeded": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageHistoryItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "actionType": {
+            "$ref": "#/components/schemas/UsageActionType"
+          },
+          "resourceId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "consumedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageHistoryPageDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageHistoryItemDto"
+            },
+            "nullable": true
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "pageSize": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalItems": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageSummaryDto": {
+        "type": "object",
+        "properties": {
+          "subscriptionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "planId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "planNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "planNameEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "billingPeriodStart": {
+            "type": "string",
+            "format": "date"
+          },
+          "resetsAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "counters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageCounterDto"
+            },
             "nullable": true
           }
         },
