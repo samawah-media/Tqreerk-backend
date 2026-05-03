@@ -23,5 +23,11 @@ public class Plan : BaseEntity
     public bool ApiAccess { get; set; }
     public bool IsActive { get; set; } = true;
 
+    // Per-month caps for individual users — read by UsageService when
+    // the [EnforceUsageLimit] attribute checks the current counter
+    // against the user's plan. Org plans use ReportsDownloadLimit /
+    // AiCallsLimit instead, so these stay 0 there.
+
+
     public ICollection<Subscription> Subscriptions { get; set; } = [];
 }

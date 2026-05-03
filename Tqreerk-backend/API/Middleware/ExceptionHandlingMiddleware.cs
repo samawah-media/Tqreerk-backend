@@ -63,7 +63,10 @@ public class ExceptionHandlingMiddleware
             context.Response.Headers["Retry-After"] = "3600";
         }
 
-        object body = isDevelopment && status == HttpStatusCode.InternalServerError
+        // In dev, expose the inner exception for ANY non-2xx so the generic
+        // 409 "transient failure" message stops hiding the real EF/Npgsql
+        // error. The lean prod payload is unchanged.
+        object body = isDevelopment
             ? new
             {
                 status = (int)status,
@@ -71,6 +74,7 @@ public class ExceptionHandlingMiddleware
                 detail = ex.Message,
                 exceptionType = ex.GetType().FullName,
                 innerMessage = ex.InnerException?.Message,
+                innerType = ex.InnerException?.GetType().FullName,
                 stackTrace = ex.StackTrace,
                 traceId = context.TraceIdentifier,
             }

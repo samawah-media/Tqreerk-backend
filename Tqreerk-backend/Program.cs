@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
 using Taqreerk.API.Middleware;
@@ -18,7 +19,17 @@ builder.Services.AddJwtAuthentication(builder.Configuration);
 builder.Services.AddPermissionAuthorization();
 builder.Services.AddApplicationServices(builder.Configuration);
 
-builder.Services.AddControllers();
+builder.Services
+    .AddControllers()
+    // Accept enum DTOs as their symbolic string name (e.g. "Highlight"
+    // instead of 0). Frontend ships enums by name, and DB columns store
+    // them as strings via HasConversion<string>() — this keeps the wire
+    // format consistent with both sides. Without this, MVC's default
+    // System.Text.Json deserializer fails any enum field with a 400
+    // model-binding error like "The JSON value could not be converted".
+    .AddJsonOptions(o =>
+        o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerWithAuth();
 

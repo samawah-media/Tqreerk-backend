@@ -49,6 +49,13 @@ public class TaqreerkDbContext : DbContext
     // User interaction
     public DbSet<UserInterest> UserInterests => Set<UserInterest>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<ReportAnnotation> ReportAnnotations => Set<ReportAnnotation>();
+    public DbSet<ReportPersonalNote> ReportPersonalNotes => Set<ReportPersonalNote>();
+
+    // Freemium gate + points ledger (Feature 5 / 5b)
+    public DbSet<UsageTracking> UsageTracking => Set<UsageTracking>();
+    public DbSet<UserPoints> UserPoints => Set<UserPoints>();
+    public DbSet<PointTransaction> PointTransactions => Set<PointTransaction>();
 
     // Billing
     public DbSet<Plan> Plans => Set<Plan>();
@@ -57,13 +64,13 @@ public class TaqreerkDbContext : DbContext
     public DbSet<Invoice> Invoices => Set<Invoice>();
 
     // Usage & points
-    public DbSet<UsageTracking> UsageTracking => Set<UsageTracking>();
-    public DbSet<UserPoints> UserPoints => Set<UserPoints>();
-    public DbSet<PointTransaction> PointTransactions => Set<PointTransaction>();
+    //public DbSet<UsageTracking> UsageTracking => Set<UsageTracking>();
+    //public DbSet<UserPoints> UserPoints => Set<UserPoints>();
+    //public DbSet<PointTransaction> PointTransactions => Set<PointTransaction>();
 
-    // Annotations
-    public DbSet<ReportAnnotation> ReportAnnotations => Set<ReportAnnotation>();
-    public DbSet<ReportPersonalNote> ReportPersonalNotes => Set<ReportPersonalNote>();
+    //// Annotations
+    //public DbSet<ReportAnnotation> ReportAnnotations => Set<ReportAnnotation>();
+    //public DbSet<ReportPersonalNote> ReportPersonalNotes => Set<ReportPersonalNote>();
 
     // Audit
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
