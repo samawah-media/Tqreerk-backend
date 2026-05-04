@@ -2,7 +2,12 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.1
 psycopg[binary]==3.2.3
 pgvector==0.3.6
-google-genai==0.8.0
+# Bumped 0.8.0 → 1.24.0 because langchain-google-vertexai==2.0.28 pulls in
+# google-cloud-aiplatform 1.97.0 which requires google-genai>=1.0.0,<2.0.0.
+# 1.x kept the APIs we use intact (client.models.generate_content[/_stream],
+# client.models.embed_content, types.GenerateContentConfig /
+# EmbedContentConfig, types.Part.from_bytes, response.usage_metadata).
+google-genai==1.24.0
 google-cloud-translate==3.18.0
 google-cloud-storage==2.18.2
 google-cloud-discoveryengine==0.13.0
@@ -10,7 +15,7 @@ pymupdf==1.24.14
 pillow==11.0.0
 python-multipart==0.0.18
 pydantic-settings==2.6.1
-httpx==0.28.0
+httpx==0.28.1   # min required by google-genai 1.24.0
 sentry-sdk[fastapi]==2.18.0
 langchain-text-splitters==0.3.2
 
