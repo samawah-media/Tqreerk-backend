@@ -159,7 +159,7 @@ async def get_session(
         SessionMessage(
             role=r,
             content=c,
-            source_pages=json.loads(sp) if sp else None,
+            source_pages=(json.loads(sp) if isinstance(sp, (str, bytes, bytearray)) else sp) if sp else None,
         )
         for r, c, sp in await msgs_cur.fetchall()
     ]
