@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     # embeddings + storage. Recall lift on Q-style queries: ~15-30% in
     # practice. Disable with hyqe_enabled=false to revert to chunk-only embeds.
     hyqe_enabled: bool                = True
-    hyqe_model: str                   = "gemini-2.5-flash-lite"  # cheap, fast
+    hyqe_model: str                   = "gemini-2.5-flash"   # standardised across the service
     hyqe_questions_per_chunk: int     = 3
     hyqe_max_concurrency: int         = 5     # parallel Flash calls during ingest
     hyqe_timeout_seconds: float       = 10.0  # per-chunk hard cap

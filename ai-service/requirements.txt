@@ -32,4 +32,8 @@ datasets==3.1.0
 # Google call in the system. The `langchain-core` it pulls in is already a
 # transitive dep of ragas.
 langgraph==0.2.55
-langchain-google-vertexai==2.0.13
+# Bumped 2.0.13 → 2.0.28 to fix the `streamGenerateContent` 404 on the
+# Vertex `global` endpoint. Stays within the 2.0.x line, no major-version
+# risk; pulls in fixes for global-endpoint URL construction and gRPC
+# streaming back-pressure that the older release lacked.
+langchain-google-vertexai==2.0.28

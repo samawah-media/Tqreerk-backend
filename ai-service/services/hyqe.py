@@ -8,7 +8,7 @@ bilingual financial / government reports where a user says
 "ما حجم العائدات السنوية؟" and the chunk reads "Total revenue grew 8.2%
 to SAR 14B…". Pure-text semantic match misses; HyQE patches it.
 
-For each "real" chunk we ask a fast LLM (gemini-2.5-flash-lite by default):
+For each "real" chunk we ask a fast LLM (gemini-2.5-flash by default):
 
     "List up to N questions this passage answers, in Arabic and English."
 
