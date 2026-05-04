@@ -137,6 +137,71 @@ public class AiServiceClient : IAiServiceClient
         );
     }
 
+    public async Task<CompareResult> CompareAsync(IReadOnlyList<Guid> reportIds, CancellationToken ct = default)
+    {
+        // The Python service mounts every endpoint under /api/ai/* — and the
+        // configured BaseUrl already ends with /api/ai (see AiServiceSettings),
+        // so the relative path here is just `reports/compare`. Same pattern
+        // ingest/summarize/translate use; passing /api/ai again here would
+        // double-prefix and 404.
+        var body = new { report_ids = reportIds };
+        var raw = await PostAsync("reports/compare", body, ct);
+
+        // Re-parse the raw response so we can split it into "similarities"
+        // (strongly typed) and the qualitative block (raw JSON) without
+        // pinning a DTO to Gemini's evolving structured-output schema.
+        using var doc = JsonDocument.Parse(raw);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("ai-service compare response was not an object");
+
+        var similarities = new List<CompareSimilarityPair>();
+        if (doc.RootElement.TryGetProperty("similarities", out var simEl) && simEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var p in simEl.EnumerateArray())
+            {
+                // Python service is permissive about which key holds the score;
+                // accept the common variants so a back-end rename doesn't break
+                // us silently.
+                var score = p.TryGetProperty("score", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetDouble() : 0d;
+                var idAStr = p.TryGetProperty("report_id_a", out var a) ? a.GetString() : null;
+                var idBStr = p.TryGetProperty("report_id_b", out var b) ? b.GetString() : null;
+                if (Guid.TryParse(idAStr, out var idA) && Guid.TryParse(idBStr, out var idB))
+                    similarities.Add(new CompareSimilarityPair(idA, idB, score));
+            }
+        }
+
+        // Qualitative block — wrap whatever Gemini returned (common_topics,
+        // key_differences, shared_indicators, etc.) into one JSON object the
+        // frontend can render directly. If the AI service changes shape, the
+        // wire surface stays stable on our side because we pass the bytes
+        // through.
+        string qualitativeJson = "{}";
+        if (doc.RootElement.TryGetProperty("qualitative", out var qual) && qual.ValueKind == JsonValueKind.Object)
+        {
+            qualitativeJson = qual.GetRawText();
+        }
+        else
+        {
+            // Some Python builds return the qualitative fields at the root.
+            // Re-emit only the non-similarities keys so the persisted JSON
+            // stays a clean object.
+            using var ms = new MemoryStream();
+            using (var w = new Utf8JsonWriter(ms))
+            {
+                w.WriteStartObject();
+                foreach (var p in doc.RootElement.EnumerateObject())
+                {
+                    if (p.NameEquals("similarities") || p.NameEquals("report_ids")) continue;
+                    p.WriteTo(w);
+                }
+                w.WriteEndObject();
+            }
+            qualitativeJson = System.Text.Encoding.UTF8.GetString(ms.ToArray());
+        }
+
+        return new CompareResult(reportIds, similarities, qualitativeJson);
+    }
+
     private async Task<string> PostAsync<TBody>(string path, TBody body, CancellationToken ct)
     {
         var startedAt = DateTimeOffset.UtcNow;

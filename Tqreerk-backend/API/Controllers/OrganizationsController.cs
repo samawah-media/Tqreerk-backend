@@ -3,8 +3,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Taqreerk.Application.DTOs.Analytics;
 using Taqreerk.Application.DTOs.Dashboard;
+using Taqreerk.Application.DTOs.FeatureRequests;
 using Taqreerk.Application.DTOs.Organizations;
 using Taqreerk.Application.Interfaces;
+using Taqreerk.Domain.Enums;
 
 namespace Taqreerk.API.Controllers;
 
@@ -19,15 +21,18 @@ public class OrganizationsController : ControllerBase
     private readonly IOrganizationService _orgs;
     private readonly IDashboardService _dashboard;
     private readonly IOrganizationAnalyticsService _analytics;
+    private readonly IFeatureRequestsService _featureRequests;
 
     public OrganizationsController(
         IOrganizationService orgs,
         IDashboardService dashboard,
-        IOrganizationAnalyticsService analytics)
+        IOrganizationAnalyticsService analytics,
+        IFeatureRequestsService featureRequests)
     {
         _orgs = orgs;
         _dashboard = dashboard;
         _analytics = analytics;
+        _featureRequests = featureRequests;
     }
 
     /// <summary>Returns the organization the current user is a member of, with profile + files.</summary>
@@ -140,6 +145,21 @@ public class OrganizationsController : ControllerBase
         var toDate = (to ?? DateTime.UtcNow.Date);
         var fromDate = (from ?? toDate.AddDays(-29));
         return Ok(await _analytics.GetOrganizationAnalyticsAsync(userId, fromDate, toDate, ct));
+    }
+
+    // ── Feature requests ─────────────────────────────────────────────────────
+
+    /// <summary>All feature requests submitted by the caller's org,
+    /// optionally filtered by status (Pending / Approved / Rejected).
+    /// Newest first.</summary>
+    [HttpGet("me/feature-requests")]
+    [ProducesResponseType(typeof(IReadOnlyList<FeatureRequestDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetFeatureRequests(
+        [FromQuery] FeatureRequestStatus? status,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        return Ok(await _featureRequests.ListForOrgAsync(userId, status, ct));
     }
 
     // ── Members ──────────────────────────────────────────────────────────────

@@ -38,6 +38,16 @@ public interface IAiServiceClient
         string fileUrl,
         string outputPrefix,
         CancellationToken ct = default);
+
+    /// POST /api/ai/reports/compare — runs the two-layer comparison on
+    /// 2..4 already-ingested + summarized reports. Layer 1 is pairwise
+    /// cosine similarity over chunk embeddings (cheap, runs in
+    /// pgvector); layer 2 is Gemini structured output over the cached
+    /// summaries + key findings (common topics, key differences,
+    /// shared indicators). Throws on transport / non-2xx so the caller
+    /// can surface the error verbatim to the user.
+    Task<CompareResult> CompareAsync(
+        IReadOnlyList<Guid> reportIds, CancellationToken ct = default);
 }
 
 /// Returned synchronously from POST /reports/ingest. The actual ingest runs in
@@ -65,3 +75,19 @@ public record SummarizeResult(
     string IndicatorsJson,
     string TrendsJson);
 public record TranslateResult(Guid ReportId, string TargetLanguage, string SourceLanguage, string TranslatedFileUrl);
+
+/// Compare layer 1 — one entry per (reportA, reportB) ordered pair the
+/// Python service returns. Score is in [0,1]; higher means more similar.
+public record CompareSimilarityPair(Guid ReportIdA, Guid ReportIdB, double Score);
+
+/// Result of the AI comparison. The two layers are kept on distinct
+/// fields so the persisted row can drop layer 1 (cheap to recompute)
+/// while keeping the expensive Gemini layer-2 output cached.
+public record CompareResult(
+    IReadOnlyList<Guid> ReportIds,
+    IReadOnlyList<CompareSimilarityPair> Similarities,
+    /// Raw JSON object for the Gemini structured output. Persisted as
+    /// jsonb on our side and rendered verbatim by the frontend, so we
+    /// pass the raw text through here to avoid pinning the DTO shape
+    /// to a Gemini schema that may evolve.
+    string QualitativeJson);

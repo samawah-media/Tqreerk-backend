@@ -37,6 +37,7 @@ public class TaqreerkDbContext : DbContext
     public DbSet<SavedReport> SavedReports => Set<SavedReport>();
     public DbSet<Infographic> Infographics => Set<Infographic>();
     public DbSet<FeaturedReport> FeaturedReports => Set<FeaturedReport>();
+    public DbSet<ReportFeatureRequest> ReportFeatureRequests => Set<ReportFeatureRequest>();
     public DbSet<ReportComment> ReportComments => Set<ReportComment>();
     public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
 

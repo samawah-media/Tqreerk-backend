@@ -96,6 +96,8 @@ public static class ServiceExtensions
         services.AddScoped<IOrganizationService, OrganizationService>();
         services.AddScoped<IDashboardService, DashboardService>();
         services.AddScoped<IOrganizationAnalyticsService, OrganizationAnalyticsService>();
+        services.AddScoped<IFeatureRequestsService, FeatureRequestsService>();
+        services.AddScoped<ICompareService, CompareService>();
         services.AddScoped<IReportService, ReportService>();
         services.AddScoped<IPublicReportService, PublicReportService>();
         services.AddScoped<IReportInteractionsService, ReportInteractionsService>();

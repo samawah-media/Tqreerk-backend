@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Taqreerk.Application.DTOs.Analytics;
+using Taqreerk.Application.DTOs.FeatureRequests;
 using Taqreerk.Application.DTOs.Reports;
 using Taqreerk.Application.Interfaces;
 
@@ -18,17 +19,20 @@ public class ReportsController : ControllerBase
     private readonly IReportService _reports;
     private readonly IReportAiService _ai;
     private readonly IOrganizationAnalyticsService _analytics;
+    private readonly IFeatureRequestsService _featureRequests;
     private readonly ILogger<ReportsController> _logger;
 
     public ReportsController(
         IReportService reports,
         IReportAiService ai,
         IOrganizationAnalyticsService analytics,
+        IFeatureRequestsService featureRequests,
         ILogger<ReportsController> logger)
     {
         _reports = reports;
         _ai = ai;
         _analytics = analytics;
+        _featureRequests = featureRequests;
         _logger = logger;
     }
 
@@ -186,6 +190,36 @@ public class ReportsController : ControllerBase
     {
         if (!TryGetUserId(out var userId)) return Unauthorized();
         return Ok(await _reports.UpdateMetadataAsync(userId, id, req, ct));
+    }
+
+    /// <summary>Submit a "feature this report" request to the platform
+    /// admins. Only published, org-owned reports are eligible. 409 when
+    /// a Pending request already exists for the same report.</summary>
+    [HttpPost("{id:guid}/feature-request")]
+    [ProducesResponseType(typeof(FeatureRequestDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CreateFeatureRequest(
+        Guid id, [FromBody] CreateFeatureRequest req, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        var created = await _featureRequests.CreateAsync(userId, id, req, ct);
+        return CreatedAtAction(nameof(GetFeatureRequest), new { id }, created);
+    }
+
+    /// <summary>Latest feature request for the given org-owned report
+    /// (any status). 200 with the row, or 200 with `null` body when the
+    /// report has never been submitted.</summary>
+    [HttpGet("{id:guid}/feature-request")]
+    [ProducesResponseType(typeof(FeatureRequestDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetFeatureRequest(Guid id, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        return Ok(await _featureRequests.GetForReportAsync(userId, id, ct));
     }
 
     /// <summary>Re-submit a returned-for-edit report with a new PDF (and
