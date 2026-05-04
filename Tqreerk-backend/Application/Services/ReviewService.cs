@@ -40,20 +40,41 @@ public class ReviewService : IReviewService
         var page = Math.Max(1, req.Page);
         var pageSize = Math.Clamp(req.PageSize, 1, 100);
 
-        // The queue shows two buckets together:
+        // The queue's default view shows two buckets together:
         //   1. Reports waiting in PendingReview (the unclaimed pool).
         //   2. Reports the calling reviewer is currently working on
         //      (UnderReview, claimed by them).
         // Other reviewers' active claims are intentionally hidden so the pool
         // doesn't look "full" of work that isn't actually available.
-        var q = _db.Reports
-            .AsNoTracking()
-            .Where(r =>
-                r.Status == ReportStatus.PendingReview
-                || (r.Status == ReportStatus.UnderReview
-                    && r.ClaimedByReviewerId == reviewerUserId));
+        //
+        // When the caller passes an explicit Status filter, we drop the
+        // claim-aware logic entirely and just match on those statuses —
+        // this lets staff browse approved/published/rejected reports from
+        // the same queue page without the report disappearing the moment
+        // its review decision lands.
+        var requestedStatuses = ParseStatusFilter(req.Status);
 
-        if (req.AssignedToMe == true)
+        IQueryable<Report> q;
+        if (requestedStatuses.Count > 0)
+        {
+            q = _db.Reports
+                .AsNoTracking()
+                .Where(r => requestedStatuses.Contains(r.Status));
+        }
+        else
+        {
+            q = _db.Reports
+                .AsNoTracking()
+                .Where(r =>
+                    r.Status == ReportStatus.PendingReview
+                    || (r.Status == ReportStatus.UnderReview
+                        && r.ClaimedByReviewerId == reviewerUserId));
+        }
+
+        // AssignedToMe only makes sense in the default ("queue") view —
+        // the explicit-status path is for browsing past-decision state where
+        // claim ownership no longer matters.
+        if (req.AssignedToMe == true && requestedStatuses.Count == 0)
         {
             q = q.Where(r =>
                 r.Status == ReportStatus.UnderReview
@@ -437,6 +458,22 @@ public class ReviewService : IReviewService
             // caller could otherwise send "ok" and breeze through.
             throw new ArgumentException(message);
         }
+    }
+
+    /// Parse the comma-separated `status` query param into a typed enum list.
+    /// Tolerant: unknown / empty values are silently dropped so a typo in
+    /// the URL just yields an empty filter (which falls back to default
+    /// queue behaviour) rather than 500-ing.
+    private static IReadOnlyList<ReportStatus> ParseStatusFilter(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<ReportStatus>();
+        var parsed = new List<ReportStatus>();
+        foreach (var piece in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (Enum.TryParse<ReportStatus>(piece, ignoreCase: true, out var s))
+                parsed.Add(s);
+        }
+        return parsed;
     }
 
     private async Task<ReportForReviewDto?> BuildReportForReviewAsync(

@@ -9,4 +9,9 @@ public interface IUserService
 
     Task<UserInterestsDto> GetInterestsAsync(Guid userId, CancellationToken ct = default);
     Task<UserInterestsDto> SetInterestsAsync(Guid userId, SetInterestsRequest req, CancellationToken ct = default);
+
+    /// Verify the user's current password and replace it with the new one.
+    /// Throws UnauthorizedAccessException when the current password is
+    /// wrong, ArgumentException when the new password is invalid.
+    Task ChangePasswordAsync(Guid userId, ChangePasswordRequest req, CancellationToken ct = default);
 }

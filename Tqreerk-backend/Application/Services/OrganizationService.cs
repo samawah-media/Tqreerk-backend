@@ -296,6 +296,8 @@ public class OrganizationService : IOrganizationService
                 m.User.FullName,
                 m.User.Email,
                 m.IsActive,
+                m.RoleId,
+                RoleName = m.Role.Name,
                 m.JoinedAt,
             })
             .OrderBy(m => m.JoinedAt)
@@ -305,6 +307,8 @@ public class OrganizationService : IOrganizationService
             m.UserId, m.FullName, m.Email, m.IsActive,
             IsFounder: founderId.HasValue && founderId.Value == m.UserId,
             IsCurrentUser: m.UserId == currentUserId,
+            RoleId: m.RoleId,
+            RoleName: m.RoleName,
             m.JoinedAt
         )).ToList();
     }
@@ -332,6 +336,84 @@ public class OrganizationService : IOrganizationService
             new { removedUserId = targetUserId }, ipAddress, ct);
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<OrganizationMemberDto> ChangeMemberRoleAsync(
+        Guid currentUserId, Guid targetUserId, string roleName, string? ipAddress, CancellationToken ct = default)
+    {
+        var orgId = await GetOrgIdForUserAsync(currentUserId, ct);
+        var founderId = await ResolveFounderIdAsync(orgId, ct);
+
+        // Only the founder can change roles. The seed schema doesn't track
+        // an "admin tier" inside org members, so anchoring on the founder
+        // keeps the rule unambiguous and matches the existing remove/invite
+        // permissions.
+        if (!founderId.HasValue || founderId.Value != currentUserId)
+            throw new ForbiddenException("Only the organization founder can change member roles.");
+
+        // Founder's own role is fixed — protects against accidental demotion
+        // that would leave the org without an admin-tier owner.
+        if (founderId.Value == targetUserId)
+            throw new InvalidOperationException("The organization founder's role cannot be changed.");
+
+        // Resolve the requested role. Must be an org-scoped, system role —
+        // platform roles (SuperAdmin, etc.) and ad-hoc rows are off-limits.
+        var normalized = (roleName ?? string.Empty).Trim().ToLowerInvariant();
+        var role = await _db.Roles
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r =>
+                r.Scope == RoleScope.Organization &&
+                r.IsSystem &&
+                r.Name.ToLower() == normalized, ct)
+            ?? throw new ArgumentException($"Unknown role '{roleName}'. Allowed: admin, editor, viewer.");
+
+        var membership = await _db.OrganizationMembers
+            .FirstOrDefaultAsync(m => m.OrganizationId == orgId && m.UserId == targetUserId && m.IsActive, ct)
+            ?? throw new KeyNotFoundException("Member not found in this organization.");
+
+        if (membership.RoleId == role.Id)
+        {
+            // No-op: avoids writing a misleading audit row.
+            return await BuildMemberDtoAsync(orgId, currentUserId, founderId, membership.Id, ct);
+        }
+
+        var previousRoleId = membership.RoleId;
+        membership.RoleId = role.Id;
+
+        await WriteAuditAsync(orgId, currentUserId, "member.role_changed", "OrganizationMember", membership.Id,
+            new { targetUserId, fromRoleId = previousRoleId, toRoleId = role.Id, toRoleName = role.Name },
+            ipAddress, ct);
+
+        await _db.SaveChangesAsync(ct);
+        return await BuildMemberDtoAsync(orgId, currentUserId, founderId, membership.Id, ct);
+    }
+
+    private async Task<OrganizationMemberDto> BuildMemberDtoAsync(
+        Guid orgId, Guid currentUserId, Guid? founderId, Guid membershipId, CancellationToken ct)
+    {
+        var row = await _db.OrganizationMembers
+            .AsNoTracking()
+            .Where(m => m.Id == membershipId)
+            .Select(m => new
+            {
+                m.UserId,
+                m.User.FullName,
+                m.User.Email,
+                m.IsActive,
+                m.RoleId,
+                RoleName = m.Role.Name,
+                m.JoinedAt,
+            })
+            .FirstAsync(ct);
+
+        return new OrganizationMemberDto(
+            row.UserId, row.FullName, row.Email, row.IsActive,
+            IsFounder: founderId.HasValue && founderId.Value == row.UserId,
+            IsCurrentUser: row.UserId == currentUserId,
+            RoleId: row.RoleId,
+            RoleName: row.RoleName,
+            row.JoinedAt
+        );
     }
 
     /// Returns the org's founder id. Falls back to the earliest active member when

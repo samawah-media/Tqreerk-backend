@@ -53,5 +53,15 @@ public record AiJobStatusSnapshot(
     /// Free-form per-job-type payload. For Ingestion this is { pages_processed: int }.
     IReadOnlyDictionary<string, object?>? OutputData);
 
-public record SummarizeResult(Guid ReportId, string Summary, IReadOnlyList<string> KeyFindings, IReadOnlyList<string> Topics);
+public record SummarizeResult(
+    Guid ReportId,
+    string Summary,
+    IReadOnlyList<string> KeyFindings,
+    IReadOnlyList<string> Topics,
+    /// Raw JSON arrays — Indicators / Trends arrive as arrays of objects from
+    /// Gemini's structured output. We pass them through as raw text so the
+    /// .NET side can persist them verbatim into the jsonb columns without
+    /// having to re-shape every nested field.
+    string IndicatorsJson,
+    string TrendsJson);
 public record TranslateResult(Guid ReportId, string TargetLanguage, string SourceLanguage, string TranslatedFileUrl);

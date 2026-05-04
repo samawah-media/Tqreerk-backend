@@ -9,7 +9,15 @@ public record OrganizationMemberDto(
     bool IsActive,
     bool IsFounder,
     bool IsCurrentUser,
+    Guid RoleId,
+    string RoleName,
     DateTime JoinedAt
+);
+
+/// PATCH body for /api/organizations/me/members/{userId}/role.
+/// `RoleName` is one of the seeded org-scoped role names — admin / editor / viewer.
+public record ChangeMemberRoleRequest(
+    [Required, MaxLength(40)] string RoleName
 );
 
 public record OrganizationInvitationDto(

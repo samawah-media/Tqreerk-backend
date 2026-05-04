@@ -263,6 +263,57 @@ public class ReportService : IReportService
         await _db.SaveChangesAsync(ct);
     }
 
+    public async Task<ReportDetailDto> UpdateMetadataAsync(
+        Guid currentUserId,
+        Guid reportId,
+        UpdateReportMetadataRequest req,
+        CancellationToken ct = default)
+    {
+        var orgId = await GetCallerOrgIdAsync(currentUserId, ct);
+
+        var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == reportId, ct)
+            ?? throw new KeyNotFoundException("Report not found.");
+        if (report.OrganizationId != orgId)
+            throw new UnauthorizedAccessException("This report belongs to another organization.");
+
+        // FK validation up front — EF would surface a confusing constraint
+        // error otherwise. Mirrors the CreateAsync pattern.
+        if (req.SectorId.HasValue && !await _db.Sectors.AnyAsync(s => s.Id == req.SectorId.Value, ct))
+            throw new ArgumentException("Unknown sector.");
+        if (req.CountryId.HasValue && !await _db.Countries.AnyAsync(c => c.Id == req.CountryId.Value, ct))
+            throw new ArgumentException("Unknown country.");
+
+        // Partial update: null leaves the field alone. Slug stays frozen
+        // because permalinks rely on it — admins can rename later via a
+        // dedicated tool if ever needed.
+        if (req.Title is not null)
+        {
+            var trimmed = req.Title.Trim();
+            if (trimmed.Length == 0)
+                throw new ArgumentException("Title cannot be empty.");
+            report.Title = trimmed;
+        }
+        if (req.Description is not null)
+            report.Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim();
+        if (req.ReportType is not null)
+            report.ReportType = string.IsNullOrWhiteSpace(req.ReportType) ? null : req.ReportType.Trim();
+        if (req.OriginalLanguage is not null)
+            report.OriginalLanguage = req.OriginalLanguage.Trim();
+        if (req.PublicationYear.HasValue)
+            report.PublicationYear = req.PublicationYear;
+        if (req.PublicationDate.HasValue)
+            report.PublicationDate = req.PublicationDate;
+        if (req.SectorId.HasValue)
+            report.SectorId = req.SectorId;
+        if (req.CountryId.HasValue)
+            report.CountryId = req.CountryId;
+
+        await _db.SaveChangesAsync(ct);
+
+        return await BuildDetailAsync(report.Id, ct)
+            ?? throw new InvalidOperationException("Report disappeared after update.");
+    }
+
     public async Task<ReportDetailDto> ResubmitAsync(
         Guid currentUserId,
         Guid reportId,

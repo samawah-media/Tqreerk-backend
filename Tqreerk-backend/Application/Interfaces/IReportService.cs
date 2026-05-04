@@ -42,6 +42,16 @@ public interface IReportService
         Guid reportId,
         CancellationToken ct = default);
 
+    /// Patch editable metadata on an org-owned report (title, description,
+    /// sector, country, publication date/year, type, language). Does NOT
+    /// touch the PDF, AI content, slug or status. Any null field on the
+    /// request is left unchanged.
+    Task<ReportDetailDto> UpdateMetadataAsync(
+        Guid currentUserId,
+        Guid reportId,
+        UpdateReportMetadataRequest req,
+        CancellationToken ct = default);
+
     /// Re-submit a report that was returned for edit. Replaces the PDF
     /// (and optionally the cover) with the new upload, flips status back
     /// to PendingReview, and bumps SubmittedForReviewAt so the queue

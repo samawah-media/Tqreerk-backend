@@ -74,6 +74,23 @@ public record CreateReportRequest(
     Guid? CountryId
 );
 
+/// PATCH body for `/api/reports/{id}`. Every field is optional — null means
+/// "leave alone". The PDF, AI content, status and slug are NOT part of this
+/// request: those have their own dedicated flows (resubmit, regenerate-ai,
+/// admin review). Sector/Country are still validated against their FK tables
+/// and clear with an explicitly-passed null is not supported here — pass the
+/// existing id back if you need to keep it.
+public record UpdateReportMetadataRequest(
+    [MaxLength(500)] string? Title,
+    [MaxLength(5000)] string? Description,
+    [MaxLength(100)] string? ReportType,
+    [MaxLength(5)] string? OriginalLanguage,
+    int? PublicationYear,
+    DateOnly? PublicationDate,
+    Guid? SectorId,
+    Guid? CountryId
+);
+
 public record PagedResult<T>(
     IReadOnlyList<T> Items,
     int Total,

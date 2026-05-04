@@ -86,6 +86,40 @@ public class UserService : IUserService
         return await GetProfileAsync(userId, ct);
     }
 
+    public async Task ChangePasswordAsync(Guid userId, ChangePasswordRequest req, CancellationToken ct = default)
+    {
+        // Messages here are user-facing — the global exception middleware
+        // reflects ex.Message straight to the API response, so we ship
+        // Arabic copy that the frontend can render verbatim.
+        if (string.IsNullOrEmpty(req.CurrentPassword))
+            throw new ArgumentException("كلمة المرور الحالية مطلوبة.");
+        // Match the registration rule: at least 8 chars. We don't enforce
+        // complexity beyond length to stay compatible with what AuthService
+        // already accepts on signup.
+        if (string.IsNullOrEmpty(req.NewPassword) || req.NewPassword.Length < 8)
+            throw new ArgumentException("كلمة المرور الجديدة يجب ألا تقل عن 8 خانات.");
+
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+            ?? throw new KeyNotFoundException("المستخدم غير موجود.");
+
+        if (!BCrypt.Net.BCrypt.Verify(req.CurrentPassword, user.PasswordHash))
+            throw new UnauthorizedAccessException("كلمة المرور الحالية غير صحيحة.");
+
+        // Reject no-op changes — saves a hash-and-compare on every write
+        // and gives the UI a clean signal to surface.
+        if (BCrypt.Net.BCrypt.Verify(req.NewPassword, user.PasswordHash))
+            throw new ArgumentException("كلمة المرور الجديدة يجب أن تختلف عن الحالية.");
+
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.NewPassword);
+        await _db.SaveChangesAsync(ct);
+
+        // We deliberately don't invalidate refresh tokens here: the user
+        // is already authenticated, the change happened on their device,
+        // and forcing re-login would be hostile UX. Token invalidation
+        // belongs on the password-RESET flow (forgotten password), not
+        // password-change-while-signed-in.
+    }
+
     public async Task<UserInterestsDto> GetInterestsAsync(Guid userId, CancellationToken ct = default)
     {
         var rows = await _db.UserInterests

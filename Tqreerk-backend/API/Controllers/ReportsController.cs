@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Taqreerk.Application.DTOs.Analytics;
 using Taqreerk.Application.DTOs.Reports;
 using Taqreerk.Application.Interfaces;
 
@@ -16,15 +17,18 @@ public class ReportsController : ControllerBase
 
     private readonly IReportService _reports;
     private readonly IReportAiService _ai;
+    private readonly IOrganizationAnalyticsService _analytics;
     private readonly ILogger<ReportsController> _logger;
 
     public ReportsController(
         IReportService reports,
         IReportAiService ai,
+        IOrganizationAnalyticsService analytics,
         ILogger<ReportsController> logger)
     {
         _reports = reports;
         _ai = ai;
+        _analytics = analytics;
         _logger = logger;
     }
 
@@ -148,6 +152,40 @@ public class ReportsController : ControllerBase
         if (!TryGetUserId(out var userId)) return Unauthorized();
         await _reports.DeleteAsync(userId, id, ct);
         return NoContent();
+    }
+
+    /// <summary>Per-report analytics drilldown. Same date-window contract
+    /// as the org-wide endpoint (`/organizations/me/analytics`) — defaults
+    /// to the trailing 30 days. Caller must own the report via org
+    /// membership; cross-org probes get a 404.</summary>
+    [HttpGet("{id:guid}/analytics")]
+    [ProducesResponseType(typeof(ReportAnalyticsDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetReportAnalytics(
+        Guid id,
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        var toDate = (to ?? DateTime.UtcNow.Date);
+        var fromDate = (from ?? toDate.AddDays(-29));
+        return Ok(await _analytics.GetReportAnalyticsAsync(userId, id, fromDate, toDate, ct));
+    }
+
+    /// <summary>Patch editable metadata (title, description, sector, country,
+    /// publication year/date, report type, language). Does not touch the PDF,
+    /// AI content, slug or status. Any null field is left unchanged.</summary>
+    [HttpPatch("{id:guid}")]
+    [ProducesResponseType(typeof(ReportDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateMetadata(
+        Guid id, [FromBody] UpdateReportMetadataRequest req, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        return Ok(await _reports.UpdateMetadataAsync(userId, id, req, ct));
     }
 
     /// <summary>Re-submit a returned-for-edit report with a new PDF (and

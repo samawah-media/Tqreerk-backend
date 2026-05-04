@@ -39,6 +39,14 @@ public record ReviewQueueRequest(
     /// "oldest" (default — FIFO), "newest", "priority". Priority is reserved
     /// for a future PR; today it's a synonym of "oldest".
     string? Sort = null,
+    /// Comma-separated list of report statuses to include (e.g.
+    /// "Approved,Published"). Matches the Report.Status enum names.
+    /// When null or empty, the queue defaults to its historical behaviour:
+    /// PendingReview + the calling reviewer's UnderReview claims. Setting
+    /// this to a value lets staff see reports past the review stage
+    /// (Approved / ProcessingAi / Published / Rejected / ReturnedForEdit)
+    /// from the same admin queue page.
+    string? Status = null,
     int Page = 1,
     int PageSize = 20
 );

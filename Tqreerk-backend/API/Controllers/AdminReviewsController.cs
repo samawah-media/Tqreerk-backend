@@ -21,10 +21,12 @@ namespace Taqreerk.API.Controllers;
 public class AdminReviewsController : ControllerBase
 {
     private readonly IReviewService _reviews;
+    private readonly IReportAiService _ai;
 
-    public AdminReviewsController(IReviewService reviews)
+    public AdminReviewsController(IReviewService reviews, IReportAiService ai)
     {
         _reviews = reviews;
+        _ai = ai;
     }
 
     /// <summary>Paginated review queue. By default returns reports in
@@ -36,6 +38,7 @@ public class AdminReviewsController : ControllerBase
         [FromQuery(Name = "organizationId")] Guid? organizationId = null,
         [FromQuery(Name = "assignedToMe")] bool? assignedToMe = null,
         [FromQuery(Name = "sort")] string? sort = null,
+        [FromQuery(Name = "status")] string? status = null,
         [FromQuery(Name = "page")] int page = 1,
         [FromQuery(Name = "pageSize")] int pageSize = 20,
         CancellationToken ct = default)
@@ -46,6 +49,7 @@ public class AdminReviewsController : ControllerBase
             OrganizationId: organizationId,
             AssignedToMe: assignedToMe,
             Sort: sort,
+            Status: status,
             Page: page,
             PageSize: pageSize);
         return Ok(await _reviews.GetQueueAsync(userId, req, ct));
@@ -131,6 +135,28 @@ public class AdminReviewsController : ControllerBase
     {
         if (!TryGetUserId(out var userId)) return Unauthorized();
         return Ok(await _reviews.ReturnForEditAsync(userId, id, req, ct));
+    }
+
+    /// <summary>Snapshot of the AI processing pipeline (jobs + summary +
+    /// translations) for any report — staff-only, no org-ownership check.
+    /// Polled by the admin workspace every few seconds while the overall
+    /// status is Processing.</summary>
+    [HttpGet("{id:guid}/ai-status")]
+    [ProducesResponseType(typeof(ReportAiStatusDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetAiStatus(Guid id, CancellationToken ct)
+        => Ok(await _ai.GetStatusAsAdminAsync(id, ct));
+
+    /// <summary>Re-run the AI pipeline. Resets Failed jobs, or — if everything
+    /// already Completed — wipes the prior Summarization and re-enqueues the
+    /// Ingestion → Summarization chain from scratch.</summary>
+    [HttpPost("{id:guid}/regenerate-ai")]
+    [ProducesResponseType(typeof(ReportAiStatusDto), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> RegenerateAi(Guid id, CancellationToken ct)
+    {
+        await _ai.RegenerateAsAdminAsync(id, ct);
+        return Accepted(await _ai.GetStatusAsAdminAsync(id, ct));
     }
 
     private bool TryGetUserId(out Guid userId)

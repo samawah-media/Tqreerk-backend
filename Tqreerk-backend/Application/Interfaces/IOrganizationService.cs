@@ -30,6 +30,11 @@ public interface IOrganizationService
     Task<IReadOnlyList<OrganizationMemberDto>> ListMembersAsync(Guid currentUserId, CancellationToken ct = default);
     Task RemoveMemberAsync(Guid currentUserId, Guid targetUserId, string? ipAddress, CancellationToken ct = default);
 
+    /// Change an org member's role. Founder-only. The founder's own role
+    /// is immutable to keep ownership stable.
+    Task<OrganizationMemberDto> ChangeMemberRoleAsync(
+        Guid currentUserId, Guid targetUserId, string roleName, string? ipAddress, CancellationToken ct = default);
+
     Task<IReadOnlyList<OrganizationInvitationDto>> ListInvitationsAsync(Guid currentUserId, CancellationToken ct = default);
     Task<OrganizationInvitationDto> CreateInvitationAsync(Guid currentUserId, string email, string? ipAddress, CancellationToken ct = default);
     Task CancelInvitationAsync(Guid currentUserId, Guid invitationId, string? ipAddress, CancellationToken ct = default);

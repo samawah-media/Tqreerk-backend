@@ -1392,6 +1392,13 @@
             }
           },
           {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "in": "query",
             "schema": {
@@ -1767,6 +1774,86 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/reviews/{id}/ai-status": {
+      "get": {
+        "tags": [
+          "AdminReviews"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportAiStatusDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/reviews/{id}/regenerate-ai": {
+      "post": {
+        "tags": [
+          "AdminReviews"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportAiStatusDto"
                 }
               }
             }
@@ -3402,6 +3489,125 @@
         }
       }
     },
+    "/api/chat/reports/{reportId}/sessions": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/chat/sessions": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/chat/sessions/{sessionId}": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/chat/sessions/{sessionId}/messages": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/invitations/preview": {
       "get": {
         "tags": [
@@ -3549,6 +3755,39 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/MyActivityItemDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/recommendations": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "parameters": [
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MySavedReportDto"
                   }
                 }
               }
@@ -3845,6 +4084,43 @@
         }
       }
     },
+    "/api/organizations/me/analytics": {
+      "get": {
+        "tags": [
+          "Organizations"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationAnalyticsDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/organizations/me/members": {
       "get": {
         "tags": [
@@ -3886,6 +4162,95 @@
         "responses": {
           "204": {
             "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/organizations/me/members/{targetUserId}/role": {
+      "patch": {
+        "tags": [
+          "Organizations"
+        ],
+        "parameters": [
+          {
+            "name": "targetUserId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeMemberRoleRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeMemberRoleRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeMemberRoleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationMemberDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           },
           "404": {
             "description": "Not Found",
@@ -5756,6 +6121,139 @@
             }
           }
         }
+      },
+      "patch": {
+        "tags": [
+          "Reports"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateReportMetadataRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateReportMetadataRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateReportMetadataRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportDetailDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reports/{id}/analytics": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportAnalyticsDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/reports/{id}/resubmit": {
@@ -6178,6 +6676,57 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UserInterestsDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/me/change-password": {
+      "post": {
+        "tags": [
+          "Users"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -7014,6 +7563,28 @@
         },
         "additionalProperties": false
       },
+      "AnalyticsTotalsDto": {
+        "type": "object",
+        "properties": {
+          "publishedReports": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalViews": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalRatings": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "averageRating": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
       "AnnotationDto": {
         "type": "object",
         "properties": {
@@ -7102,6 +7673,30 @@
         "type": "object",
         "properties": {
           "reason": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChangeMemberRoleRequest": {
+        "type": "object",
+        "properties": {
+          "roleName": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChangePasswordRequest": {
+        "type": "object",
+        "properties": {
+          "currentPassword": {
+            "type": "string",
+            "nullable": true
+          },
+          "newPassword": {
             "type": "string",
             "nullable": true
           }
@@ -7326,6 +7921,20 @@
         },
         "additionalProperties": false
       },
+      "CreateSessionRequest": {
+        "type": "object",
+        "properties": {
+          "reportId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateStaffRequest": {
         "type": "object",
         "properties": {
@@ -7344,6 +7953,20 @@
           "roleName": {
             "type": "string",
             "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "DailyViewsPointDto": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "views": {
+            "type": "integer",
+            "format": "int64"
           }
         },
         "additionalProperties": false
@@ -7730,6 +8353,37 @@
         },
         "additionalProperties": false
       },
+      "OrganizationAnalyticsDto": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/AnalyticsTotalsDto"
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DailyViewsPointDto"
+            },
+            "nullable": true
+          },
+          "topReports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportLeaderboardItemDto"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "OrganizationDetailDto": {
         "type": "object",
         "properties": {
@@ -7883,6 +8537,14 @@
           },
           "isCurrentUser": {
             "type": "boolean"
+          },
+          "roleId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "roleName": {
+            "type": "string",
+            "nullable": true
           },
           "joinedAt": {
             "type": "string",
@@ -8819,6 +9481,47 @@
         },
         "additionalProperties": false
       },
+      "ReportAnalyticsDto": {
+        "type": "object",
+        "properties": {
+          "reportId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "totalViews": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalRatings": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "averageRating": {
+            "type": "number",
+            "format": "double"
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DailyViewsPointDto"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "ReportCommentDto": {
         "type": "object",
         "properties": {
@@ -9146,6 +9849,40 @@
           },
           "mine": {
             "$ref": "#/components/schemas/MyReportInteractionDto"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReportLeaderboardItemDto": {
+        "type": "object",
+        "properties": {
+          "reportId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "slug": {
+            "type": "string",
+            "nullable": true
+          },
+          "coverImageUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "views": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ratings": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "averageRating": {
+            "type": "number",
+            "format": "double"
           }
         },
         "additionalProperties": false
@@ -9560,6 +10297,16 @@
         "type": "object",
         "properties": {
           "email": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SendMessageRequest": {
+        "type": "object",
+        "properties": {
+          "message": {
             "type": "string",
             "nullable": true
           }
@@ -10166,6 +10913,48 @@
           },
           "phone": {
             "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdateReportMetadataRequest": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportType": {
+            "type": "string",
+            "nullable": true
+          },
+          "originalLanguage": {
+            "type": "string",
+            "nullable": true
+          },
+          "publicationYear": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "publicationDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "sectorId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "countryId": {
+            "type": "string",
+            "format": "uuid",
             "nullable": true
           }
         },

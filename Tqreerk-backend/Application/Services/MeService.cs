@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Taqreerk.Application.DTOs.Me;
 using Taqreerk.Application.Interfaces;
+using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.Application.Services;
@@ -71,6 +72,87 @@ public class MeService : IMeService
         if (string.IsNullOrWhiteSpace(objectKey)) return null;
         try { return await _files.GetReadUrlAsync(objectKey, ct: ct); }
         catch { return null; }
+    }
+
+    public async Task<IReadOnlyList<MySavedReportDto>> ListRecommendationsAsync(
+        Guid userId, int take = 20, CancellationToken ct = default)
+    {
+        if (take < 1) take = 1;
+        if (take > 50) take = 50;
+
+        // Pull the user's sector interests up front. No interests → no
+        // recommendations: returning empty here keeps the SQL plan simple
+        // and lets the frontend render its empty state without a special
+        // "no interests" signal — the empty list is the signal.
+        var interestSectorIds = await _db.UserInterests
+            .AsNoTracking()
+            .Where(i => i.UserId == userId && i.SectorId != null)
+            .Select(i => i.SectorId!.Value)
+            .Distinct()
+            .ToListAsync(ct);
+
+        if (interestSectorIds.Count == 0)
+            return Array.Empty<MySavedReportDto>();
+
+        // Reports the user has already saved are excluded — they're
+        // already in /my/library and don't need re-recommending. We
+        // intentionally DO NOT exclude viewed reports: a quick read
+        // doesn't mean the user wants the report off their feed, and
+        // surfacing it again is a useful nudge to save for later.
+        var savedReportIds = _db.SavedReports
+            .AsNoTracking()
+            .Where(s => s.UserId == userId)
+            .Select(s => s.ReportId);
+
+        var rows = await _db.Reports
+            .AsNoTracking()
+            .Where(r =>
+                r.Status == ReportStatus.Published &&
+                r.SectorId != null &&
+                interestSectorIds.Contains(r.SectorId.Value) &&
+                !savedReportIds.Contains(r.Id))
+            // Highest-rated first, then most-popular as the tiebreaker.
+            // Reports with no ratings yet (AvgRating = 0) drop to the
+            // bottom — that's intentional, we'd rather surface vetted
+            // content first.
+            .OrderByDescending(r => r.AvgRating)
+            .ThenByDescending(r => r.ViewsCount)
+            .Take(take)
+            .Select(r => new
+            {
+                r.Id,
+                r.Title,
+                r.Slug,
+                r.CoverImageUrl,
+                SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
+                CountryNameAr = r.Country != null ? r.Country.NameAr : null,
+                r.PublicationYear,
+                r.PageCount,
+                r.ViewsCount,
+                OrganizationNameAr = r.Organization != null ? r.Organization.NameAr : null,
+                OrganizationLogoUrl = r.Organization != null ? r.Organization.LogoUrl : null,
+                // Reuse MySavedReportDto for the response shape — there's
+                // no SavedAt on a never-saved report, so we fall back to
+                // PublishedAt (or CreatedAt) for the timestamp slot. The
+                // dashboard sort isn't by this column so the surrogate is
+                // harmless.
+                Stamp = r.PublishedAt ?? r.CreatedAt,
+            })
+            .ToListAsync(ct);
+
+        var dtos = new List<MySavedReportDto>(rows.Count);
+        foreach (var r in rows)
+        {
+            var cover = await ResolveAsync(r.CoverImageUrl, ct);
+            var logo = await ResolveAsync(r.OrganizationLogoUrl, ct);
+            dtos.Add(new MySavedReportDto(
+                r.Id, r.Title, r.Slug, cover,
+                r.SectorNameAr, r.CountryNameAr,
+                r.PublicationYear, r.PageCount, r.ViewsCount,
+                r.OrganizationNameAr, logo,
+                r.Stamp));
+        }
+        return dtos;
     }
 
     public async Task<IReadOnlyList<MyActivityItemDto>> ListActivityAsync(

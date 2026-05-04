@@ -46,6 +46,19 @@ public class MeController : ControllerBase
         return Ok(await _me.ListActivityAsync(userId, take, ct));
     }
 
+    /// <summary>Personalised recommendations: published reports from the
+    /// caller's sector interests, excluding ones already viewed. Empty
+    /// list when the user hasn't picked any interests yet.</summary>
+    [HttpGet("recommendations")]
+    [ProducesResponseType(typeof(IReadOnlyList<MySavedReportDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> Recommendations(
+        [FromQuery] int take = 20,
+        CancellationToken ct = default)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        return Ok(await _me.ListRecommendationsAsync(userId, take, ct));
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);

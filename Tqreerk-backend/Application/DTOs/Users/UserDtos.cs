@@ -48,3 +48,11 @@ public record SetInterestsRequest(
     IReadOnlyList<Guid>? OrganizationIds,
     IReadOnlyList<Guid>? CountryIds
 );
+
+/// Body for `POST /api/users/me/change-password`. Requires the current
+/// password as a basic possession check — the access token alone isn't
+/// enough to flip credentials.
+public record ChangePasswordRequest(
+    string CurrentPassword,
+    string NewPassword
+);

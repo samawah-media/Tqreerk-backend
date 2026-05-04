@@ -14,10 +14,11 @@ namespace Taqreerk.Application.Interfaces;
 /// service's worker on the shared queue.
 public interface IReportAiService
 {
-    /// Kick off the pipeline: creates a single Ingestion job with the
-    /// "ingest+summarize" step so the AI worker handles both stages in one
-    /// pass. Idempotent — skips when a Pending/Processing ingest already
-    /// exists for the report.
+    /// Kick off the pipeline: POSTs to the AI service's /reports/ingest,
+    /// which inserts an Ingestion ai_job and fires the GPU pipeline. The
+    /// Summarization stage runs second — FinalizeCompletedJobsAsync chains
+    /// it once the Ingestion row reaches Completed. Idempotent — skips when
+    /// a Pending/Processing ingest already exists for the report.
     Task EnqueueIngestAsync(Guid reportId, CancellationToken ct = default);
 
     /// Manually trigger a translation job. Gated by the org's
@@ -31,9 +32,18 @@ public interface IReportAiService
     /// worker picks them up again. Used by the "إعادة المعالجة" button.
     Task RegenerateAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default);
 
+    /// Same as RegenerateAsync but skips the org-ownership check. For staff
+    /// to re-run the AI pipeline on any report from the admin app's review
+    /// workspace. Caller (admin controller) is responsible for the role gate.
+    Task RegenerateAsAdminAsync(Guid reportId, CancellationToken ct = default);
+
     /// Returns a snapshot of where the report is in the pipeline — useful
     /// for the frontend's polling badge.
     Task<ReportAiStatusDto> GetStatusAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default);
+
+    /// Same as GetStatusAsync but skips the org-ownership check. For staff
+    /// to inspect the AI pipeline of any report from the admin app.
+    Task<ReportAiStatusDto> GetStatusAsAdminAsync(Guid reportId, CancellationToken ct = default);
 
     /// Background-service hook: scans for Ingestion jobs that the AI service
     /// just flipped to Completed and finalises the .NET-owned Report.Status

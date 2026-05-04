@@ -80,14 +80,37 @@ public class AiServiceClient : IAiServiceClient
     {
         var body = new { report_id = reportId };
         var raw = await PostAsync("reports/summarize", body, ct);
+
+        // Re-parse the raw response so we can extract `indicators` and `trends`
+        // as raw JSON sub-trees — the strongly-typed DTO would force us to
+        // declare every nested field Gemini might emit. The jsonb columns on
+        // our side just want the original payload, so passing the raw text
+        // through avoids a serialise-then-reshape round-trip.
+        using var doc = JsonDocument.Parse(raw);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("ai-service summarize response was not an object");
+
         var dto = JsonSerializer.Deserialize<SummarizeResponseDto>(raw, Json)
             ?? throw new InvalidOperationException("ai-service returned empty summarize response");
+
         return new SummarizeResult(
             dto.report_id,
             dto.summary ?? string.Empty,
             (IReadOnlyList<string>?)dto.key_findings ?? Array.Empty<string>(),
-            (IReadOnlyList<string>?)dto.topics ?? Array.Empty<string>()
+            (IReadOnlyList<string>?)dto.topics ?? Array.Empty<string>(),
+            ExtractRawJsonArray(doc.RootElement, "indicators"),
+            ExtractRawJsonArray(doc.RootElement, "trends")
         );
+    }
+
+    /// Returns the raw JSON text of the named array property, or "[]" when
+    /// it's missing / not an array. Stays queryable by jsonb operators and
+    /// never NULL so downstream callers don't need defensive checks.
+    private static string ExtractRawJsonArray(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var el) || el.ValueKind != JsonValueKind.Array)
+            return "[]";
+        return el.GetRawText();
     }
 
     public async Task<TranslateResult> TranslateAsync(

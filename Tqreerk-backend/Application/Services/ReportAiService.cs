@@ -10,20 +10,30 @@ using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.Application.Services;
 
-/// AI processing orchestrator (queue-only). The AI service's worker drains the
-/// shared ai_jobs table, so this service's role is to:
+/// AI processing orchestrator. This service drives both stages of the
+/// post-approval pipeline by POSTing directly to the AI service's HTTP
+/// endpoints (no queue middleman for summarize):
 ///
 ///   1. Approve            → admin clicks Approve in ReviewService → we
-///                           EnqueueIngestAsync (creates one Ingestion row
-///                           with step=ingest+summarize). The AI worker runs
-///                           extraction + summarization in one pass and writes
-///                           into report_chunks and report_ai_contents[ar].
-///   2. (manual) Translate → org user clicks the "ترجم التقرير" button →
+///                           EnqueueIngestAsync. POSTs to /reports/ingest on
+///                           the AI side which inserts an Ingestion row and
+///                           fires the GPU pipeline (extract → chunk → embed
+///                           → persist into report_chunks). The GPU does NOT
+///                           generate a summary on its own.
+///   2. Auto-summarize     → FinalizeCompletedJobsAsync sees a Completed
+///                           Ingestion row, inserts a Processing
+///                           Summarization ai_job, then POSTs directly to
+///                           /reports/summarize (synchronous — blocks for
+///                           ~30-60 s while Gemini runs). On the response we
+///                           write summary + key_findings + topics +
+///                           indicators + trends into report_ai_contents[lang]
+///                           and flip the report ProcessingAi → Published.
+///   3. (manual) Translate → org user clicks the "ترجم التقرير" button →
 ///                           EnqueueTranslateAsync. Gated by the org's
 ///                           TranslationEnabled flag (toggled by staff).
-///   3. Reconcile          → FinalizeCompletedJobsAsync flips reports out of
-///                           ProcessingAi and syncs ReportTranslation rows
-///                           after the AI worker terminates each job.
+///   4. Reconcile          → FinalizeCompletedJobsAsync also syncs
+///                           ReportTranslation rows after the AI worker
+///                           terminates each Translation job.
 public class ReportAiService : IReportAiService
 {
     private const string DefaultTargetTranslationLanguage = "en";
@@ -218,19 +228,37 @@ public class ReportAiService : IReportAiService
     public async Task RegenerateAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default)
     {
         await AssertCallerOwnsReportAsync(currentUserId, reportId, ct);
+        await RegenerateInternalAsync(reportId, ct);
+    }
 
-        // Reset Failed jobs back to Pending. If everything completed already,
-        // create a fresh ingest job instead so the user can re-run the whole
-        // pipeline (e.g. after the file changed).
+    public Task RegenerateAsAdminAsync(Guid reportId, CancellationToken ct = default)
+        => RegenerateInternalAsync(reportId, ct);
+
+    /// <summary>
+    /// Shared regenerate logic — used by both the org-owner endpoint
+    /// (RegenerateAsync) and the admin endpoint (RegenerateAsAdminAsync).
+    /// Caller is responsible for authorising access before invoking.
+    ///
+    /// Behaviour: if any Ingestion or Summarization job is Failed, reset
+    /// those rows to Pending so the worker / GPU pipeline picks them up
+    /// again. Otherwise (everything Completed already) treat this as a
+    /// fresh re-run — discard the prior Summarization row and re-enqueue
+    /// the whole Ingestion → Summarization chain so the AI re-reads the
+    /// (possibly updated) file and writes new content.
+    /// </summary>
+    private async Task RegenerateInternalAsync(Guid reportId, CancellationToken ct)
+    {
         var jobs = await _db.AiJobs
-            .Where(j => j.ReportId == reportId)
+            .Where(j => j.ReportId == reportId
+                     && (j.JobType == AiJobType.Ingestion
+                         || j.JobType == AiJobType.Summarization))
             .OrderByDescending(j => j.CreatedAt)
             .ToListAsync(ct);
 
-        var anyResetable = jobs.Any(j => j.Status == AiJobStatus.Failed);
-        if (anyResetable)
+        var failed = jobs.Where(j => j.Status == AiJobStatus.Failed).ToList();
+        if (failed.Count > 0)
         {
-            foreach (var j in jobs.Where(j => j.Status == AiJobStatus.Failed))
+            foreach (var j in failed)
             {
                 j.Status = AiJobStatus.Pending;
                 j.ErrorMessage = null;
@@ -238,17 +266,37 @@ public class ReportAiService : IReportAiService
                 j.CompletedAt = null;
             }
             await _db.SaveChangesAsync(ct);
+            _logger.LogInformation(
+                "[ai] RegenerateInternal report={ReportId} reset {Count} Failed job(s) to Pending",
+                reportId, failed.Count);
+            return;
         }
-        else
+
+        // Full re-run path. Remove the prior Summarization rows so
+        // EnsureSummarizationQueuedAsync (called from the finalizer once the
+        // new ingest completes) actually creates a fresh row instead of
+        // skipping it as "already Completed".
+        var summaries = jobs.Where(j => j.JobType == AiJobType.Summarization).ToList();
+        if (summaries.Count > 0)
         {
-            await EnqueueIngestAsync(reportId, ct);
+            _db.AiJobs.RemoveRange(summaries);
+            await _db.SaveChangesAsync(ct);
         }
+
+        await EnqueueIngestAsync(reportId, ct);
     }
 
     public async Task<ReportAiStatusDto> GetStatusAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default)
     {
         await AssertCallerOwnsReportAsync(currentUserId, reportId, ct);
+        return await GetStatusInternalAsync(reportId, ct);
+    }
 
+    public Task<ReportAiStatusDto> GetStatusAsAdminAsync(Guid reportId, CancellationToken ct = default)
+        => GetStatusInternalAsync(reportId, ct);
+
+    private async Task<ReportAiStatusDto> GetStatusInternalAsync(Guid reportId, CancellationToken ct)
+    {
         var jobs = await _db.AiJobs
             .AsNoTracking()
             .Where(j => j.ReportId == reportId)
@@ -343,22 +391,25 @@ public class ReportAiService : IReportAiService
             var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == reportId, ct);
             if (report is null) continue;
 
-            // Ingestion outcome — flips the report out of ProcessingAi and
-            // (when the AI worker ran the combined ingest+summarize step) copies
-            // the summary into report_ai_contents so the user-facing UI can find
-            // it. The AI service stores its results only in ai_jobs.OutputData;
-            // this side keeps the canonical location for read-side queries.
+            // Ingestion outcome — record page count, then drive the second
+            // pipeline stage by POSTing directly to /reports/summarize.
+            // The AI service's GPU pipeline only emits
+            // {pages_processed, chunks_inserted}; it does NOT generate the
+            // summary on its own, so without this call the report would
+            // publish with arabicContent: null.
+            //
+            // The report stays in ProcessingAi until summarize finishes, so
+            // the UI's "AI is processing" badge reflects the work still in
+            // flight.
             var ingest = grp.FirstOrDefault(j => j.JobType == AiJobType.Ingestion);
+            var summarizeFollowupNeeded = false;
             if (ingest is not null)
             {
                 if (ingest.Status == AiJobStatus.Completed)
                 {
                     var pages = TryReadIntFromJson(ingest.OutputData, "pages_processed");
                     if (pages is not null) report.PageCount = pages.Value;
-                    if (report.Status == ReportStatus.ProcessingAi)
-                        report.Status = ReportStatus.Published;
-
-                    await CopySummaryToContentAsync(report, ingest.Id, ingest.OutputData, ct);
+                    summarizeFollowupNeeded = true;
                 }
                 else if (ingest.Status == AiJobStatus.Failed && report.Status == ReportStatus.ProcessingAi)
                 {
@@ -401,101 +452,174 @@ public class ReportAiService : IReportAiService
                     row.TranslationStatus = TranslationStatus.Failed;
                 }
             }
+
+            // Flush per-report changes (page count, translation rows, status
+            // fallbacks) BEFORE the potentially-slow summarize HTTP call so
+            // the worker doesn't sit on the row-level locks for 30-60 s.
+            // The summarize call has its own SaveChangesAsync inside.
+            await _db.SaveChangesAsync(ct);
+
+            if (summarizeFollowupNeeded)
+            {
+                // Synchronous POST to /reports/summarize. Idempotent against
+                // re-entry — RunSummarizeAsync checks for an existing
+                // Summarization row first. Wrapping in try/catch so a
+                // single bad report doesn't kill the rest of this finalizer
+                // tick (the call's own try/catch still persists Failed
+                // outcomes; this is just the last-resort net for unexpected
+                // exceptions like cancellation).
+                try
+                {
+                    await RunSummarizeAsync(report, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "[ai] FinalizeCompletedJobs: RunSummarize threw for report={ReportId}",
+                        reportId);
+                }
+            }
         }
+    }
+
+    /// <summary>
+    /// Run the summarize pipeline stage by POSTing directly to the AI
+    /// service's /reports/summarize endpoint. The endpoint is synchronous —
+    /// it blocks until Gemini returns the structured output (typically
+    /// 30-60 s for a 50-page PDF).
+    ///
+    /// We surface the call as a Summarization ai_jobs row so the existing
+    /// status-polling UI keeps working without changes:
+    ///   1. Insert ai_jobs row Status=Processing (this is the idempotency
+    ///      guard — the next finalizer tick sees it and skips).
+    ///   2. POST /reports/summarize.
+    ///   3. On success: persist SummarizeResult into ai_jobs.OutputData +
+    ///      report_ai_contents, mark Completed, flip report Published.
+    ///   4. On failure: mark Failed, park report at Approved so staff can
+    ///      hit "إعادة المعالجة" to retry.
+    ///
+    /// Idempotent: a Pending/Processing/Completed Summarization row blocks
+    /// re-entry, so this is safe to invoke on every finalizer tick.
+    /// </summary>
+    private async Task RunSummarizeAsync(Report report, CancellationToken ct)
+    {
+        var alreadyExists = await _db.AiJobs.AnyAsync(
+            j => j.ReportId == report.Id
+              && j.JobType == AiJobType.Summarization
+              && (j.Status == AiJobStatus.Pending
+                  || j.Status == AiJobStatus.Processing
+                  || j.Status == AiJobStatus.Completed),
+            ct);
+        if (alreadyExists) return;
+
+        // Reserve the row first so concurrent finalizer ticks see Processing
+        // and skip. Without this guard the call to /reports/summarize would
+        // be made twice for the same report (60 s × 2 = burned quota).
+        var jobRow = new AiJob
+        {
+            ReportId = report.Id,
+            OrganizationId = report.OrganizationId,
+            JobType = AiJobType.Summarization,
+            Status = AiJobStatus.Processing,
+            StartedAt = DateTime.UtcNow,
+            InputData = "{\"step\":\"summarize\",\"trigger\":\"post-ingest-finalizer\"}",
+        };
+        _db.AiJobs.Add(jobRow);
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "[ai] RunSummarize report={ReportId} job={JobId} POSTing /reports/summarize",
+            report.Id, jobRow.Id);
+
+        SummarizeResult result;
+        try
+        {
+            result = await _ai.SummarizeAsync(report.Id, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "[ai] RunSummarize report={ReportId} job={JobId} failed",
+                report.Id, jobRow.Id);
+
+            jobRow.Status = AiJobStatus.Failed;
+            jobRow.ErrorMessage = ex.Message;
+            jobRow.CompletedAt = DateTime.UtcNow;
+            if (report.Status == ReportStatus.ProcessingAi)
+                report.Status = ReportStatus.Approved;
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
+
+        // Persist the structured output back into the row so the admin
+        // status panel surfaces it via GetStatusAsync without a second
+        // round-trip to the AI service.
+        var outputJson = JsonSerializer.Serialize(new
+        {
+            summary       = result.Summary,
+            key_findings  = result.KeyFindings,
+            topics        = result.Topics,
+            // Pre-parsed JsonElements so the embedded objects survive the
+            // outer Serialize call without being escaped as strings.
+            indicators    = JsonDocument.Parse(result.IndicatorsJson).RootElement,
+            trends        = JsonDocument.Parse(result.TrendsJson).RootElement,
+        });
+
+        jobRow.Status = AiJobStatus.Completed;
+        jobRow.CompletedAt = DateTime.UtcNow;
+        jobRow.OutputData = outputJson;
+
+        await CopySummaryFromResultAsync(report, jobRow.Id, result, ct);
+
+        if (report.Status == ReportStatus.ProcessingAi)
+            report.Status = ReportStatus.Published;
 
         await _db.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "[ai] RunSummarize report={ReportId} job={JobId} completed; report Published",
+            report.Id, jobRow.Id);
     }
 
     /// <summary>
-    /// When the AI worker runs the combined ingest+summarize step, the summary
-    /// (+ key findings + topics) lands in `ai_jobs.OutputData` only. The .NET
-    /// read path expects them in report_ai_contents (the canonical place that
-    /// GetStatusAsync returns to the UI), so copy them across once the job
-    /// is Completed. Idempotent — re-running on the same row updates existing
-    /// content instead of duplicating rows.
+    /// Persist a SummarizeResult into report_ai_contents (canonical read-side
+    /// location). Idempotent — re-running on the same report updates the
+    /// existing row instead of duplicating it. Caller must SaveChangesAsync.
     /// </summary>
-    private async Task CopySummaryToContentAsync(
-        Report report, Guid jobId, string? rawOutput, CancellationToken ct)
+    private async Task CopySummaryFromResultAsync(
+        Report report, Guid jobId, SummarizeResult result, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(rawOutput)) return;
-        JsonDocument doc;
-        try { doc = JsonDocument.Parse(rawOutput); }
-        catch (JsonException) { return; }
+        var lang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
+        var existing = await _db.ReportAiContents
+            .FirstOrDefaultAsync(c => c.ReportId == report.Id && c.Language == lang, ct);
 
-        using (doc)
+        var keyFindings = JsonSerializer.Serialize(result.KeyFindings);
+        var topics      = JsonSerializer.Serialize(result.Topics);
+
+        if (existing is null)
         {
-            if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
-
-            string? summary = doc.RootElement.TryGetProperty("summary", out var sEl) && sEl.ValueKind == JsonValueKind.String
-                ? sEl.GetString() : null;
-            if (string.IsNullOrWhiteSpace(summary)) return; // ingest-only job, nothing to copy
-
-            // Combined summarize+insights output (one Gemini call, 5 fields).
-            // Indicators / trends arrive as arrays of objects, so we copy the
-            // raw JSON sub-tree rather than re-serialising into strings.
-            var keyFindings   = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "key_findings"));
-            var topics        = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "topics"));
-            var indicatorsRaw = ExtractJsonArrayRaw(doc.RootElement, "indicators");
-            var trendsRaw     = ExtractJsonArrayRaw(doc.RootElement, "trends");
-
-            var lang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
-            var existing = await _db.ReportAiContents
-                .FirstOrDefaultAsync(c => c.ReportId == report.Id && c.Language == lang, ct);
-
-            if (existing is null)
+            _db.ReportAiContents.Add(new ReportAiContent
             {
-                _db.ReportAiContents.Add(new ReportAiContent
-                {
-                    ReportId    = report.Id,
-                    Language    = lang,
-                    AiJobId     = jobId,
-                    Summary     = summary,
-                    KeyFindings = keyFindings,
-                    Topics      = topics,
-                    Indicators  = indicatorsRaw,
-                    Trends      = trendsRaw,
-                    GeneratedAt = DateTime.UtcNow,
-                });
-            }
-            else
-            {
-                existing.Summary     = summary;
-                existing.KeyFindings = keyFindings;
-                existing.Topics      = topics;
-                existing.Indicators  = indicatorsRaw;
-                existing.Trends      = trendsRaw;
-                existing.GeneratedAt = DateTime.UtcNow;
-                existing.AiJobId     = jobId;
-            }
+                ReportId    = report.Id,
+                Language    = lang,
+                AiJobId     = jobId,
+                Summary     = result.Summary,
+                KeyFindings = keyFindings,
+                Topics      = topics,
+                Indicators  = result.IndicatorsJson,
+                Trends      = result.TrendsJson,
+                GeneratedAt = DateTime.UtcNow,
+            });
         }
-    }
-
-    private static List<string> ExtractStringArray(JsonElement root, string key)
-    {
-        var list = new List<string>();
-        if (!root.TryGetProperty(key, out var arr) || arr.ValueKind != JsonValueKind.Array) return list;
-        foreach (var item in arr.EnumerateArray())
+        else
         {
-            if (item.ValueKind == JsonValueKind.String)
-            {
-                var s = item.GetString();
-                if (!string.IsNullOrWhiteSpace(s)) list.Add(s);
-            }
+            existing.Summary     = result.Summary;
+            existing.KeyFindings = keyFindings;
+            existing.Topics      = topics;
+            existing.Indicators  = result.IndicatorsJson;
+            existing.Trends      = result.TrendsJson;
+            existing.GeneratedAt = DateTime.UtcNow;
+            existing.AiJobId     = jobId;
         }
-        return list;
-    }
-
-    /// <summary>
-    /// Returns the raw JSON text of an array property — preserves nested objects
-    /// so jsonb columns receive the structure as Gemini emitted it. Returns
-    /// "[]" when the property is missing or not an array, so jsonb stays
-    /// queryable and never NULL.
-    /// </summary>
-    private static string ExtractJsonArrayRaw(JsonElement root, string key)
-    {
-        if (!root.TryGetProperty(key, out var el) || el.ValueKind != JsonValueKind.Array)
-            return "[]";
-        return el.GetRawText();
     }
 
     private static int? TryReadIntFromJson(string? raw, string key)

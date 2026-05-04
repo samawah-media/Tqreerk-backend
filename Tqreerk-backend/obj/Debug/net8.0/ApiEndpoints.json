@@ -921,6 +921,37 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.AdminReviewsController",
+    "Method": "GetAiStatus",
+    "RelativePath": "api/admin/reviews/{id}/ai-status",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "id",
+        "Type": "System.Guid",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Reports.ReportAiStatusDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AdminReviewsController",
     "Method": "Approve",
     "RelativePath": "api/admin/reviews/{id}/approve",
     "HttpMethod": "POST",
@@ -997,6 +1028,37 @@
           "application/json"
         ],
         "StatusCode": 409
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AdminReviewsController",
+    "Method": "RegenerateAi",
+    "RelativePath": "api/admin/reviews/{id}/regenerate-ai",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "id",
+        "Type": "System.Guid",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Reports.ReportAiStatusDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 202
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
       }
     ]
   },
@@ -1161,6 +1223,11 @@
       },
       {
         "Name": "sort",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "status",
         "Type": "System.String",
         "IsRequired": false
       },
@@ -2222,6 +2289,81 @@
     ]
   },
   {
+    "ContainingType": "Taqreerk.API.Controllers.ChatController",
+    "Method": "ListSessions",
+    "RelativePath": "api/chat/reports/{reportId}/sessions",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "reportId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.ChatController",
+    "Method": "CreateSession",
+    "RelativePath": "api/chat/sessions",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.API.Controllers.ChatController\u002BCreateSessionRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.ChatController",
+    "Method": "GetSession",
+    "RelativePath": "api/chat/sessions/{sessionId}",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "sessionId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.ChatController",
+    "Method": "SendMessage",
+    "RelativePath": "api/chat/sessions/{sessionId}/messages",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "sessionId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "req",
+        "Type": "Taqreerk.API.Controllers.ChatController\u002BSendMessageRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
     "ContainingType": "Taqreerk.API.Controllers.ReferenceController",
     "Method": "GetCountries",
     "RelativePath": "api/countries",
@@ -2370,6 +2512,30 @@
     "ReturnTypes": [
       {
         "Type": "Taqreerk.Application.DTOs.Points.PointsHistoryPageDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.MeController",
+    "Method": "Recommendations",
+    "RelativePath": "api/me/recommendations",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "take",
+        "Type": "System.Int32",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Collections.Generic.IReadOnlyList\u00601[[Taqreerk.Application.DTOs.Me.MySavedReportDto, Tqreerk-backend, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
         "MediaTypes": [
           "application/json"
         ],
@@ -2682,6 +2848,35 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.OrganizationsController",
+    "Method": "GetAnalytics",
+    "RelativePath": "api/organizations/me/analytics",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "from",
+        "Type": "System.Nullable\u00601[[System.DateTime, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
+        "IsRequired": false
+      },
+      {
+        "Name": "to",
+        "Type": "System.Nullable\u00601[[System.DateTime, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Analytics.OrganizationAnalyticsDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.OrganizationsController",
     "Method": "UpdateBasics",
     "RelativePath": "api/organizations/me/basics",
     "HttpMethod": "PATCH",
@@ -2879,6 +3074,63 @@
         "Type": "System.Void",
         "MediaTypes": [],
         "StatusCode": 204
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 409
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.OrganizationsController",
+    "Method": "ChangeMemberRole",
+    "RelativePath": "api/organizations/me/members/{targetUserId}/role",
+    "HttpMethod": "PATCH",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "targetUserId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Organizations.ChangeMemberRoleRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Organizations.OrganizationMemberDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 403
       },
       {
         "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
@@ -3818,6 +4070,56 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.ReportsController",
+    "Method": "UpdateMetadata",
+    "RelativePath": "api/reports/{id}",
+    "HttpMethod": "PATCH",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "id",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Reports.UpdateReportMetadataRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Reports.ReportDetailDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 403
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.ReportsController",
     "Method": "GetAiStatus",
     "RelativePath": "api/reports/{id}/ai-status",
     "HttpMethod": "GET",
@@ -3889,6 +4191,47 @@
           "application/json"
         ],
         "StatusCode": 403
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.ReportsController",
+    "Method": "GetReportAnalytics",
+    "RelativePath": "api/reports/{id}/analytics",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "id",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "from",
+        "Type": "System.Nullable\u00601[[System.DateTime, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
+        "IsRequired": false
+      },
+      {
+        "Name": "to",
+        "Type": "System.Nullable\u00601[[System.DateTime, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Analytics.ReportAnalyticsDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
       },
       {
         "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
@@ -4435,6 +4778,42 @@
           "application/json"
         ],
         "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.UsersController",
+    "Method": "ChangePassword",
+    "RelativePath": "api/users/me/change-password",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Users.ChangePasswordRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 204
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 401
       }
     ]
   },

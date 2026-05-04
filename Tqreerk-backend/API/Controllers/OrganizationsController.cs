@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Taqreerk.Application.DTOs.Analytics;
 using Taqreerk.Application.DTOs.Dashboard;
 using Taqreerk.Application.DTOs.Organizations;
 using Taqreerk.Application.Interfaces;
@@ -17,11 +18,16 @@ public class OrganizationsController : ControllerBase
 
     private readonly IOrganizationService _orgs;
     private readonly IDashboardService _dashboard;
+    private readonly IOrganizationAnalyticsService _analytics;
 
-    public OrganizationsController(IOrganizationService orgs, IDashboardService dashboard)
+    public OrganizationsController(
+        IOrganizationService orgs,
+        IDashboardService dashboard,
+        IOrganizationAnalyticsService analytics)
     {
         _orgs = orgs;
         _dashboard = dashboard;
+        _analytics = analytics;
     }
 
     /// <summary>Returns the organization the current user is a member of, with profile + files.</summary>
@@ -119,6 +125,23 @@ public class OrganizationsController : ControllerBase
         return Ok(await _dashboard.GetRecentActivityAsync(userId, take, ct));
     }
 
+    // ── Analytics ────────────────────────────────────────────────────────────
+
+    /// <summary>Aggregated analytics for the caller's org over [from, to].
+    /// Defaults to the trailing 30 days if either bound is omitted.</summary>
+    [HttpGet("me/analytics")]
+    [ProducesResponseType(typeof(OrganizationAnalyticsDto), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetAnalytics(
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        var toDate = (to ?? DateTime.UtcNow.Date);
+        var fromDate = (from ?? toDate.AddDays(-29));
+        return Ok(await _analytics.GetOrganizationAnalyticsAsync(userId, fromDate, toDate, ct));
+    }
+
     // ── Members ──────────────────────────────────────────────────────────────
 
     /// <summary>List active members of the current user's organization.</summary>
@@ -141,6 +164,22 @@ public class OrganizationsController : ControllerBase
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
         await _orgs.RemoveMemberAsync(userId, targetUserId, ip, ct);
         return NoContent();
+    }
+
+    /// <summary>Change a member's role. Founder-only. The founder's own role is immutable.</summary>
+    [HttpPatch("me/members/{targetUserId:guid}/role")]
+    [ProducesResponseType(typeof(OrganizationMemberDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ChangeMemberRole(
+        Guid targetUserId, [FromBody] ChangeMemberRoleRequest req, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var dto = await _orgs.ChangeMemberRoleAsync(userId, targetUserId, req.RoleName, ip, ct);
+        return Ok(dto);
     }
 
     // ── Invitations ──────────────────────────────────────────────────────────

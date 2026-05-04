@@ -52,6 +52,20 @@ public class UsersController : ControllerBase
         return Ok(await _users.SetInterestsAsync(userId, req, ct));
     }
 
+    /// <summary>Change the current user's password. Requires the current
+    /// password as a possession check; refresh tokens stay valid because
+    /// the user is already authenticated on this device.</summary>
+    [HttpPost("me/change-password")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest req, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        await _users.ChangePasswordAsync(userId, req, ct);
+        return NoContent();
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
