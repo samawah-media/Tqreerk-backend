@@ -42,3 +42,14 @@ langgraph==0.2.55
 # risk; pulls in fixes for global-endpoint URL construction and gRPC
 # streaming back-pressure that the older release lacked.
 langchain-google-vertexai==2.0.28
+
+# ── Explicit langchain-ecosystem floor ──────────────────────────────────────
+# langchain-google-vertexai==2.0.28 requires langchain-core>=0.3.67. Without
+# these floor pins, pip's resolver backtracks all the way to
+# langchain-community 0.0.1 (which requires langchain-core<0.1) trying to
+# satisfy an unbounded transitive constraint from ragas — and fails.
+# Pinning the umbrella packages to the 0.3.x line keeps the resolver on a
+# single self-consistent set.
+langchain-core>=0.3.67,<0.4
+langchain>=0.3.0,<0.4
+langchain-community>=0.3.0,<0.4
