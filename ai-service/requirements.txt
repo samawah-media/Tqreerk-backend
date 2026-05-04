@@ -17,7 +17,10 @@ python-multipart==0.0.18
 pydantic-settings==2.6.1
 httpx==0.28.1   # min required by google-genai 1.24.0
 sentry-sdk[fastapi]==2.18.0
-langchain-text-splitters==0.3.2
+# Floor pin (was ==0.3.2): the langchain 0.3.18+ releases require
+# langchain-text-splitters>=0.3.6, and a hard 0.3.2 pin blocks pip from
+# picking a coherent langchain set with langchain-core>=0.3.67.
+langchain-text-splitters>=0.3.8,<0.4
 
 # ── Observability + RAG eval ─────────────────────────────────────────────────
 # Langfuse: per-request traces (chat/ingest), generation events, async scoring.
