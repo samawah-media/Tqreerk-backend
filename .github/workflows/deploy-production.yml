@@ -141,6 +141,10 @@ jobs:
             Sentry__Environment=Production
             FileStorage__Provider=gcs
             FileStorage__GcsBucketName=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            AiService__BaseUrl=${{ secrets.AI_SERVICE_BASE_URL_PRODUCTION }}
+            AiService__TimeoutSeconds=300
+            AiService__WorkerPollSeconds=5
+            AiService__TranslationOutputPrefix=${{ secrets.AI_SERVICE_TRANSLATION_OUTPUT_PREFIX_PRODUCTION }}
             Quota__Enabled=true
             Quota__DailyIngestPerOrg=50
             Quota__DailyTranslatePerOrg=25
