@@ -230,8 +230,8 @@ public class GcsFileStorage : IFileStorage
                 Name = _resourceName,
                 Payload = ByteString.CopyFrom(data),
             });
-            // V4 signed URLs expect lowercase hex.
-            return Convert.ToHexString(resp.SignedBlob.ToByteArray()).ToLowerInvariant();
+            // UrlSigner expects base64; it base64-decodes then hex-encodes itself.
+            return Convert.ToBase64String(resp.SignedBlob.ToByteArray());
         }
 
         public async Task<string> CreateSignatureAsync(
@@ -244,7 +244,7 @@ public class GcsFileStorage : IFileStorage
                 Name = _resourceName,
                 Payload = ByteString.CopyFrom(data),
             }, cancellationToken).ConfigureAwait(false);
-            return Convert.ToHexString(resp.SignedBlob.ToByteArray()).ToLowerInvariant();
+            return Convert.ToBase64String(resp.SignedBlob.ToByteArray());
         }
     }
 }
