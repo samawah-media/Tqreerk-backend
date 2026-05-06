@@ -231,7 +231,13 @@ public class ReportService : IReportService
     {
         if (string.IsNullOrWhiteSpace(objectKey)) return null;
         try { return await _files.GetReadUrlAsync(objectKey, ct: ct); }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            // Surfacing this — silent null was masking a Cloud Run signing
+            // misconfiguration (no private key in ADC creds). See GcsFileStorage.
+            _logger.LogWarning(ex, "Signing read URL failed for objectKey={ObjectKey}", objectKey);
+            return null;
+        }
     }
 
     public async Task<ReportDetailDto> GetAsync(Guid currentUserId, Guid reportId, CancellationToken ct = default)
@@ -458,14 +464,22 @@ public class ReportService : IReportService
         if (!string.IsNullOrWhiteSpace(row.FileUrl))
         {
             try { signedUrl = await _files.GetReadUrlAsync(row.FileUrl, ct: ct); }
-            catch { signedUrl = null; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Signing read URL failed for FileUrl={ObjectKey}", row.FileUrl);
+                signedUrl = null;
+            }
         }
 
         string? coverUrl = null;
         if (!string.IsNullOrWhiteSpace(row.CoverImageUrl))
         {
             try { coverUrl = await _files.GetReadUrlAsync(row.CoverImageUrl, ct: ct); }
-            catch { coverUrl = null; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Signing read URL failed for CoverImageUrl={ObjectKey}", row.CoverImageUrl);
+                coverUrl = null;
+            }
         }
 
         // Latest review note — drives the org-side dashboard banner when

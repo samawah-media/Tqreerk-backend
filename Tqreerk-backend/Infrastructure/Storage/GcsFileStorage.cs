@@ -1,5 +1,7 @@
 using Google.Apis.Auth.OAuth2;
+using Google.Cloud.Iam.Credentials.V1;
 using Google.Cloud.Storage.V1;
+using Google.Protobuf;
 using Microsoft.Extensions.Options;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Settings;
@@ -8,7 +10,10 @@ namespace Taqreerk.Infrastructure.Storage;
 
 /// Google Cloud Storage backend. Stores objects in the configured bucket and
 /// generates short-lived V4 signed URLs for reads. Service account credentials
-/// are loaded from a JSON file path or fall back to Application Default Credentials.
+/// are loaded from a JSON file path (local dev) or fall back to Application
+/// Default Credentials (Cloud Run). When ADC returns a metadata-server
+/// credential (Cloud Run / GCE) it has no private key, so V4 signing is
+/// delegated to the IAM Credentials `signBlob` API.
 public class GcsFileStorage : IFileStorage
 {
     private readonly FileStorageSettings _settings;
@@ -24,7 +29,6 @@ public class GcsFileStorage : IFileStorage
         if (string.IsNullOrWhiteSpace(_settings.GcsBucketName))
             throw new InvalidOperationException("FileStorage:GcsBucketName must be set when Provider=gcs.");
 
-        // Either an explicit service-account JSON path, or fall back to ADC.
         GoogleCredential credential;
         if (!string.IsNullOrWhiteSpace(_settings.GcsCredentialsJsonPath))
         {
@@ -32,10 +36,6 @@ public class GcsFileStorage : IFileStorage
                 throw new InvalidOperationException(
                     $"GCS credentials file not found at: {_settings.GcsCredentialsJsonPath}");
 
-            // Local-dev only path (Cloud Run uses ADC via the service account).
-            // FromStream is marked obsolete by Google.Apis.Auth; the suggested
-            // CredentialFactory replacement requires async setup we can't run
-            // in a constructor, so we keep this and silence the warning.
 #pragma warning disable CS0618
             using var keyStream = File.OpenRead(_settings.GcsCredentialsJsonPath);
             credential = GoogleCredential.FromStream(keyStream);
@@ -47,7 +47,28 @@ public class GcsFileStorage : IFileStorage
         }
 
         _storage = StorageClient.Create(credential);
-        _signer = UrlSigner.FromCredential(credential);
+
+        // ServiceAccountCredential carries a private key — sign locally.
+        // ComputeCredential (Cloud Run / GCE) has no private key — delegate
+        // V4 signing to the IAM Credentials API. The runtime SA must have
+        // `roles/iam.serviceAccountTokenCreator` on itself for signBlob to
+        // succeed; without that, signed URL requests will throw 403.
+        if (credential.UnderlyingCredential is Google.Apis.Auth.OAuth2.ServiceAccountCredential)
+        {
+            _signer = UrlSigner.FromCredential(credential);
+            _logger.LogInformation("GCS UrlSigner: local key (ServiceAccountCredential).");
+        }
+        else
+        {
+            var saEmail = ResolveServiceAccountEmail(credential)
+                ?? throw new InvalidOperationException(
+                    "Could not resolve runtime service-account email for IAM signBlob. " +
+                    "Set FileStorage:GcsCredentialsJsonPath, or run on Cloud Run/GCE with the metadata server reachable.");
+
+            var iamClient = IAMCredentialsClient.Create();
+            _signer = UrlSigner.FromBlobSigner(new IamBlobSigner(iamClient, saEmail));
+            _logger.LogInformation("GCS UrlSigner: IAM signBlob delegate for {ServiceAccount}.", saEmail);
+        }
     }
 
     public async Task<StoredFile> UploadAsync(
@@ -60,8 +81,6 @@ public class GcsFileStorage : IFileStorage
         var safeFolder = SanitizeFolder(folder);
         var extension = Path.GetExtension(originalFileName);
         var fileName = $"{Guid.NewGuid():N}{extension}";
-        // Optional bucket-level prefix — keeps dev/staging/prod inside the same
-        // bucket isolated under their own root folders.
         var prefix = SanitizeFolder(_settings.GcsBucketPrefix);
         var withPrefix = string.IsNullOrEmpty(prefix) ? safeFolder
             : string.IsNullOrEmpty(safeFolder) ? prefix
@@ -88,12 +107,6 @@ public class GcsFileStorage : IFileStorage
         // signed URL itself. GCS V4 signs ALL query parameters at signing time,
         // so these have to be present in the RequestTemplate — appending them
         // afterwards on the frontend triggers SignatureDoesNotMatch.
-        //
-        // Why we need them: the original PDF is uploaded as application/pdf
-        // (renders inline correctly), but Cloud Translation v3 stores the
-        // translated PDF as application/octet-stream — that forces a download.
-        // Overriding the response Content-Type at sign time normalises both
-        // cases so the browser PDF viewer always opens them.
         var contentType = GuessContentType(objectKey);
         var queryParams = new Dictionary<string, IEnumerable<string>>
         {
@@ -113,10 +126,6 @@ public class GcsFileStorage : IFileStorage
         return url;
     }
 
-    /// Best-effort Content-Type from the object key extension. The override
-    /// only matters when GCS's stored Content-Type is wrong (e.g. octet-stream
-    /// from Cloud Translation v3); for everything else we still set the right
-    /// type, which is harmless.
     private static string GuessContentType(string objectKey)
     {
         var ext = Path.GetExtension(objectKey).ToLowerInvariant();
@@ -166,5 +175,76 @@ public class GcsFileStorage : IFileStorage
             .Select(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '/' ? c : '-')
             .ToArray());
         return cleaned;
+    }
+
+    /// On Cloud Run / GCE the metadata server exposes the SA email at
+    /// /computeMetadata/v1/instance/service-accounts/default/email. We hit it
+    /// once at startup; if unreachable (e.g. the deployment doesn't run on
+    /// GCP) we surface the failure rather than silently falling back.
+    private static string? ResolveServiceAccountEmail(GoogleCredential credential)
+    {
+        // ComputeCredential doesn't expose the email directly, so we ask the
+        // metadata server. We deliberately use a short timeout — if we're not
+        // on GCP this should fail fast, not block startup.
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            http.DefaultRequestHeaders.Add("Metadata-Flavor", "Google");
+            var resp = http.GetStringAsync(
+                "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email")
+                .GetAwaiter().GetResult();
+            return string.IsNullOrWhiteSpace(resp) ? null : resp.Trim();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// Implements UrlSigner's IBlobSigner by calling IAM Credentials
+    /// `projects/-/serviceAccounts/{email}:signBlob`. The runtime SA must
+    /// have `roles/iam.serviceAccountTokenCreator` on itself.
+    private sealed class IamBlobSigner : UrlSigner.IBlobSigner
+    {
+        private readonly IAMCredentialsClient _client;
+        private readonly string _serviceAccountEmail;
+        private readonly string _resourceName;
+
+        public IamBlobSigner(IAMCredentialsClient client, string serviceAccountEmail)
+        {
+            _client = client;
+            _serviceAccountEmail = serviceAccountEmail;
+            _resourceName = $"projects/-/serviceAccounts/{serviceAccountEmail}";
+        }
+
+        public string Id => _serviceAccountEmail;
+
+        // GCS V4 signed URLs use RSA-SHA256. IAM signBlob signs with the SA's
+        // managed RSA key, which matches.
+        public string Algorithm => "GOOG4-RSA-SHA256";
+
+        public string CreateSignature(byte[] data, UrlSigner.BlobSignerParameters parameters)
+        {
+            var resp = _client.SignBlob(new SignBlobRequest
+            {
+                Name = _resourceName,
+                Payload = ByteString.CopyFrom(data),
+            });
+            // V4 signed URLs expect lowercase hex.
+            return Convert.ToHexString(resp.SignedBlob.ToByteArray()).ToLowerInvariant();
+        }
+
+        public async Task<string> CreateSignatureAsync(
+            byte[] data,
+            UrlSigner.BlobSignerParameters parameters,
+            CancellationToken cancellationToken)
+        {
+            var resp = await _client.SignBlobAsync(new SignBlobRequest
+            {
+                Name = _resourceName,
+                Payload = ByteString.CopyFrom(data),
+            }, cancellationToken).ConfigureAwait(false);
+            return Convert.ToHexString(resp.SignedBlob.ToByteArray()).ToLowerInvariant();
+        }
     }
 }
