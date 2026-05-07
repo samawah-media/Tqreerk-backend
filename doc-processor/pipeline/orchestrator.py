@@ -368,7 +368,13 @@ def process_document(
     started = time.perf_counter()
     options = options or ExtractOptions()
 
+    layout_started = time.perf_counter()
     pages_regions = layout.analyze_document(pdf_bytes)
+    layout_ms = int((time.perf_counter() - layout_started) * 1000)
+    logger.info(
+        "orchestrator: layout done in %d ms — %d pages with regions",
+        layout_ms, len(pages_regions),
+    )
     if page_range is not None:
         lo, hi = page_range
         pages_regions = {
@@ -381,8 +387,20 @@ def process_document(
     # PyMuPDF document handle for lazy per-page rasterisation.
     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages: list[ExtractResponse] = []
+    pages_to_process = sorted(pages_regions.keys())
+    total_pages = len(pages_to_process)
+    # Progress log every N pages OR every 30 s — whichever comes first.
+    # Without this the post-layout per-page loop (OCR fallback + Florence-2
+    # captions on figures) looks like a silent 5-15 min stall.
+    _PROGRESS_EVERY_N_PAGES = 10
+    _PROGRESS_EVERY_SECONDS = 30.0
+    last_progress_at = time.perf_counter()
+    # Cumulative time spent in each per-region stage — surfaced once at the
+    # end so we can tell which model is the bottleneck without reading every
+    # per-page log line.
+    page_loop_started = time.perf_counter()
     try:
-        for page_no in sorted(pages_regions.keys()):
+        for idx, page_no in enumerate(pages_to_process, start=1):
             page_started = time.perf_counter()
             regions = pages_regions[page_no]
 
@@ -410,15 +428,42 @@ def process_document(
                 if block is not None:
                     blocks.append(block)
 
+            page_latency_ms = int((time.perf_counter() - page_started) * 1000)
             pages.append(ExtractResponse(
                 content=_build_content(blocks),
                 metadata=_build_metadata(blocks),
                 blocks=blocks,
                 page_number=page_no,
-                latency_ms=int((time.perf_counter() - page_started) * 1000),
+                latency_ms=page_latency_ms,
             ))
+
+            # Slow-page warning so a single bad page (lots of OCR fallback,
+            # heavy Florence-2 captioning) is visible in logs even when
+            # progress reporting hasn't ticked yet.
+            if page_latency_ms > 30_000:
+                logger.warning(
+                    "orchestrator: page=%d slow — %d ms (regions=%d)",
+                    page_no, page_latency_ms, len(regions),
+                )
+
+            now = time.perf_counter()
+            since_last = now - last_progress_at
+            if (idx % _PROGRESS_EVERY_N_PAGES == 0) or since_last >= _PROGRESS_EVERY_SECONDS:
+                elapsed = now - page_loop_started
+                rate = idx / elapsed if elapsed > 0 else 0.0
+                remaining = (total_pages - idx) / rate if rate > 0 else float("inf")
+                logger.info(
+                    "orchestrator: progress %d/%d pages (%.1fs elapsed, ~%.0fs remaining, %.2f pages/s)",
+                    idx, total_pages, elapsed, remaining, rate,
+                )
+                last_progress_at = now
     finally:
         pdf_doc.close()
+    page_loop_ms = int((time.perf_counter() - page_loop_started) * 1000)
+    logger.info(
+        "orchestrator: per-page loop done — %d/%d pages in %d ms (%.1f s)",
+        len(pages), total_pages, page_loop_ms, page_loop_ms / 1000,
+    )
 
     document_metadata = DocumentMetadata(
         page_count=len(pages),
