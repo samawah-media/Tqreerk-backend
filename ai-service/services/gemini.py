@@ -152,6 +152,20 @@ def _init():
 
 # ── Shared retry wrapper ────────────────────────────────────────────────────
 
+_QUOTA_ERROR_MARKERS = (
+    "429", "resource_exhausted", "resource exhausted",
+    "quota exceeded", "rate limit",
+)
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Detect Vertex / Gemini quota errors (HTTP 429 RESOURCE_EXHAUSTED).
+    These need >60 s backoff to outlive Vertex's per-minute quota window —
+    the conn-error path's 1/2/4/8 s backoff just burns retries inside a
+    single window."""
+    return any(m in str(exc).lower() for m in _QUOTA_ERROR_MARKERS)
+
+
 _CONN_ERROR_MARKERS = (
     "ssl", "eof", "connection reset", "broken pipe",
     "remote end closed", "connection aborted", "max retries",
@@ -178,6 +192,8 @@ def _call_with_retry(operation: str, fn):
     instance for the call AND for `_replace_if_same` on failure to avoid
     racing other threads that may have already replaced it.
     """
+    import random
+
     last_exc: Exception | None = None
     max_attempts = 5
     for attempt in range(max_attempts):
@@ -187,14 +203,25 @@ def _call_with_retry(operation: str, fn):
         except Exception as exc:
             last_exc = exc
             connection_error = _is_connection_error(exc)
+            quota_error = _is_quota_error(exc)
             logger.warning(
-                "%s attempt %d/%d failed (connection_error=%s): %s",
-                operation, attempt + 1, max_attempts, connection_error, exc,
+                "%s attempt %d/%d failed (connection_error=%s, quota_error=%s): %s",
+                operation, attempt + 1, max_attempts,
+                connection_error, quota_error, exc,
             )
             if connection_error:
                 _replace_if_same(client)
             if attempt < max_attempts - 1:
-                time.sleep(2 ** attempt)
+                if quota_error:
+                    # Vertex quotas reset per minute. Start at 30 s and
+                    # double, with up to 5 s jitter so concurrent retriers
+                    # don't all hammer the API on the same second when
+                    # the window opens. Sequence: 30, 60, 120, 240 s.
+                    base = 30 * (2 ** attempt)
+                    sleep_s = base + random.uniform(0, 5)
+                else:
+                    sleep_s = 2 ** attempt
+                time.sleep(sleep_s)
     assert last_exc is not None
     raise last_exc
 

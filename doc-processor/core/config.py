@@ -88,6 +88,19 @@ class Settings(BaseSettings):
     # text is empty / suspiciously short, we run OCR on the region as fallback.
     ocr_fallback_min_chars: int = 20             # below this length → OCR
 
+    # Skip OCR fallback on regions that are too small to contain meaningful
+    # text or are visually empty (solid-color rectangles, decorative borders).
+    # Each skipped region saves ~2-3 s of EasyOCR work; a typical bulk ingest
+    # has 5-10 such regions per page.
+    ocr_min_region_area_ratio: float = 0.005     # < 0.5% of page area → skip
+    ocr_min_pixel_stddev: float = 8.0            # solid-color crops → skip
+
+    # Skip Florence-2 captioning on figures that are too small to be
+    # informative (logos, decoration, page-corner glyphs). Even when the
+    # caller asks for captioning, anything below this threshold is treated
+    # as a non-content figure and gets a "[Figure]" stub.
+    figure_caption_min_area_ratio: float = 0.02  # < 2% of page area → no caption
+
     # Cap how many figures / tables / formulas we process per page so a
     # malformed PDF can't blow up GPU memory or runtime.
     max_blocks_per_page: int = 200
