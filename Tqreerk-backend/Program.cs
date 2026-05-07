@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
 using Taqreerk.API.Middleware;
@@ -7,6 +8,21 @@ using Taqreerk.Extensions;
 using Taqreerk.Infrastructure.Data;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ── Kestrel HTTP/2 ───────────────────────────────────────────────────────────
+// Cloud Run sends h2c (cleartext HTTP/2) directly to the container when the
+// service is deployed with --use-http2. Kestrel binds HTTP/1.1 only by
+// default — without this it RSTs the h2c connection at the wire level and
+// the LB returns 503 "remote refused stream reset" without ever touching
+// our app. Setting Http1AndHttp2 on the endpoint defaults makes the same
+// port speak both protocols (preface-detection on plain TCP, ALPN on TLS).
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.ConfigureEndpointDefaults(listen =>
+    {
+        listen.Protocols = HttpProtocols.Http1AndHttp2;
+    });
+});
 
 // ── Sentry ────────────────────────────────────────────────────────────────────
 // Reads Sentry:* from configuration (appsettings / env vars: Sentry__Dsn, etc.).
