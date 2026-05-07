@@ -29,9 +29,14 @@ from typing import Iterable
 
 import fitz  # PyMuPDF
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import (
+    AcceleratorDevice,
+    AcceleratorOptions,
+    PdfPipelineOptions,
+)
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
+from core.config import settings
 from pipeline.errors import InvalidPdfError
 
 logger = logging.getLogger(__name__)
@@ -82,11 +87,29 @@ def _build_converter() -> DocumentConverter:
 
     do_ocr=False because we run our own Arabic-aware OCR downstream;
     do_table_structure=True turns on TableFormer (cell-level table extraction).
+
+    accelerator_options pins Docling's layout + table models to the same
+    CUDA device the rest of the pipeline uses. Without this Docling auto-
+    detects the device and has been observed to fall back to CPU silently
+    in some image variants — which inflates layout from ~150 ms/page to
+    ~1.5 s/page. Pinning explicitly removes that variance.
     """
     pipeline_opts = PdfPipelineOptions()
     pipeline_opts.do_ocr = False
     pipeline_opts.do_table_structure = True
     pipeline_opts.table_structure_options.do_cell_matching = True
+
+    device = (
+        AcceleratorDevice.CUDA
+        if settings.device.lower() == "cuda"
+        else AcceleratorDevice.CPU
+    )
+    # num_threads is for CPU-side ops (image preprocessing); 4 matches the
+    # Cloud Run --cpu=4 we deploy with so we don't oversubscribe.
+    pipeline_opts.accelerator_options = AcceleratorOptions(
+        device=device,
+        num_threads=4,
+    )
 
     return DocumentConverter(
         format_options={
