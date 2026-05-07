@@ -123,13 +123,14 @@ jobs:
           region: ${{ env.REGION }}
           image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
           # flags format: PROJECT_ID:REGION:INSTANCE_NAME for Cloud SQL Auth Proxy
-          # --use-http2: Cloud Run's HTTP/1 cap on request bodies is 32 MB.
-          # We accept up to 200 MB PDF uploads (see ReportsController), which
-          # is only possible over HTTP/2. Without this flag a redeploy would
-          # silently revert request-size limits to 32 MB.
+          # NOTE: HTTP/2 is intentionally NOT toggled here. Enabling it caused
+          # 503 "remote refused stream reset" at deploy time (LB ↔ container
+          # h2c handshake failed). Kestrel is configured for Http1AndHttp2 in
+          # Program.cs so the container CAN serve h2c — re-enable with a
+          # one-shot `gcloud run services update --use-http2` after manual
+          # verification, then add the flag back here.
           flags: >-
             --allow-unauthenticated
-            --use-http2
             --port=8080
             --memory=512Mi
             --cpu=1

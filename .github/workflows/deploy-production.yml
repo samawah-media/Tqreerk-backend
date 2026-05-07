@@ -119,12 +119,12 @@ jobs:
           region: ${{ env.REGION }}
           image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
           # flags format: PROJECT_ID:REGION:INSTANCE_NAME for Cloud SQL Auth Proxy
-          # --use-http2: required for >32 MB PDF uploads (Cloud Run's HTTP/1
-          # body cap is 32 MB; HTTP/2 has no such cap). Must be on every
-          # redeploy so the setting doesn't drift.
+          # NOTE: HTTP/2 is intentionally NOT toggled here. See the matching
+          # comment in deploy-staging.yml — verify h2c works on staging first
+          # via `gcloud run services update --use-http2`, then add the flag
+          # back to both workflows.
           flags: >-
             --allow-unauthenticated
-            --use-http2
             --port=8080
             --memory=1Gi
             --cpu=1
