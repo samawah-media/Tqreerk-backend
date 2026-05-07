@@ -140,6 +140,7 @@ jobs:
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
           env_vars: |
             ASPNETCORE_ENVIRONMENT=Staging
+            Kestrel__EndpointDefaults__Protocols=Http1AndHttp2
             ConnectionStrings__DefaultConnection=${{ secrets.DATABASE_URL_STAGING }}
             JwtSettings__SecretKey=${{ secrets.JWT_SECRET }}
             JwtSettings__Issuer=Taqreerk
