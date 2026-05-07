@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     gemini_vision_model: str  = "gemini-2.5-flash"        # PDF page → text + chart descriptions
     gemini_chat_model: str    = "gemini-2.5-flash"        # RAG chat answers (fast, small context)
     gemini_summary_model: str = "gemini-2.5-flash"        # full-report summarization (deeper analysis)
+    # Ragas eval judge — Lite tier so the eval pipeline doesn't burn the
+    # chat-tier quota every time we score a chat trace.
+    ragas_judge_model: str    = "gemini-2.5-flash-lite"
     gemini_embed_model: str   = "gemini-embedding-001"    # multilingual embedder via Vertex/AI Studio
     # Output dimension. gemini-embedding-001 supports Matryoshka so we can
     # request 768/1536/3072 natively. 768 keeps DB storage compact and matches
@@ -101,7 +104,10 @@ class Settings(BaseSettings):
     # Disable with query_rewriter_enabled=false to A/B compare retrieval
     # quality without the extra API call.
     query_rewriter_enabled: bool      = True
-    query_rewriter_model: str         = "gemini-2.5-flash"  # cheap + low-latency
+    # Auxiliary models — moved off gemini-2.5-flash 2026-05-08 to a
+    # cheaper / faster Lite tier so they don't contend for the same
+    # quota pool as user-facing chat & summarization.
+    query_rewriter_model: str         = "gemini-2.5-flash-lite"
     query_rewriter_max_variants: int  = 2     # variants beyond the original
     query_rewriter_timeout_seconds: float = 4.0  # hard cap so it never blocks chat for long
 
@@ -123,7 +129,11 @@ class Settings(BaseSettings):
     # embeddings + storage. Recall lift on Q-style queries: ~15-30% in
     # practice. Disable with hyqe_enabled=false to revert to chunk-only embeds.
     hyqe_enabled: bool                = True
-    hyqe_model: str                   = "gemini-2.5-flash"   # standardised across the service
+    # Same Lite-tier reasoning as query_rewriter — HyQE generates short
+    # paraphrase questions per chunk; quality-cost ratio favours flash-lite
+    # heavily, especially during bulk ingest where this fires once per
+    # chunk (= hundreds of calls per report).
+    hyqe_model: str                   = "gemini-2.5-flash-lite"
     hyqe_questions_per_chunk: int     = 3
     hyqe_max_concurrency: int         = 5     # parallel Flash calls during ingest
     hyqe_timeout_seconds: float       = 10.0  # per-chunk hard cap
@@ -135,7 +145,9 @@ class Settings(BaseSettings):
     # extra SSE `warning` event AFTER `done` and logs to Sentry. Adds ~600ms
     # AFTER the user already received the answer — never blocks first token.
     groundedness_check_enabled: bool          = True
-    groundedness_check_model: str             = "gemini-2.5-flash"
+    # Lite tier — groundedness is a binary-ish "do these claims appear
+    # in these chunks" check, not a creative task. Saves quota for chat.
+    groundedness_check_model: str             = "gemini-2.5-flash-lite"
     groundedness_check_timeout_seconds: float = 5.0
     groundedness_warn_threshold: float        = 0.7   # below → emit warning + Sentry
 
@@ -169,6 +181,19 @@ class Settings(BaseSettings):
     doc_processor_url: str        = ""    # e.g. https://doc-processor-xxx.run.app
     doc_processor_token: str      = ""    # optional X-Internal-Token shared secret
     doc_processor_timeout_seconds: float = 600.0  # full-PDF can take minutes
+
+    # Per-job HTTP read timeout for /v1/ingest_job. Since 2026-05-08 the
+    # doc-processor processes ingestion synchronously (request stays open
+    # for the whole pipeline), so this is effectively the wall-clock cap
+    # per job — anything taking longer is treated as failed and the
+    # _pending_job_watcher retries. 600 s = 10 min covers typical reports.
+    doc_processor_ingest_timeout_seconds: float = 600.0
+
+    # Bounded concurrency for bulk-ingest dispatch. Should match the
+    # doc-processor's --max-instances so we saturate available pods without
+    # creating queue depth Cloud Run can't scale into. Each in-flight
+    # trigger holds an HTTP connection open until that job completes.
+    doc_processor_max_concurrency: int = 2
     # Above this size we render pages individually instead of sending the
     # whole PDF — Cloud Run's 32 MB request body limit applies, and base64
     # adds ~33% overhead. 22 MB raw → ~29 MB on the wire, comfortably under.

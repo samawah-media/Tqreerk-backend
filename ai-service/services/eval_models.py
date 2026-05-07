@@ -62,7 +62,11 @@ class GeminiRagasLLM(BaseRagasLLM):
 
     def _generate(self, prompt_text: str, temperature: float | None) -> LLMResult:
         try:
-            text = simple_completion(prompt_text, temperature=temperature or 0.0)
+            text = simple_completion(
+                prompt_text,
+                temperature=temperature or 0.0,
+                model=settings.ragas_judge_model,
+            )
         except Exception as exc:
             logger.warning("[ragas] gemini judge call failed: %s", exc)
             text = ""
@@ -146,7 +150,7 @@ def get_judge_llm() -> GeminiRagasLLM:
     if _judge_llm is None:
         _judge_llm = GeminiRagasLLM()
         logger.info(
-            "[ragas] judge LLM ready: %s (gemini)", settings.gemini_chat_model,
+            "[ragas] judge LLM ready: %s (gemini)", settings.ragas_judge_model,
         )
     return _judge_llm
 

@@ -379,20 +379,21 @@ async def trigger_ingest(job_id: str, report_id: str, file_url: str) -> None:
         },
     }
 
+    # /v1/ingest_job became synchronous on 2026-05-08 — the request stays
+    # open for the whole ingest pipeline (download + extract + chunk +
+    # embed + persist) so Cloud Run's autoscaler sees the pod as in-flight
+    # and spawns a fresh pod for parallel triggers. read_timeout therefore
+    # has to cover the longest expected ingest, not just the 202 ACK.
+    # connect_timeout still covers the GPU cold-start window.
+    read_timeout = settings.doc_processor_ingest_timeout_seconds
     try:
-        # connect_timeout=120 covers GPU cold-start (~60-90 s).
-        # read_timeout=30 is just for the 202 ACK — the pipeline runs in
-        # a background task on the GPU side so the response is fast.
         async with httpx.AsyncClient(
-            # default=30 covers read/write/pool; connect overridden to 120
-            # so GPU cold-starts (~60-90 s) don't kill the trigger before
-            # the doc-processor even starts listening.
-            timeout=httpx.Timeout(30.0, connect=120.0),
+            timeout=httpx.Timeout(read_timeout, connect=120.0),
         ) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
         logger.info(
-            "[trigger_ingest] job=%s accepted by GPU (HTTP %d)",
+            "[trigger_ingest] job=%s completed by GPU (HTTP %d)",
             job_id, resp.status_code,
         )
     except Exception as exc:

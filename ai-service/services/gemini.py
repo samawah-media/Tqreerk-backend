@@ -255,19 +255,27 @@ class ReportSummary(BaseModel):
 
 # ── Plain text completion (used by Ragas judge) ─────────────────────────────
 
-def simple_completion(prompt: str, temperature: float = 0.0) -> str:
+def simple_completion(
+    prompt: str,
+    temperature: float = 0.0,
+    model: str | None = None,
+) -> str:
     """One-shot prompt → completion text. Goes through `_call_with_retry`
     so SSL EOFs and connection resets are handled the same as everywhere
-    else. Used by the Ragas eval wrapper to avoid duplicating retry logic."""
+    else. Used by the Ragas eval wrapper to avoid duplicating retry logic.
+
+    `model` defaults to `gemini_chat_model`; Ragas passes
+    `ragas_judge_model` so judge calls don't share quota with user chat."""
+    chosen = model or settings.gemini_chat_model
     response = _call_with_retry(
         "simple_completion",
         lambda client: client.models.generate_content(
-            model=settings.gemini_chat_model,
+            model=chosen,
             contents=prompt,
             config=types.GenerateContentConfig(temperature=temperature),
         ),
     )
-    _log_genai_usage(response, name="simple_completion", model=settings.gemini_chat_model)
+    _log_genai_usage(response, name="simple_completion", model=chosen)
     return (response.text or "").strip()
 
 

@@ -15,6 +15,7 @@ pipelines/jobs.py for the runner / claim logic.
 import asyncio
 import json
 import logging
+import time
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +23,7 @@ from psycopg import AsyncConnection
 
 import numpy as np
 
+from core.config import settings
 from core.db import get_conn
 from services import doc_extractor
 from models.ingest import (
@@ -570,19 +572,57 @@ async def bulk_ingest(
         created.append(CreatedJob(job_id=job_id, report_id=item.report_id))
     await conn.commit()
 
-    # Fire all GPU triggers concurrently — each one is a fast HTTP POST
-    # to the doc-processor's /v1/ingest_job endpoint, which queues the
-    # work as a background task there. We don't await them sequentially
-    # because each round-trip would otherwise add ~100 ms × N items to
-    # the response time of this endpoint for no benefit.
-    for cj, item in zip(created, body.items):
-        asyncio.create_task(
-            doc_extractor.trigger_ingest(
-                str(cj.job_id), str(item.report_id), item.file_url,
-            ),
-        )
+    # Bounded-concurrency dispatch (2026-05-08): /v1/ingest_job is now
+    # synchronous, so each trigger holds its HTTP connection open until
+    # that job's pipeline finishes. We cap simultaneous triggers at
+    # doc_processor_max_concurrency (= doc-processor's --max-instances)
+    # so Cloud Run autoscales horizontally to N pods without creating
+    # queue depth it can't scale into. As each job finishes, the next
+    # trigger fires.
+    asyncio.create_task(
+        _dispatch_bulk_ingest(
+            [(str(cj.job_id), str(item.report_id), item.file_url)
+             for cj, item in zip(created, body.items)],
+        ),
+    )
 
     return BulkJobsResponse(jobs=created)
+
+
+async def _dispatch_bulk_ingest(
+    jobs: list[tuple[str, str, str]],
+) -> None:
+    """Fire ingest triggers with bounded concurrency = max_instances.
+
+    Runs as an asyncio.create_task off the bulk_ingest endpoint, so the
+    HTTP response (with the list of job_ids) doesn't have to wait for
+    the actual pipelines to finish. Each trigger holds its httpx
+    connection open until the doc-processor finishes that job; the
+    semaphore caps how many run in parallel.
+
+    Failures are logged and the job is left Pending — the
+    _pending_job_watcher (main.py) re-fires it within 60 s, so this
+    function doesn't need its own retry logic.
+    """
+    sem = asyncio.Semaphore(settings.doc_processor_max_concurrency)
+    started = time.time()
+    logger.info(
+        "[bulk_ingest] dispatching %d jobs with concurrency=%d",
+        len(jobs), settings.doc_processor_max_concurrency,
+    )
+
+    async def _one(job_id: str, report_id: str, file_url: str) -> None:
+        async with sem:
+            await doc_extractor.trigger_ingest(job_id, report_id, file_url)
+
+    await asyncio.gather(
+        *(_one(j, r, u) for j, r, u in jobs),
+        return_exceptions=True,
+    )
+    logger.info(
+        "[bulk_ingest] dispatch finished — %d jobs in %.1fs",
+        len(jobs), time.time() - started,
+    )
 
 
 @router.post(

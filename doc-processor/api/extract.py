@@ -20,7 +20,7 @@ import asyncio
 import base64
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
 import time
 
@@ -60,20 +60,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["extract"])
 
 
-# Process-wide gate: only one ingest does GPU work per pod at a time.
-#
-# Why this exists even with --concurrency=1 on Cloud Run:
-#   /v1/ingest_job uses FastAPI BackgroundTasks. The HTTP request returns
-#   202 in ~1 s, freeing the in-flight slot, but the background task is
-#   still on the GPU. Without this semaphore, a second POST routed to the
-#   same pod queues another background task in parallel — both contend for
-#   one L4, doubling wallclock and risking OOM on 16 GiB.
-#
-# Cloud Run autoscales horizontally on --concurrency, so a queued ingest
-# only blocks here briefly while a new pod warms up; this semaphore is
-# the safety net for the case where two POSTs land on the same pod
-# during a scaling decision.
-_INGEST_GPU_SEMAPHORE = asyncio.Semaphore(1)
+# NOTE: the per-pod GPU semaphore was dropped 2026-05-08 when /v1/ingest_job
+# became synchronous. Cloud Run --concurrency=1 now serialises HTTP requests
+# at the LB tier, which is sufficient (request handler holds the GPU for the
+# full duration). If --concurrency is ever raised >1, restore the semaphore.
 
 
 @router.post("/extract", response_model=ExtractResponse)
@@ -473,23 +463,36 @@ async def ingest(
     return IngestResponse(**result)
 
 
-@router.post("/ingest_job", response_model=IngestJobAccepted, status_code=202)
+@router.post("/ingest_job", response_model=IngestJobAccepted)
 async def ingest_job(
     body: IngestJobRequest,
-    background_tasks: BackgroundTasks,
     x_internal_token: str | None = Header(default=None),
 ) -> IngestJobAccepted:
-    """Async ingest: GPU owns the full job lifecycle.
+    """Synchronous ingest: GPU owns the full job lifecycle and the HTTP
+    request stays open for the entire duration.
 
-    Returns 202 immediately. A background task then:
-      1. Claims the ai_jobs row (Pending → Processing) — if already claimed
-         by another trigger, the task exits without running twice.
-      2. Runs the full ingest pipeline (download → extract → chunk → embed →
-         persist to report_chunks).
-      3. Sets the job to Completed or Failed with output / error.
+    Why synchronous (changed 2026-05-08): with --concurrency=1 on Cloud Run,
+    only synchronous handlers cause the autoscaler to spawn another pod.
+    The previous fire-and-forget BackgroundTasks pattern returned 202 in
+    ~1 s, so 10 simultaneous triggers all landed on the same pod and
+    competed for the GPU. Holding the request until run_ingest returns
+    makes Cloud Run see the pod as at-capacity, route the next trigger
+    to a fresh pod (up to --max-instances), and we get true horizontal
+    parallelism scaled by the doc-processor's instance count.
 
-    The ai-service worker never processes jobs triggered via this endpoint
-    (they are excluded from the worker's claim query by step=ingest filter).
+    Pipeline:
+      1. Claim the ai_jobs row (Pending → Processing). Skip if another
+         trigger beat us to it (returns accepted=False).
+      2. Run download → extract → chunk → embed → persist.
+      3. Mark Completed or Failed in ai_jobs.
+      4. Return 200 with the result.
+
+    The caller (ai-service trigger) sees a slow HTTP response — that's
+    intentional. Cloud Run --timeout must be set generously (≥ longest
+    expected ingest); 1 hour is the recommended deploy setting.
+
+    The ai-service worker never claims Ingestion rows (filtered out by
+    JobType in its claim query) so they only run here.
     """
     _check_token(x_internal_token)
 
@@ -499,18 +502,9 @@ async def ingest_job(
             detail="DATABASE_URL is not configured on this doc-processor instance.",
         )
 
-    background_tasks.add_task(_run_ingest_job_background, body)
-    return IngestJobAccepted(accepted=True, job_id=body.job_id)
-
-
-async def _run_ingest_job_background(body: IngestJobRequest) -> None:
-    """Background task: claim → run pipeline → mark terminal state.
-
-    Any failure in any stage (claim, download, extract, chunk, embed,
-    persist) marks the job Failed immediately — no retries.
-    """
     loop = asyncio.get_running_loop()
 
+    # ── Claim ──────────────────────────────────────────────────────────────
     try:
         claimed = await loop.run_in_executor(None, claim_job, body.job_id)
     except Exception as exc:
@@ -522,50 +516,46 @@ async def _run_ingest_job_background(body: IngestJobRequest) -> None:
             await loop.run_in_executor(
                 None, mark_job_failed, body.job_id, f"claim failed: {exc}",
             )
-        except Exception as mark_exc:
-            logger.error(
-                "[ingest_job] job=%s also failed to mark Failed: %s",
-                body.job_id, mark_exc,
-            )
-        return
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"claim failed: {exc}")
 
     if not claimed:
         logger.warning(
             "[ingest_job] job=%s already claimed or not Pending — skipping",
             body.job_id,
         )
-        return
+        # 200 not 409, since "already done" is not an error from the
+        # caller's perspective — they fire triggers idempotently and the
+        # _pending_job_watcher retries.
+        return IngestJobAccepted(accepted=False, job_id=body.job_id)
 
     logger.info(
         "[ingest_job] job=%s claimed, starting pipeline for report=%s",
         body.job_id, body.report_id,
     )
-    queued_at = time.time()
-    async with _INGEST_GPU_SEMAPHORE:
-        wait_s = time.time() - queued_at
-        if wait_s > 1:
-            logger.info(
-                "[ingest_job] job=%s waited %.1fs for GPU semaphore",
-                body.job_id, wait_s,
-            )
+
+    # ── Run ────────────────────────────────────────────────────────────────
+    try:
+        result = await loop.run_in_executor(
+            None, run_ingest, body.report_id, body.file_url, body.options, body.job_id,
+        )
+        await loop.run_in_executor(None, mark_job_completed, body.job_id, result)
+        logger.info(
+            "[ingest_job] job=%s completed: %d chunks / %d pages",
+            body.job_id, result.get("chunks_inserted", 0), result.get("pages_processed", 0),
+        )
+        return IngestJobAccepted(accepted=True, job_id=body.job_id)
+    except Exception as exc:
+        logger.exception("[ingest_job] job=%s pipeline failed: %s", body.job_id, exc)
         try:
-            result = await loop.run_in_executor(
-                None, run_ingest, body.report_id, body.file_url, body.options, body.job_id,
+            await loop.run_in_executor(None, mark_job_failed, body.job_id, str(exc))
+        except Exception as mark_exc:
+            logger.error(
+                "[ingest_job] job=%s also failed to mark Failed: %s",
+                body.job_id, mark_exc,
             )
-            await loop.run_in_executor(None, mark_job_completed, body.job_id, result)
-            logger.info(
-                "[ingest_job] job=%s completed: %d chunks / %d pages",
-                body.job_id, result.get("chunks_inserted", 0), result.get("pages_processed", 0),
-            )
-        except Exception as exc:
-            logger.exception("[ingest_job] job=%s pipeline failed: %s", body.job_id, exc)
-            try:
-                await loop.run_in_executor(None, mark_job_failed, body.job_id, str(exc))
-            except Exception as mark_exc:
-                logger.error(
-                    "[ingest_job] job=%s also failed to mark Failed: %s",
-                    body.job_id, mark_exc,
-                )
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def _check_token(provided: str | None) -> None:
