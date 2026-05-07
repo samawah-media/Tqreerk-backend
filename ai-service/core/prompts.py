@@ -62,13 +62,33 @@ def chat_user_message(system_prompt: str, user_question: str) -> str:
 
 # ── Summarization ────────────────────────────────────────────────────────────
 
-def summarize_prompt(combined_text: str) -> str:
+# ISO 639-1 → human-readable name. Gemini honours the language-name directive
+# more reliably than the code, especially when the source text is mixed
+# Arabic/English chrome (header/footer in EN, body in AR) and the soft
+# "respond in the same language" hint isn't enough.
+_LANGUAGE_NAMES = {"ar": "Arabic", "en": "English"}
+
+
+def _language_name(code: str | None) -> str:
+    """Map a 2-letter language code to an English name. Falls back to Arabic
+    because that's the project's default — Saudi-market-focused content with
+    occasional English uploads."""
+    return _LANGUAGE_NAMES.get((code or "").lower(), "Arabic")
+
+
+def summarize_prompt(combined_text: str, language: str = "ar") -> str:
     """Combined summary + insights prompt — one Gemini call returns all 5 fields:
     summary, key_findings, topics, indicators, trends. Replaces the previous
     two-call design (summarize + extract_insights) so a single ingest job
-    populates every report_ai_contents column."""
+    populates every report_ai_contents column.
+
+    `language` is the report's OriginalLanguage (ISO code) — used to pin
+    the output language with a hard directive instead of trusting Gemini's
+    own language detection on mixed text."""
+    lang_name = _language_name(language)
     return (
-        "You are analyzing a research report. Based on the full text below, produce a JSON object with these fields:\n"
+        f"You are analyzing a research report. The output language is {lang_name}.\n"
+        "Based on the full text below, produce a JSON object with these fields:\n"
         "\n"
         "- summary: a concise executive summary (3-5 paragraphs).\n"
         "- key_findings: 5-10 most important findings as a list of strings.\n"
@@ -79,7 +99,12 @@ def summarize_prompt(combined_text: str) -> str:
         "topic, direction (one of: increasing/decreasing/stable/volatile/mixed), time_span, "
         "magnitude (e.g. 'from 5% to 2%'), and a 1-2 sentence explanation.\n"
         "\n"
-        "Respond in the same language as the report text. Output JSON only — no commentary.\n\n"
+        f"CRITICAL — output language: every string value in the JSON (summary, "
+        f"key_findings entries, topics entries, indicator names/units/time_period/"
+        f"context, and trend topic/time_span/magnitude/explanation) MUST be written "
+        f"in {lang_name}. Do not mix languages. Numeric values stay numeric; only "
+        f"the surrounding prose and labels are translated. Output JSON only — no "
+        "commentary.\n\n"
         f"REPORT TEXT:\n{combined_text}"
     )
 
@@ -178,17 +203,24 @@ INSIGHTS_SCHEMA = {
 
 # ── Comparison (multi-report) ────────────────────────────────────────────────
 
-def compare_prompt(reports_section: str) -> str:
+def compare_prompt(reports_section: str, language: str = "ar") -> str:
+    """`language` is the chosen output language (ISO code). The caller decides
+    the rule (typically: same language for all reports → that language; mixed
+    → Arabic) and we just enforce it on Gemini with a hard directive."""
+    lang_name = _language_name(language)
     return (
-        "You are comparing multiple research reports. Each report below is labelled "
-        "[Report N] with its summary and key findings. Produce a structured comparison:\n\n"
+        f"You are comparing multiple research reports. The output language is {lang_name}.\n"
+        "Each report below is labelled [Report N] with its summary and key findings. "
+        "Produce a structured comparison:\n\n"
         "- common_topics: themes/sectors that appear in two or more reports.\n"
         "- key_differences: notable disagreements or differing emphases. Each item should "
         "say which reports diverge and how.\n"
         "- shared_indicators: quantitative indicators that appear in two or more reports, "
         "with the values per report so the reader can compare directly.\n"
         "- overall_summary: 2-3 sentences summarizing the relationship between the reports.\n\n"
-        "Respond in the language used in the report summaries. Output JSON only.\n\n"
+        f"CRITICAL — output language: every string value (common_topics entries, "
+        f"key_differences entries, shared_indicator names/units, and overall_summary) "
+        f"MUST be written in {lang_name}. Do not mix languages. Output JSON only.\n\n"
         f"REPORTS:\n{reports_section}"
     )
 

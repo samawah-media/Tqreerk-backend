@@ -505,10 +505,11 @@ def extract_insights(pages_content: list[str]) -> dict:
     return json.loads(response.text)
 
 
-def compare_reports(reports: list[dict]) -> dict:
+def compare_reports(reports: list[dict], language: str = "ar") -> dict:
     """Compare multiple reports.
 
     `reports` is a list of {"report_id": "...", "summary": "...", "key_findings": [...]}.
+    `language` pins the output language (ISO code); see prompts.compare_prompt.
     Returns a dict matching core/prompts.COMPARE_SCHEMA.
     """
     sections = []
@@ -526,7 +527,7 @@ def compare_reports(reports: list[dict]) -> dict:
         "compare_reports",
         lambda client: client.models.generate_content(
             model=settings.gemini_summary_model,
-            contents=prompts.compare_prompt(reports_section),
+            contents=prompts.compare_prompt(reports_section, language=language),
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 response_mime_type="application/json",
@@ -538,14 +539,18 @@ def compare_reports(reports: list[dict]) -> dict:
     return json.loads(response.text)
 
 
-def summarize_report(pages_content: list[str]) -> ReportSummary:
-    """Generate a structured summary + key findings for a full report."""
+def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSummary:
+    """Generate a structured summary + key findings for a full report.
+
+    `language` is the report's OriginalLanguage (ISO code), pinning the
+    output language with a hard directive in the prompt.
+    """
     combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
     response = _call_with_retry(
         "summarize_report",
         lambda client: client.models.generate_content(
             model=settings.gemini_summary_model,
-            contents=prompts.summarize_prompt(combined),
+            contents=prompts.summarize_prompt(combined, language=language),
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 response_mime_type="application/json",

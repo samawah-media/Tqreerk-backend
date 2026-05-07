@@ -239,12 +239,25 @@ async def run_summarize_job(job_id: UUID, report_id: UUID) -> None:
             )
             page_rows = await cur.fetchall()
 
+            # Pin the summary's output language to the report's OriginalLanguage
+            # — Gemini's auto-detection is unreliable on mixed AR/EN PDFs and
+            # was returning English for Arabic reports.
+            lang_cur = await conn.execute(
+                'SELECT "OriginalLanguage" FROM reports WHERE "Id" = %s',
+                [str(report_id)],
+            )
+            lang_row = await lang_cur.fetchone()
+            language = (lang_row[0] if lang_row and lang_row[0] else "ar").lower()
+
         if not page_rows:
             raise RuntimeError(
                 "Report has no chunks — ingest must run before summarize"
             )
 
-        summary = summarize_report([content for _, content in page_rows])
+        summary = summarize_report(
+            [content for _, content in page_rows],
+            language=language,
+        )
 
         logger.info(
             "[job %s] summarize done: %d findings, %d topics, %d indicators, %d trends",

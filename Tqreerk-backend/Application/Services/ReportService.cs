@@ -11,7 +11,7 @@ namespace Taqreerk.Application.Services;
 
 public class ReportService : IReportService
 {
-    private const long MaxFileSizeBytes = 50 * 1024 * 1024; // 50 MB — matches Feature 6 plan
+    private const long MaxFileSizeBytes = 200L * 1024 * 1024; // 200 MB
     private const long MaxCoverImageBytes = 5 * 1024 * 1024; // 5 MB — typical thumbnail
     private const string ReportFolder = "reports";
     private const string CoverFolder = "covers";

@@ -14,7 +14,7 @@ namespace Taqreerk.API.Controllers;
 [Authorize]
 public class ReportsController : ControllerBase
 {
-    private const long MaxUploadBytes = 50 * 1024 * 1024; // 50 MB
+    private const long MaxUploadBytes = 200L * 1024 * 1024; // 200 MB
 
     private readonly IReportService _reports;
     private readonly IReportAiService _ai;

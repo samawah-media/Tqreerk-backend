@@ -218,7 +218,18 @@ async def summarize(
 
     pages = await _fetch_pages_aggregated(conn, body.report_id)
     pages_content = [content for _, content in pages]
-    result = summarize_report(pages_content)
+
+    # Pin the output language to the report's OriginalLanguage. See the
+    # matching block in pipelines/jobs.py:run_summarize_job — same reason
+    # (Gemini's language auto-detect is unreliable on mixed-language PDFs).
+    lang_cur = await conn.execute(
+        'SELECT "OriginalLanguage" FROM reports WHERE "Id" = %s',
+        [str(body.report_id)],
+    )
+    lang_row = await lang_cur.fetchone()
+    language = (lang_row[0] if lang_row and lang_row[0] else "ar").lower()
+
+    result = summarize_report(pages_content, language=language)
     return SummarizeResponse(
         report_id=body.report_id,
         summary=result.summary,
@@ -386,7 +397,19 @@ async def compare(
             detail="No report has a stored summary — run /summarize on each first",
         )
 
-    qualitative = compare_reports(reports_for_gemini)
+    # Decide the comparison's output language from the inputs:
+    #   all reports same language → that language
+    #   any mismatch / unknown    → Arabic (project default + product spec:
+    #                               Arabic is the lingua franca of the audience)
+    lang_cur = await conn.execute(
+        'SELECT "OriginalLanguage" FROM reports WHERE "Id" = ANY(%s)',
+        [ids],
+    )
+    lang_rows = await lang_cur.fetchall()
+    langs = {(row[0] or "").lower() for row in lang_rows if row[0]}
+    target_language = next(iter(langs)) if len(langs) == 1 else "ar"
+
+    qualitative = compare_reports(reports_for_gemini, language=target_language)
 
     return CompareResponse(
         report_ids=body.report_ids,
