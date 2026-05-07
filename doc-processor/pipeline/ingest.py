@@ -32,6 +32,7 @@ from core.config import settings
 from core.db import get_conn
 from models.schema import ExtractOptions, IngestOptions
 from pipeline import chunker, vertex_embedder
+from pipeline.errors import InvalidPdfError
 from pipeline.orchestrator import process_document
 
 
@@ -54,6 +55,15 @@ def _retry(fn, stage: str, report_id: str):
     for attempt in range(1, total + 1):
         try:
             return fn()
+        except InvalidPdfError as exc:
+            # Deterministic input failure — the bytes will not change
+            # between retries, so re-running burns ~40 s of GPU for
+            # nothing. Fail fast so the job marks Failed quickly.
+            logger.error(
+                "[ingest %s] stage=%s aborting (non-retryable): %s",
+                report_id, stage, exc,
+            )
+            raise
         except Exception as exc:
             last_exc = exc
             if attempt == total:

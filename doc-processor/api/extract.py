@@ -60,6 +60,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["extract"])
 
 
+# Process-wide gate: only one ingest does GPU work per pod at a time.
+#
+# Why this exists even with --concurrency=1 on Cloud Run:
+#   /v1/ingest_job uses FastAPI BackgroundTasks. The HTTP request returns
+#   202 in ~1 s, freeing the in-flight slot, but the background task is
+#   still on the GPU. Without this semaphore, a second POST routed to the
+#   same pod queues another background task in parallel — both contend for
+#   one L4, doubling wallclock and risking OOM on 16 GiB.
+#
+# Cloud Run autoscales horizontally on --concurrency, so a queued ingest
+# only blocks here briefly while a new pod warms up; this semaphore is
+# the safety net for the case where two POSTs land on the same pod
+# during a scaling decision.
+_INGEST_GPU_SEMAPHORE = asyncio.Semaphore(1)
+
+
 @router.post("/extract", response_model=ExtractResponse)
 async def extract(
     body: ExtractRequest,
@@ -524,24 +540,32 @@ async def _run_ingest_job_background(body: IngestJobRequest) -> None:
         "[ingest_job] job=%s claimed, starting pipeline for report=%s",
         body.job_id, body.report_id,
     )
-    try:
-        result = await loop.run_in_executor(
-            None, run_ingest, body.report_id, body.file_url, body.options, body.job_id,
-        )
-        await loop.run_in_executor(None, mark_job_completed, body.job_id, result)
-        logger.info(
-            "[ingest_job] job=%s completed: %d chunks / %d pages",
-            body.job_id, result.get("chunks_inserted", 0), result.get("pages_processed", 0),
-        )
-    except Exception as exc:
-        logger.exception("[ingest_job] job=%s pipeline failed: %s", body.job_id, exc)
-        try:
-            await loop.run_in_executor(None, mark_job_failed, body.job_id, str(exc))
-        except Exception as mark_exc:
-            logger.error(
-                "[ingest_job] job=%s also failed to mark Failed: %s",
-                body.job_id, mark_exc,
+    queued_at = time.time()
+    async with _INGEST_GPU_SEMAPHORE:
+        wait_s = time.time() - queued_at
+        if wait_s > 1:
+            logger.info(
+                "[ingest_job] job=%s waited %.1fs for GPU semaphore",
+                body.job_id, wait_s,
             )
+        try:
+            result = await loop.run_in_executor(
+                None, run_ingest, body.report_id, body.file_url, body.options, body.job_id,
+            )
+            await loop.run_in_executor(None, mark_job_completed, body.job_id, result)
+            logger.info(
+                "[ingest_job] job=%s completed: %d chunks / %d pages",
+                body.job_id, result.get("chunks_inserted", 0), result.get("pages_processed", 0),
+            )
+        except Exception as exc:
+            logger.exception("[ingest_job] job=%s pipeline failed: %s", body.job_id, exc)
+            try:
+                await loop.run_in_executor(None, mark_job_failed, body.job_id, str(exc))
+            except Exception as mark_exc:
+                logger.error(
+                    "[ingest_job] job=%s also failed to mark Failed: %s",
+                    body.job_id, mark_exc,
+                )
 
 
 def _check_token(provided: str | None) -> None:

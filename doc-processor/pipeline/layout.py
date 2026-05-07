@@ -32,7 +32,13 @@ from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
+from pipeline.errors import InvalidPdfError
+
 logger = logging.getLogger(__name__)
+
+# Minimum plausible PDF size — anything below this is either empty or a
+# truncated upload. Real PDFs are >1 KB; 32 B is just a sanity floor.
+_MIN_PDF_BYTES = 32
 
 
 # ── Output dataclasses ──────────────────────────────────────────────────────
@@ -142,10 +148,38 @@ def analyze_document(pdf_bytes: bytes) -> dict[int, list[LayoutRegion]]:
     if _converter is None:
         init()
 
+    # Pre-validate before handing to Docling. Docling's own failure mode
+    # is a generic RuntimeError("... is not valid.") that doesn't tell you
+    # WHY (empty? encrypted? wrong format?). Catching the obvious cases
+    # here gives ai_jobs.error_message useful detail.
+    if len(pdf_bytes) < _MIN_PDF_BYTES:
+        raise InvalidPdfError(
+            "PDF too small (likely empty or truncated upload)",
+            size=len(pdf_bytes), header=pdf_bytes[:8],
+        )
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise InvalidPdfError(
+            "Not a PDF (missing %PDF- header — wrong content-type or HTML error page?)",
+            size=len(pdf_bytes), header=pdf_bytes[:8],
+        )
+
     from docling.datamodel.base_models import DocumentStream
 
     stream = DocumentStream(name="document.pdf", stream=io.BytesIO(pdf_bytes))
-    result = _converter.convert(stream)
+    try:
+        result = _converter.convert(stream)
+    except RuntimeError as exc:
+        # Docling's PDF backend (PyPdfium2) flips in_doc.valid=False on
+        # encrypted, corrupted, or otherwise-unreadable PDFs and surfaces
+        # it as a plain RuntimeError. Re-raise as our typed error so the
+        # retry layer knows not to retry.
+        if "is not valid" in str(exc):
+            raise InvalidPdfError(
+                f"Docling rejected PDF (likely encrypted or corrupted): {exc}",
+                size=len(pdf_bytes), header=pdf_bytes[:8],
+            ) from exc
+        raise
+
     if result.document is None:
         logger.warning("docling: convert() returned no document")
         return {}
