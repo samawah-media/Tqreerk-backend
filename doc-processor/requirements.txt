@@ -17,7 +17,11 @@ torchvision==0.19.1
 # ── Document AI stack ────────────────────────────────────────────────────────
 # Docling = layout detection + reading order + table structure (TableFormer)
 # It bundles DocLayNet weights and TableFormer; no extra downloads.
-docling==2.5.2
+# Bumped from 2.5.2 → 2.93.0 on 2026-05-08 to pick up the documented
+# AcceleratorOptions API at docling.datamodel.accelerator_options. The
+# old version had no public way to pin device=cuda, so layout silently
+# fell back to CPU paths in some code branches and slowed ingest.
+docling==2.93.0
 
 # Florence-2 / transformers — figure captioning
 transformers==4.45.2

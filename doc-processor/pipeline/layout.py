@@ -28,12 +28,12 @@ from dataclasses import dataclass
 from typing import Iterable
 
 import fitz  # PyMuPDF
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import (
+from docling.datamodel.accelerator_options import (
     AcceleratorDevice,
     AcceleratorOptions,
-    PdfPipelineOptions,
 )
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
 from core.config import settings
@@ -99,16 +99,21 @@ def _build_converter() -> DocumentConverter:
     pipeline_opts.do_table_structure = True
     pipeline_opts.table_structure_options.do_cell_matching = True
 
+    # Pin accelerator to CUDA so Docling's layout + table models run on
+    # the GPU instead of silently falling back to CPU on some image
+    # variants. num_threads=4 is for CPU-side preprocessing (PDF →
+    # raster) and matches the Cloud Run --cpu=4 we deploy with.
     device = (
         AcceleratorDevice.CUDA
         if settings.device.lower() == "cuda"
         else AcceleratorDevice.CPU
     )
-    # num_threads is for CPU-side ops (image preprocessing); 4 matches the
-    # Cloud Run --cpu=4 we deploy with so we don't oversubscribe.
     pipeline_opts.accelerator_options = AcceleratorOptions(
-        device=device,
         num_threads=4,
+        device=device,
+    )
+    logger.info(
+        "docling: pinned accelerator device=%s num_threads=4", device,
     )
 
     return DocumentConverter(
