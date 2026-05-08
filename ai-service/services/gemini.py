@@ -192,8 +192,6 @@ def _call_with_retry(operation: str, fn):
     instance for the call AND for `_replace_if_same` on failure to avoid
     racing other threads that may have already replaced it.
     """
-    import random
-
     last_exc: Exception | None = None
     max_attempts = 5
     for attempt in range(max_attempts):
@@ -202,30 +200,24 @@ def _call_with_retry(operation: str, fn):
             return fn(client)
         except Exception as exc:
             last_exc = exc
-            connection_error = _is_connection_error(exc)
             quota_error = _is_quota_error(exc)
+            connection_error = _is_connection_error(exc)
             logger.warning(
                 "%s attempt %d/%d failed (connection_error=%s, quota_error=%s): %s",
                 operation, attempt + 1, max_attempts,
                 connection_error, quota_error, exc,
             )
+            # Quota errors are deterministic for the current window — retrying
+            # in this loop just burns budget. Surface immediately so the
+            # higher-level _call_with_model_fallback can switch to a model
+            # with a separate quota pool (e.g. Flash → Flash-Lite). Callers
+            # that don't use the fallback wrapper see the 429 directly.
+            if quota_error:
+                raise
             if connection_error:
                 _replace_if_same(client)
             if attempt < max_attempts - 1:
-                if quota_error:
-                    # Vertex quotas reset per minute. Sleep ~quota window
-                    # plus jitter. We deliberately DON'T grow exponentially:
-                    # if the project is genuinely over quota, longer sleeps
-                    # just hold a thread-pool slot pointlessly. The whole
-                    # retry budget here is bounded at ~3 min total (4 retries
-                    # × ~45 s each) — past that we surface the 429 to the
-                    # caller and let them decide (job marks Failed; a
-                    # subsequent retry will pick up after the quota window
-                    # has fully reopened).
-                    sleep_s = 45 + random.uniform(0, 10)
-                else:
-                    sleep_s = 2 ** attempt
-                time.sleep(sleep_s)
+                time.sleep(2 ** attempt)
     assert last_exc is not None
     raise last_exc
 
