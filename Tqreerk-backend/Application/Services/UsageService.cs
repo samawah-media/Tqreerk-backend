@@ -242,15 +242,24 @@ public class UsageService : IUsageService
     /// Maps an action to the column on `plans` that holds its monthly
     /// cap. Returns the cap (-1 = unlimited, 0 = blocked) and a debug
     /// label.
+    ///
+    /// Each AI action gets its own column now (decision 2026-05-07);
+    /// the legacy shared `AiCallsLimit` is gone. Pro-only AI features
+    /// (Trend Analysis, Knowledge Graph, etc.) are *not* in this
+    /// enum — they're gated by boolean Plan flags inside the
+    /// controllers that own them, not by usage counters.
     private static (int limit, string label) ResolveLimit(Plan plan, UsageActionType action) => action switch
     {
-        // Reads + downloads share the per-month cap from the plan file.
-        UsageActionType.ReportFullAccess => (plan.IndividualReadsLimit, "reads"),
-        UsageActionType.ReportDownload   => (plan.IndividualReadsLimit, "downloads"),
-        // Both AI actions count against the same `ai_calls_limit`.
-        UsageActionType.AiTranslate => (plan.AiCallsLimit, "ai_translate"),
-        UsageActionType.AiCompare   => (plan.AiCallsLimit, "ai_compare"),
-        UsageActionType.SaveReport  => (plan.IndividualSavedReportsLimit, "saved"),
+        UsageActionType.ReportFullAccess     => (plan.IndividualReadsLimit, "reads"),
+        UsageActionType.ReportDownload       => (plan.IndividualDownloadsLimit, "downloads"),
+        UsageActionType.SaveReport           => (plan.IndividualSavedReportsLimit, "saved"),
+
+        UsageActionType.AiSummarize          => (plan.AiSummarizeLimit, "ai_summarize"),
+        UsageActionType.AiKeyFindings        => (plan.AiKeyFindingsLimit, "ai_key_findings"),
+        UsageActionType.AiTranslate          => (plan.AiTranslateLimit, "ai_translate"),
+        UsageActionType.AiSimilarSuggestions => (plan.AiSimilarSuggestionsLimit, "ai_similar"),
+        UsageActionType.AiCompare            => (plan.AiCompareLimit, "ai_compare"),
+
         _ => throw new ArgumentOutOfRangeException(nameof(action), action, null),
     };
 

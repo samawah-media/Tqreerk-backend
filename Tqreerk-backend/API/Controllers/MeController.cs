@@ -59,6 +59,18 @@ public class MeController : ControllerBase
         return Ok(await _me.ListRecommendationsAsync(userId, take, ct));
     }
 
+    /// <summary>Compact projection of the caller's active plan + this-
+    /// month usage snapshot. The SPA caches this to drive pre-emptive
+    /// gating (hide / disable controls) without round-tripping for
+    /// every action. Refresh on plan change or month rollover.</summary>
+    [HttpGet("plan-features")]
+    [ProducesResponseType(typeof(PlanFeaturesDto), StatusCodes.Status200OK)]
+    public async Task<IActionResult> PlanFeatures(CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        return Ok(await _me.GetPlanFeaturesAsync(userId, ct));
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);

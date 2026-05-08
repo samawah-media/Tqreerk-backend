@@ -32,6 +32,8 @@ public class ExceptionHandlingMiddleware
             if (ex is not (InvalidOperationException or UnauthorizedAccessException
                 or KeyNotFoundException or ArgumentException
                 or QuotaExceededException
+                or UsageLimitExceededException
+                or PlanFeatureNotAvailableException
                 or Taqreerk.Application.Services.ForbiddenException))
             {
                 SentrySdk.CaptureException(ex);
@@ -43,6 +45,40 @@ public class ExceptionHandlingMiddleware
 
     private static Task HandleAsync(HttpContext context, Exception ex, bool isDevelopment)
     {
+        // UsageLimitExceededException + PlanFeatureNotAvailableException
+        // both map to 403 but ship a structured body the SPA reads:
+        // `code` flips between the two so the frontend can pop the right
+        // modal (counter cap → upgrade nag with reset date; feature flag
+        // → "this plan doesn't include it"). Other 403s (bare
+        // ForbiddenException) keep the lean shape.
+        if (ex is UsageLimitExceededException usage)
+        {
+            return WriteJson(context, HttpStatusCode.Forbidden, isDevelopment, ex, new
+            {
+                status = (int)HttpStatusCode.Forbidden,
+                title = ex.Message,
+                code = "USAGE_LIMIT_EXCEEDED",
+                actionType = usage.ActionType.ToString(),
+                limit = usage.Limit,
+                used = usage.Used,
+                resetsAt = usage.ResetsAt,
+                traceId = context.TraceIdentifier,
+            });
+        }
+
+        if (ex is PlanFeatureNotAvailableException feature)
+        {
+            return WriteJson(context, HttpStatusCode.Forbidden, isDevelopment, ex, new
+            {
+                status = (int)HttpStatusCode.Forbidden,
+                title = ex.Message,
+                code = "AI_FEATURE_NOT_AVAILABLE",
+                featureName = feature.FeatureName,
+                currentPlanName = feature.CurrentPlanName,
+                traceId = context.TraceIdentifier,
+            });
+        }
+
         var (status, title) = ex switch
         {
             Taqreerk.Application.Services.ForbiddenException => (HttpStatusCode.Forbidden, ex.Message),
@@ -86,5 +122,44 @@ public class ExceptionHandlingMiddleware
             };
 
         return context.Response.WriteAsync(JsonSerializer.Serialize(body));
+    }
+
+    /// Helper for the structured-body 403s (usage limit / plan feature).
+    /// Sets status + content-type and writes the canonical body. The dev
+    /// payload merges in the inner-exception fields so a failure here
+    /// still surfaces the underlying error in dev — production stays
+    /// lean.
+    private static Task WriteJson(
+        HttpContext context, HttpStatusCode status, bool isDevelopment, Exception ex, object body)
+    {
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode = (int)status;
+
+        if (isDevelopment)
+        {
+            body = MergeDevFields(body, ex, context.TraceIdentifier);
+        }
+
+        return context.Response.WriteAsync(JsonSerializer.Serialize(body));
+    }
+
+    /// Reflection-based merge: copy the structured-body properties into
+    /// a Dictionary so we can add the dev fields without losing the
+    /// shape callers passed in. Production never calls this, so the
+    /// reflection cost is dev-only.
+    private static object MergeDevFields(object body, Exception ex, string traceId)
+    {
+        var dict = new Dictionary<string, object?>();
+        foreach (var prop in body.GetType().GetProperties())
+        {
+            dict[prop.Name] = prop.GetValue(body);
+        }
+        dict["detail"] = ex.Message;
+        dict["exceptionType"] = ex.GetType().FullName;
+        dict["innerMessage"] = ex.InnerException?.Message;
+        dict["innerType"] = ex.InnerException?.GetType().FullName;
+        dict["stackTrace"] = ex.StackTrace;
+        dict["traceId"] = traceId;
+        return dict;
     }
 }

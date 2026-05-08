@@ -17,6 +17,16 @@ public class PlanConfiguration : IEntityTypeConfiguration<Plan>
         builder.Property(e => e.NameEn).IsRequired().HasMaxLength(200);
         builder.Property(e => e.AnnualPrice).HasPrecision(12, 2);
         builder.Property(e => e.MiserPriceId).HasMaxLength(100);
+
+        // Tier labels — short string enums. Stored as plain text so DB
+        // tooling reads naturally. The application validates the value
+        // set; nothing on the DB side enforces the enum, by design.
         builder.Property(e => e.AiAccessLevel).IsRequired().HasMaxLength(50);
+        builder.Property(e => e.AdvancedSearchPrecision).IsRequired().HasMaxLength(20);
+        builder.Property(e => e.OrgPageTier).IsRequired().HasMaxLength(20);
+        builder.Property(e => e.SupportTier).IsRequired().HasMaxLength(20);
+        builder.Property(e => e.DashboardTier).IsRequired().HasMaxLength(20);
+        builder.Property(e => e.NotificationsTier).IsRequired().HasMaxLength(20);
+        builder.Property(e => e.UpdatesCadence).IsRequired().HasMaxLength(20);
     }
 }

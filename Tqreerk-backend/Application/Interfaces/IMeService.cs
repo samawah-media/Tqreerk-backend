@@ -21,4 +21,12 @@ public interface IMeService
     /// desc. Returns an empty list when the user has no interests yet.
     Task<IReadOnlyList<MySavedReportDto>> ListRecommendationsAsync(
         Guid userId, int take = 20, CancellationToken ct = default);
+
+    /// Compact projection of the caller's active plan + this-month
+    /// usage snapshot. Drives the SPA's pre-emptive gating (hide /
+    /// disable controls before the user clicks) so the upsell
+    /// modals only fire for true edge cases (race conditions, stale
+    /// caches).
+    Task<PlanFeaturesDto> GetPlanFeaturesAsync(
+        Guid userId, CancellationToken ct = default);
 }

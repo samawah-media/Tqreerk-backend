@@ -261,6 +261,178 @@
         }
       }
     },
+    "/api/admin/bulk-imports": {
+      "post": {
+        "tags": [
+          "AdminBulkImports"
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              },
+              "encoding": {
+                "file": {
+                  "style": "form"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobCreatedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "AdminBulkImports"
+        ],
+        "parameters": [
+          {
+            "name": "take",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BulkImportJobSummaryDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/bulk-imports/{id}": {
+      "get": {
+        "tags": [
+          "AdminBulkImports"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkImportJobDetailDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/bulk-imports/template": {
+      "get": {
+        "tags": [
+          "AdminBulkImports"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/admin/bulk-imports/{id}/retry-failed": {
+      "post": {
+        "tags": [
+          "AdminBulkImports"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/sectors": {
       "get": {
         "tags": [
@@ -1517,6 +1689,125 @@
                   "items": {
                     "$ref": "#/components/schemas/AdminOrganizationMemberDto"
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/plans": {
+      "get": {
+        "tags": [
+          "AdminPlans"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminPlanDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/plans/{id}": {
+      "get": {
+        "tags": [
+          "AdminPlans"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPlanDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "AdminPlans"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAdminPlanRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAdminPlanRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAdminPlanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPlanDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -4099,6 +4390,25 @@
                   "items": {
                     "$ref": "#/components/schemas/MySavedReportDto"
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/plan-features": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanFeaturesDto"
                 }
               }
             }
@@ -7545,6 +7855,160 @@
         },
         "additionalProperties": false
       },
+      "AdminPlanDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "nameEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "targetType": {
+            "type": "string",
+            "nullable": true
+          },
+          "annualPrice": {
+            "type": "number",
+            "format": "double"
+          },
+          "miserPriceId": {
+            "type": "string",
+            "nullable": true
+          },
+          "userLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "individualReadsLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "individualSavedReportsLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "individualDownloadsLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reportsDownloadLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reportsUploadLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "featuredReportsMonthly": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiSummarizeLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiKeyFindingsLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiTranslateLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiSimilarSuggestionsLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiCompareLimit": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiCompareMaxReports": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiAccessLevel": {
+            "type": "string",
+            "nullable": true
+          },
+          "advancedSearchPrecision": {
+            "type": "string",
+            "nullable": true
+          },
+          "orgPageTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "supportTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "dashboardTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "notificationsTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "updatesCadence": {
+            "type": "string",
+            "nullable": true
+          },
+          "hasNotifications": {
+            "type": "boolean"
+          },
+          "hasAdvancedSearch": {
+            "type": "boolean"
+          },
+          "hasInteractions": {
+            "type": "boolean"
+          },
+          "hasExclusiveContent": {
+            "type": "boolean"
+          },
+          "hasTrendAnalysis": {
+            "type": "boolean"
+          },
+          "hasIndicatorExtraction": {
+            "type": "boolean"
+          },
+          "hasSmartRecommendations": {
+            "type": "boolean"
+          },
+          "hasKnowledgeGraph": {
+            "type": "boolean"
+          },
+          "hasSmartAlerts": {
+            "type": "boolean"
+          },
+          "hasOpportunityDiscovery": {
+            "type": "boolean"
+          },
+          "hasSectoralAnalysis": {
+            "type": "boolean"
+          },
+          "activeSubscriptionsCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
       "AdminProfileDto": {
         "type": "object",
         "properties": {
@@ -8152,6 +8616,187 @@
         "properties": {
           "reason": {
             "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "BulkImportItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rowIndex": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "stage": {
+            "type": "string",
+            "nullable": true
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "fileUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "source": {
+            "type": "string",
+            "nullable": true
+          },
+          "authors": {
+            "type": "string",
+            "nullable": true
+          },
+          "originalLanguage": {
+            "type": "string",
+            "nullable": true
+          },
+          "publicationYear": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "sectorNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "countryNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportType": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "reportSlug": {
+            "type": "string",
+            "nullable": true
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "BulkImportJobDetailDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "nullable": true
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "completedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "failedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "sourceFileName": {
+            "type": "string",
+            "nullable": true
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BulkImportItemDto"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "BulkImportJobSummaryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "nullable": true
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "completedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "failedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "sourceFileName": {
+            "type": "string",
+            "nullable": true
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time",
             "nullable": true
           }
         },
@@ -8873,6 +9518,16 @@
         },
         "additionalProperties": false
       },
+      "JobCreatedResponse": {
+        "type": "object",
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
       "LoginRequest": {
         "type": "object",
         "properties": {
@@ -9464,6 +10119,167 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanFeaturesDto": {
+        "type": "object",
+        "properties": {
+          "planId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "planNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "planNameEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "targetType": {
+            "type": "string",
+            "nullable": true
+          },
+          "limits": {
+            "$ref": "#/components/schemas/PlanLimitsDto"
+          },
+          "flags": {
+            "$ref": "#/components/schemas/PlanFlagsDto"
+          },
+          "tiers": {
+            "$ref": "#/components/schemas/PlanTiersDto"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/UsageSnapshotDto"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanFlagsDto": {
+        "type": "object",
+        "properties": {
+          "hasNotifications": {
+            "type": "boolean"
+          },
+          "hasAdvancedSearch": {
+            "type": "boolean"
+          },
+          "hasInteractions": {
+            "type": "boolean"
+          },
+          "hasExclusiveContent": {
+            "type": "boolean"
+          },
+          "hasTrendAnalysis": {
+            "type": "boolean"
+          },
+          "hasIndicatorExtraction": {
+            "type": "boolean"
+          },
+          "hasSmartRecommendations": {
+            "type": "boolean"
+          },
+          "hasKnowledgeGraph": {
+            "type": "boolean"
+          },
+          "hasSmartAlerts": {
+            "type": "boolean"
+          },
+          "hasOpportunityDiscovery": {
+            "type": "boolean"
+          },
+          "hasSectoralAnalysis": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanLimitsDto": {
+        "type": "object",
+        "properties": {
+          "individualReads": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "individualSavedReports": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "individualDownloads": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "orgUserSeats": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reportsUpload": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "featuredReportsMonthly": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiSummarize": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiKeyFindings": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiTranslate": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiSimilarSuggestions": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiCompare": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "aiCompareMaxReports": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanTiersDto": {
+        "type": "object",
+        "properties": {
+          "aiAccessLevel": {
+            "type": "string",
+            "nullable": true
+          },
+          "advancedSearchPrecision": {
+            "type": "string",
+            "nullable": true
+          },
+          "orgPageTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "supportTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "dashboardTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "notificationsTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "updatesCadence": {
+            "type": "string",
             "nullable": true
           }
         },
@@ -10705,6 +11521,16 @@
         },
         "additionalProperties": false
       },
+      "RetryResponse": {
+        "type": "object",
+        "properties": {
+          "retriedCount": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
       "ReturnForEditDecisionRequest": {
         "type": "object",
         "properties": {
@@ -11408,6 +12234,170 @@
         },
         "additionalProperties": false
       },
+      "UpdateAdminPlanRequest": {
+        "type": "object",
+        "properties": {
+          "nameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "nameEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "annualPrice": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "miserPriceId": {
+            "type": "string",
+            "nullable": true
+          },
+          "userLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "isActive": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "individualReadsLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "individualSavedReportsLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "individualDownloadsLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "reportsDownloadLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "reportsUploadLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "featuredReportsMonthly": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "aiSummarizeLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "aiKeyFindingsLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "aiTranslateLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "aiSimilarSuggestionsLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "aiCompareLimit": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "aiCompareMaxReports": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "aiAccessLevel": {
+            "type": "string",
+            "nullable": true
+          },
+          "advancedSearchPrecision": {
+            "type": "string",
+            "nullable": true
+          },
+          "orgPageTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "supportTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "dashboardTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "notificationsTier": {
+            "type": "string",
+            "nullable": true
+          },
+          "updatesCadence": {
+            "type": "string",
+            "nullable": true
+          },
+          "hasNotifications": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasAdvancedSearch": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasInteractions": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasExclusiveContent": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasTrendAnalysis": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasIndicatorExtraction": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasSmartRecommendations": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasKnowledgeGraph": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasSmartAlerts": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasOpportunityDiscovery": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "hasSectoralAnalysis": {
+            "type": "boolean",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateAnnotationRequest": {
         "type": "object",
         "properties": {
@@ -11743,9 +12733,12 @@
         "enum": [
           "ReportFullAccess",
           "ReportDownload",
+          "SaveReport",
+          "AiSummarize",
+          "AiKeyFindings",
           "AiTranslate",
-          "AiCompare",
-          "SaveReport"
+          "AiSimilarSuggestions",
+          "AiCompare"
         ],
         "type": "string"
       },
@@ -11819,6 +12812,28 @@
           "totalItems": {
             "type": "integer",
             "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageSnapshotDto": {
+        "type": "object",
+        "properties": {
+          "periodStart": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resetsAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "consumedByAction": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "nullable": true
           }
         },
         "additionalProperties": false

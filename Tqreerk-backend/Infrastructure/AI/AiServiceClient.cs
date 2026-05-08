@@ -202,6 +202,53 @@ public class AiServiceClient : IAiServiceClient
         return new CompareResult(reportIds, similarities, qualitativeJson);
     }
 
+    public async Task<IReadOnlyList<BulkJobResult>> BulkIngestAsync(
+        IReadOnlyList<BulkIngestItem> items, CancellationToken ct = default)
+    {
+        // Python expects { "items": [{ "report_id": "...", "file_url": "..." }, ...] }
+        var body = new
+        {
+            items = items.Select(i => new { report_id = i.ReportId, file_url = i.FileUrl }).ToArray(),
+        };
+        var raw = await PostAsync("reports/bulk/ingest", body, ct);
+        return ParseBulkJobsResponse(raw);
+    }
+
+    public async Task<IReadOnlyList<BulkJobResult>> BulkSummarizeAsync(
+        IReadOnlyList<Guid> reportIds, CancellationToken ct = default)
+    {
+        var body = new
+        {
+            items = reportIds.Select(id => new { report_id = id }).ToArray(),
+        };
+        var raw = await PostAsync("reports/bulk/summarize", body, ct);
+        return ParseBulkJobsResponse(raw);
+    }
+
+    /// Both /bulk/ingest and /bulk/summarize return the same {"jobs":[{job_id, report_id}, ...]}
+    /// shape. Centralised here so a Python-side rename touches one parser instead of two.
+    private static IReadOnlyList<BulkJobResult> ParseBulkJobsResponse(string raw)
+    {
+        using var doc = JsonDocument.Parse(raw);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object
+            || !doc.RootElement.TryGetProperty("jobs", out var arr)
+            || arr.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<BulkJobResult>();
+        }
+
+        var results = new List<BulkJobResult>(arr.GetArrayLength());
+        foreach (var p in arr.EnumerateArray())
+        {
+            if (p.ValueKind != JsonValueKind.Object) continue;
+            var jobIdStr = p.TryGetProperty("job_id", out var j) ? j.GetString() : null;
+            var reportIdStr = p.TryGetProperty("report_id", out var r) ? r.GetString() : null;
+            if (Guid.TryParse(jobIdStr, out var jobId) && Guid.TryParse(reportIdStr, out var reportId))
+                results.Add(new BulkJobResult(jobId, reportId));
+        }
+        return results;
+    }
+
     private async Task<string> PostAsync<TBody>(string path, TBody body, CancellationToken ct)
     {
         var startedAt = DateTimeOffset.UtcNow;
