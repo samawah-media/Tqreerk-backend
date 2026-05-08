@@ -70,7 +70,11 @@ async def _startup() -> None:
         ("docling",     layout.init),
         ("easyocr",     ocr.init),
         ("pix2tex",     formulas.init),
-        ("florence-2",  figures.init),
+        # figures: now backed by Vertex Gemini Vision (2026-05-08), not
+        # local Florence-2. init() pre-builds the Vertex client so the
+        # first on-demand caption call doesn't pay auth/handshake
+        # latency. Cheap and quota-free.
+        ("figures",     figures.init),
         # bge-m3 and bge-reranker-v2-m3 dropped 2026-04-30 — embedding /
         # reranking moved to managed APIs (Vertex). The /v1/embed and
         # /v1/rerank endpoints stay deployed but their model weights are
@@ -128,16 +132,18 @@ async def health() -> HealthResponse:
 
     # Models the extract pipeline actually depends on. /health gates on
     # exactly these — anything else is observability-only.
+    # `figures` now reports the Vertex Gemini Vision client's readiness
+    # (no GPU model — just a built genai.Client). It's cheap so we keep
+    # it required.
     required = {
         "docling":    layout.is_ready(),
         "easyocr":    ocr.is_ready(),
         "pix2tex":    formulas.is_ready(),
-        "florence-2": figures.is_ready(),
+        "figures":    figures.is_ready(),
     }
 
-    # Optional models we still expose (legacy /v1/embed and /v1/rerank
-    # endpoints respond 503 if anyone calls them). NOT included in the
-    # status calculation.
+    # Optional models. Legacy /v1/embed + /v1/rerank endpoints respond 503
+    # if anyone calls them — weights are not pre-cached in the image.
     optional = {
         "embeddings": embeddings.is_ready(),
         "reranker":   reranker.is_ready(),

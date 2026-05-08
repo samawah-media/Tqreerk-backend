@@ -231,7 +231,13 @@ async def summarize(
     lang_row = await lang_cur.fetchone()
     language = (lang_row[0] if lang_row and lang_row[0] else "ar").lower()
 
-    result = summarize_report(pages_content, language=language)
+    # Wrap in to_thread because summarize_report is sync and its retry
+    # path can sleep for minutes on quota errors. Keeping it on the event
+    # loop would freeze every other request on this pod (chat sessions,
+    # /docs, health, etc. all 504 at Cloud Run's 300 s LB timeout).
+    result = await asyncio.to_thread(
+        summarize_report, pages_content, language=language,
+    )
     return SummarizeResponse(
         report_id=body.report_id,
         summary=result.summary,
@@ -284,7 +290,11 @@ async def insights(
         raise HTTPException(status_code=202, detail=not_ready)
 
     pages = await _fetch_pages_aggregated(conn, body.report_id)
-    result = extract_insights([content for _, content in pages])
+    # to_thread: extract_insights is sync and shares the same retry/sleep
+    # path as summarize — keep it off the event loop.
+    result = await asyncio.to_thread(
+        extract_insights, [content for _, content in pages],
+    )
     return InsightsResponse(
         report_id=body.report_id,
         indicators=[Indicator(**i) for i in result.get("indicators", [])],
@@ -411,7 +421,11 @@ async def compare(
     langs = {(row[0] or "").lower() for row in lang_rows if row[0]}
     target_language = next(iter(langs)) if len(langs) == 1 else "ar"
 
-    qualitative = compare_reports(reports_for_gemini, language=target_language)
+    # to_thread: same reason as summarize / insights — sync gemini call
+    # with a long retry path must not block the event loop.
+    qualitative = await asyncio.to_thread(
+        compare_reports, reports_for_gemini, language=target_language,
+    )
 
     return CompareResponse(
         report_ids=body.report_ids,

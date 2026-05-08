@@ -366,16 +366,13 @@ async def trigger_ingest(job_id: str, report_id: str, file_url: str) -> None:
             "extract_figures":   True,
             "extract_formulas":  True,
             "ocr_fallback":      True,
-            # Florence-2 captioning is the most expensive per-region call
-            # (~5-10 s on L4). Disabled for ingest because:
-            #   1. Chunks already include any caption text Docling found
-            #      written on the page itself (most figures with real
-            #      captions have them in-page anyway).
-            #   2. AI-generated alt-text adds 5-10 min per report at the
-            #      cost of a feature few callers actually consume.
-            # Re-enable here if a caller needs auto-captions during ingest;
-            # otherwise the chat path can request them on demand.
-            "figure_captioning": False,
+            # Re-enabled 2026-05-08 after switching from local Florence-2
+            # to Vertex Gemini Vision. Cost dropped from ~5-10 s of GPU
+            # per figure (Florence-2) to ~0.5-1.5 s of network + Vertex
+            # inference per figure. Still gated by area threshold in the
+            # orchestrator (figure_caption_min_area_ratio = 2% of page),
+            # so tiny figures / logos are skipped.
+            "figure_captioning": True,
         },
     }
 

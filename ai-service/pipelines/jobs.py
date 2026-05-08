@@ -254,7 +254,11 @@ async def run_summarize_job(job_id: UUID, report_id: UUID) -> None:
                 "Report has no chunks — ingest must run before summarize"
             )
 
-        summary = summarize_report(
+        # to_thread so the sync retry/sleep loop in gemini.py doesn't
+        # block the event loop. See ai-service/api/reports.py for the
+        # matching change in the HTTP path.
+        summary = await asyncio.to_thread(
+            summarize_report,
             [content for _, content in page_rows],
             language=language,
         )

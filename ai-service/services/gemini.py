@@ -213,15 +213,60 @@ def _call_with_retry(operation: str, fn):
                 _replace_if_same(client)
             if attempt < max_attempts - 1:
                 if quota_error:
-                    # Vertex quotas reset per minute. Start at 30 s and
-                    # double, with up to 5 s jitter so concurrent retriers
-                    # don't all hammer the API on the same second when
-                    # the window opens. Sequence: 30, 60, 120, 240 s.
-                    base = 30 * (2 ** attempt)
-                    sleep_s = base + random.uniform(0, 5)
+                    # Vertex quotas reset per minute. Sleep ~quota window
+                    # plus jitter. We deliberately DON'T grow exponentially:
+                    # if the project is genuinely over quota, longer sleeps
+                    # just hold a thread-pool slot pointlessly. The whole
+                    # retry budget here is bounded at ~3 min total (4 retries
+                    # × ~45 s each) — past that we surface the 429 to the
+                    # caller and let them decide (job marks Failed; a
+                    # subsequent retry will pick up after the quota window
+                    # has fully reopened).
+                    sleep_s = 45 + random.uniform(0, 10)
                 else:
                     sleep_s = 2 ** attempt
                 time.sleep(sleep_s)
+    assert last_exc is not None
+    raise last_exc
+
+
+def _call_with_model_fallback(
+    operation: str,
+    models: list[str],
+    build_call,
+):
+    """Try `models` in order. Each gets the full _call_with_retry budget.
+
+    On a 429 RESOURCE_EXHAUSTED from the primary, fall through to the next
+    model — its quota is independent (e.g. gemini-2.5-flash and
+    gemini-2.5-flash-lite live in separate Vertex pools). On non-quota
+    errors, surface immediately rather than wasting the fallback budget.
+
+    `build_call(model_name)` returns the lambda used by _call_with_retry.
+    The double-lambda pattern lets us bind the model name per attempt
+    without redeclaring the lambda body at each call site.
+    """
+    last_exc: Exception | None = None
+    for i, model in enumerate(models):
+        is_last = (i == len(models) - 1)
+        try:
+            response = _call_with_retry(operation, build_call(model))
+            _log_genai_usage(response, name=operation, model=model)
+            if i > 0:
+                logger.info(
+                    "[%s] succeeded on fallback model %s after %d primary attempts",
+                    operation, model, i,
+                )
+            return response
+        except Exception as exc:
+            last_exc = exc
+            if _is_quota_error(exc) and not is_last:
+                logger.warning(
+                    "[%s] quota exhausted on %s; falling back to %s",
+                    operation, model, models[i + 1],
+                )
+                continue
+            raise
     assert last_exc is not None
     raise last_exc
 
@@ -524,10 +569,11 @@ def extract_insights(pages_content: list[str]) -> dict:
     matching the schema in core/prompts.INSIGHTS_SCHEMA.
     """
     combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
-    response = _call_with_retry(
-        "extract_insights",
-        lambda client: client.models.generate_content(
-            model=settings.gemini_summary_model,
+    response = _call_with_model_fallback(
+        operation="extract_insights",
+        models=[settings.gemini_summary_model, settings.gemini_summary_model_fallback],
+        build_call=lambda model: lambda client: client.models.generate_content(
+            model=model,
             contents=prompts.insights_prompt(combined),
             config=types.GenerateContentConfig(
                 temperature=0.2,
@@ -536,7 +582,6 @@ def extract_insights(pages_content: list[str]) -> dict:
             ),
         ),
     )
-    _log_genai_usage(response, name="extract_insights", model=settings.gemini_summary_model)
     return json.loads(response.text)
 
 
@@ -558,10 +603,11 @@ def compare_reports(reports: list[dict], language: str = "ar") -> dict:
         )
     reports_section = "\n\n".join(sections)
 
-    response = _call_with_retry(
-        "compare_reports",
-        lambda client: client.models.generate_content(
-            model=settings.gemini_summary_model,
+    response = _call_with_model_fallback(
+        operation="compare_reports",
+        models=[settings.gemini_summary_model, settings.gemini_summary_model_fallback],
+        build_call=lambda model: lambda client: client.models.generate_content(
+            model=model,
             contents=prompts.compare_prompt(reports_section, language=language),
             config=types.GenerateContentConfig(
                 temperature=0.2,
@@ -570,7 +616,6 @@ def compare_reports(reports: list[dict], language: str = "ar") -> dict:
             ),
         ),
     )
-    _log_genai_usage(response, name="compare_reports", model=settings.gemini_summary_model)
     return json.loads(response.text)
 
 
@@ -579,13 +624,19 @@ def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSu
 
     `language` is the report's OriginalLanguage (ISO code), pinning the
     output language with a hard directive in the prompt.
+
+    Quota fallback: if `gemini_summary_model` (Flash) is over quota, we
+    automatically retry with `gemini_summary_model_fallback` (Flash-Lite,
+    different Vertex quota pool) before surfacing the error.
     """
     combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
-    response = _call_with_retry(
-        "summarize_report",
-        lambda client: client.models.generate_content(
-            model=settings.gemini_summary_model,
-            contents=prompts.summarize_prompt(combined, language=language),
+    prompt_text = prompts.summarize_prompt(combined, language=language)
+    response = _call_with_model_fallback(
+        operation="summarize_report",
+        models=[settings.gemini_summary_model, settings.gemini_summary_model_fallback],
+        build_call=lambda model: lambda client: client.models.generate_content(
+            model=model,
+            contents=prompt_text,
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 response_mime_type="application/json",
@@ -593,5 +644,4 @@ def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSu
             ),
         ),
     )
-    _log_genai_usage(response, name="summarize_report", model=settings.gemini_summary_model)
     return ReportSummary.model_validate_json(response.text)

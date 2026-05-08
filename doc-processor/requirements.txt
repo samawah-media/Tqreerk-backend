@@ -23,20 +23,17 @@ torchvision==0.19.1
 # fell back to CPU paths in some code branches and slowed ingest.
 docling==2.93.0
 
-# Florence-2 / transformers — figure captioning
-# transformers bumped 4.45.2 → 4.50.0 on 2026-05-08 to pick up:
-#   - AutoModelForImageTextToText (docling 2.93's chart extraction needs it)
-#   - rt_detr_v2 model type (docling 2.93's layout model checkpoint uses
-#     RT-DETRv2 architecture, added to transformers Feb 2025).
-# Florence-2 trust_remote_code path stays compatible at 4.50.
+# transformers / accelerate / timm / einops — required by docling 2.93's
+# layout (RT-DETRv2) and table (TableFormer) models. Florence-2 was
+# retired 2026-05-08 in favour of Vertex Gemini Vision (see
+# pipeline/figures.py); these stay because docling-ibm-models pulls
+# them transitively for its own models.
+#   transformers 4.50: AutoModelForImageTextToText (docling chart pipeline)
+#                       + rt_detr_v2 model type (docling layout model)
+#   accelerate 1.4:    required by docling-ibm-models 3.13.x (>=1.2.1)
 transformers==4.50.0
-# accelerate bumped 1.0.1 → 1.4.0 on 2026-05-08 because docling 2.93's
-# transitive dep (docling-ibm-models 3.13.2) requires accelerate>=1.2.1.
 accelerate==1.4.0
 einops==0.8.0
-# Florence-2 loads its DaViT vision backbone via trust_remote_code, which
-# imports timm at runtime. Not declared by the transformers wheel, so we
-# pin it explicitly here.
 timm==1.0.11
 
 # EasyOCR — Arabic + English OCR fallback for low-quality / scanned regions

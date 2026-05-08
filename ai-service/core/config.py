@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     gemini_vision_model: str  = "gemini-2.5-flash"        # PDF page → text + chart descriptions
     gemini_chat_model: str    = "gemini-2.5-flash"        # RAG chat answers (fast, small context)
     gemini_summary_model: str = "gemini-2.5-flash"        # full-report summarization (deeper analysis)
+    # Fallback model used when gemini_summary_model returns 429 RESOURCE_EXHAUSTED.
+    # Lite has a separate Vertex quota pool, so a primary-quota burst
+    # spills over here instead of failing the user-visible job. Quality
+    # is slightly lower but still good for summary/insights/compare.
+    gemini_summary_model_fallback: str = "gemini-2.5-flash-lite"
     # Ragas eval judge — Lite tier so the eval pipeline doesn't burn the
     # chat-tier quota every time we score a chat trace.
     ragas_judge_model: str    = "gemini-2.5-flash-lite"

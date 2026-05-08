@@ -55,7 +55,17 @@ class Settings(BaseSettings):
     # Florence-2 variants: "base-ft" (~1GB, faster) or "large-ft" (~3GB, better
     # captions). base-ft is the default — a 30s extra cold-start of large-ft
     # rarely earns its keep on research-report figures.
+    # NOTE 2026-05-08: Florence-2 is no longer loaded at startup (see main.py).
+    # Figure captioning is now served by Vertex Gemini Vision via figures.py.
+    # This setting is kept for backwards compatibility with any external
+    # tooling that reads it; flip back to local Florence-2 by re-enabling
+    # the warmup branch in main.py if needed.
     florence_model_id: str = "microsoft/Florence-2-base-ft"
+
+    # Gemini Vision model used for figure captioning. Same default as
+    # ai-service so we stay on a single quota pool. Override per-deploy
+    # via env var GEMINI_VISION_MODEL.
+    gemini_vision_model: str = "gemini-2.5-flash"
 
     # EasyOCR languages — ['ar', 'en'] downloads ~120MB per language at first
     # run. Add more via env (CSV) without rebuilding the image.
