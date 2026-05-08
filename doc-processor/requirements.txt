@@ -24,10 +24,12 @@ torchvision==0.19.1
 docling==2.93.0
 
 # Florence-2 / transformers — figure captioning
-# transformers bumped 4.45.2 → 4.46.3 on 2026-05-08 because docling 2.93's
-# new chart-extraction + ASR pipelines import `AutoModelForImageTextToText`
-# (added in 4.46). Florence-2 trust_remote_code path tested fine on 4.46.
-transformers==4.46.3
+# transformers bumped 4.45.2 → 4.50.0 on 2026-05-08 to pick up:
+#   - AutoModelForImageTextToText (docling 2.93's chart extraction needs it)
+#   - rt_detr_v2 model type (docling 2.93's layout model checkpoint uses
+#     RT-DETRv2 architecture, added to transformers Feb 2025).
+# Florence-2 trust_remote_code path stays compatible at 4.50.
+transformers==4.50.0
 # accelerate bumped 1.0.1 → 1.4.0 on 2026-05-08 because docling 2.93's
 # transitive dep (docling-ibm-models 3.13.2) requires accelerate>=1.2.1.
 accelerate==1.4.0
