@@ -90,6 +90,10 @@ public class TaqreerkDbContext : DbContext
     public DbSet<EmailVerificationToken> EmailVerificationTokens => Set<EmailVerificationToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
 
+    // Bulk import (admin Excel-based ingestion of third-party reports)
+    public DbSet<BulkImportJob> BulkImportJobs => Set<BulkImportJob>();
+    public DbSet<BulkImportItem> BulkImportItems => Set<BulkImportItem>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

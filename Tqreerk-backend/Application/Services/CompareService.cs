@@ -12,8 +12,11 @@ namespace Taqreerk.Application.Services;
 
 public class CompareService : ICompareService
 {
+    /// Floor is universal — comparing one report doesn't make sense
+    /// regardless of plan. The upper bound is per-plan and read off
+    /// `Plan.AiCompareMaxReports` (Free=0 blocks; Annual/Basic=2;
+    /// Professional=5).
     private const int MinReports = 2;
-    private const int MaxReports = 4;
 
     private readonly TaqreerkDbContext _db;
     private readonly IAiServiceClient _ai;
@@ -29,8 +32,19 @@ public class CompareService : ICompareService
     public async Task<ComparisonResultDto> CompareAsync(
         Guid userId, IReadOnlyList<Guid> reportIds, CancellationToken ct = default)
     {
-        if (reportIds is null || reportIds.Count < MinReports || reportIds.Count > MaxReports)
-            throw new ArgumentException($"يجب اختيار من {MinReports} إلى {MaxReports} تقارير للمقارنة.");
+        if (reportIds is null || reportIds.Count < MinReports)
+            throw new ArgumentException($"يجب اختيار {MinReports} تقارير على الأقل للمقارنة.");
+
+        // Resolve the caller's plan to honour the per-plan upper bound.
+        // The [EnforceUsageLimit(AiCompare)] filter on the controller
+        // already verified the monthly counter; here we add the
+        // per-request size check. A plan with AiCompareMaxReports = 0
+        // means compare is blocked entirely (Free tier).
+        var maxAllowed = await GetCompareMaxReportsAsync(userId, ct);
+        if (maxAllowed <= 0)
+            throw new InvalidOperationException("باقتك الحالية لا تتيح مقارنة التقارير.");
+        if (reportIds.Count > maxAllowed)
+            throw new ArgumentException($"باقتك تسمح بمقارنة حتى {maxAllowed} تقارير في المرة الواحدة.");
 
         // De-dupe + sort canonical so the cache key is order-insensitive.
         // Two users picking the same reports in different orders share one
@@ -181,6 +195,21 @@ public class CompareService : ICompareService
             .ToListAsync(ct);
 
         return await BuildDtoAsync(entity, reports.Cast<dynamic>().ToList(), ids, ct);
+    }
+
+    /// Caller's per-request compare cap from their active plan. Free
+    /// tier returns 0 (UI shouldn't have offered the action; the
+    /// service throws if it does anyway). Falls back to 0 when the
+    /// user has no active subscription — same posture as UsageService.
+    private async Task<int> GetCompareMaxReportsAsync(Guid userId, CancellationToken ct)
+    {
+        var max = await _db.Subscriptions
+            .AsNoTracking()
+            .Where(s => s.UserId == userId && s.Status == SubscriptionStatus.Active)
+            .OrderByDescending(s => s.CreatedAt)
+            .Select(s => (int?)s.Plan.AiCompareMaxReports)
+            .FirstOrDefaultAsync(ct);
+        return max ?? 0;
     }
 
     private async Task<ComparisonResultDto> BuildDtoAsync(

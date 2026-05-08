@@ -22,6 +22,22 @@ public class Report : SoftDeletableEntity
     public string? CoverImageUrl { get; set; }
     public string? ExtractedText { get; set; }
 
+    /// <summary>
+    /// Free-form publisher / source label — set by staff during bulk
+    /// imports of third-party reports (e.g. "World Bank", "Statista").
+    /// Distinct from <see cref="Organization"/>, which is always the
+    /// account-holding entity that owns the row.
+    /// </summary>
+    public string? Source { get; set; }
+
+    /// <summary>
+    /// Comma-separated list of report authors. Stored as a single string
+    /// to keep the bulk-import Excel round-trip lossless — staff type
+    /// "أحمد محمد، فاطمة علي" once and we don't have to round-trip
+    /// through a join table for what is essentially a display field.
+    /// </summary>
+    public string? Authors { get; set; }
+
     /// <summary>Managed by PostgreSQL trigger — do not write from application</summary>
     public NpgsqlTsVector? SearchVector { get; set; }
 

@@ -53,7 +53,9 @@ public interface IUsageService
 
 /// Thrown when a user has hit the cap for an action under their current
 /// plan. The middleware translates this into HTTP 403 with a structured
-/// body the SPA uses to render the upgrade prompt.
+/// body the SPA uses to render the upgrade prompt — body shape:
+///   { status, title, code = "USAGE_LIMIT_EXCEEDED",
+///     actionType, limit, used, resetsAt, traceId }
 public sealed class UsageLimitExceededException : Exception
 {
     public UsageActionType ActionType { get; }
@@ -72,5 +74,31 @@ public sealed class UsageLimitExceededException : Exception
         Limit = limit;
         Used = used;
         ResetsAt = resetsAt;
+    }
+}
+
+/// Thrown when an action requires a plan feature flag the caller doesn't
+/// have (e.g. Pro-only Trend Analysis on a Basic org plan). Distinct from
+/// UsageLimitExceededException because the user can't "wait it out" —
+/// they need to upgrade to access the feature at all.
+///
+/// Middleware translates to 403 with body:
+///   { status, title, code = "AI_FEATURE_NOT_AVAILABLE",
+///     featureName, currentPlanName, traceId }
+public sealed class PlanFeatureNotAvailableException : Exception
+{
+    /// Plan column name (e.g. "HasKnowledgeGraph"). Frontend uses this
+    /// to look up a localised label for the upsell modal.
+    public string FeatureName { get; }
+
+    /// The Arabic name of the user's current plan. Helps the modal
+    /// say "your باقة أساسية doesn't include this — upgrade to …".
+    public string CurrentPlanName { get; }
+
+    public PlanFeatureNotAvailableException(string featureName, string currentPlanName)
+        : base($"Feature '{featureName}' is not available on plan '{currentPlanName}'.")
+    {
+        FeatureName = featureName;
+        CurrentPlanName = currentPlanName;
     }
 }

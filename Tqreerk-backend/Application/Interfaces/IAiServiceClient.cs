@@ -48,7 +48,30 @@ public interface IAiServiceClient
     /// can surface the error verbatim to the user.
     Task<CompareResult> CompareAsync(
         IReadOnlyList<Guid> reportIds, CancellationToken ct = default);
+
+    /// POST /api/ai/reports/bulk/ingest — enqueue ingest jobs for many
+    /// reports in one round-trip. Each item triggers the GPU-direct
+    /// ingest pipeline; responses are async (one job_id per item) and
+    /// callers must poll <see cref="GetJobStatusAsync"/> per job id.
+    Task<IReadOnlyList<BulkJobResult>> BulkIngestAsync(
+        IReadOnlyList<BulkIngestItem> items, CancellationToken ct = default);
+
+    /// POST /api/ai/reports/bulk/summarize — enqueue Summarization jobs
+    /// for many already-ingested reports. The AI worker picks them up on
+    /// its next poll cycle. Caller polls <see cref="GetJobStatusAsync"/>
+    /// per returned job id.
+    Task<IReadOnlyList<BulkJobResult>> BulkSummarizeAsync(
+        IReadOnlyList<Guid> reportIds, CancellationToken ct = default);
 }
+
+/// One row of the /bulk/ingest request — exactly what the Python side
+/// expects (matches BulkIngestItemRequest / IngestRequest pairing).
+public record BulkIngestItem(Guid ReportId, string FileUrl);
+
+/// One row of any /bulk/* response. The Python service returns
+/// {"jobs":[{job_id, report_id}, ...]}; we flatten and surface the same
+/// shape regardless of which bulk endpoint was called.
+public record BulkJobResult(Guid JobId, Guid ReportId);
 
 /// Returned synchronously from POST /reports/ingest. The actual ingest runs in
 /// the background — caller polls GetJobStatusAsync until done.

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using NpgsqlTypes;
@@ -12,9 +13,11 @@ using Taqreerk.Infrastructure.Data;
 namespace Taqreerk.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(TaqreerkDbContext))]
-    partial class TaqreerkDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260507075433_Plan_TierSchemaExpansion")]
+    partial class Plan_TierSchemaExpansion
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -228,151 +231,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("OrganizationId");
 
                     b.ToTable("audit_logs", (string)null);
-                });
-
-            modelBuilder.Entity("Taqreerk.Domain.Entities.BulkImportItem", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasDefaultValueSql("gen_random_uuid()");
-
-                    b.Property<string>("Authors")
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)");
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CountryNameAr")
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<string>("ErrorMessage")
-                        .HasMaxLength(4000)
-                        .HasColumnType("character varying(4000)");
-
-                    b.Property<string>("FileUrl")
-                        .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)");
-
-                    b.Property<Guid?>("IngestJobId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("JobId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("OriginalLanguage")
-                        .HasMaxLength(5)
-                        .HasColumnType("character varying(5)");
-
-                    b.Property<int?>("PublicationYear")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid?>("ReportId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("ReportType")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<int>("RowIndex")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("SectorNameAr")
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
-
-                    b.Property<string>("Source")
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
-
-                    b.Property<string>("Stage")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("character varying(30)");
-
-                    b.Property<DateTime?>("StartedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid?>("SummarizeJobId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Title")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ReportId");
-
-                    b.HasIndex("Stage");
-
-                    b.HasIndex("JobId", "RowIndex");
-
-                    b.ToTable("bulk_import_items", (string)null);
-                });
-
-            modelBuilder.Entity("Taqreerk.Domain.Entities.BulkImportJob", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasDefaultValueSql("gen_random_uuid()");
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int>("CompletedCount")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<Guid>("CreatedByUserId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("ErrorMessage")
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)");
-
-                    b.Property<int>("FailedCount")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("OrganizationId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("SourceFileName")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<DateTime?>("StartedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(30)
-                        .HasColumnType("character varying(30)");
-
-                    b.Property<int>("TotalCount")
-                        .HasColumnType("integer");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("OrganizationId");
-
-                    b.HasIndex("CreatedByUserId", "CreatedAt");
-
-                    b.ToTable("bulk_import_jobs", (string)null);
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.ChatMessage", b =>
@@ -4563,43 +4421,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Organization");
                 });
 
-            modelBuilder.Entity("Taqreerk.Domain.Entities.BulkImportItem", b =>
-                {
-                    b.HasOne("Taqreerk.Domain.Entities.BulkImportJob", "Job")
-                        .WithMany("Items")
-                        .HasForeignKey("JobId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("Taqreerk.Domain.Entities.Report", "Report")
-                        .WithMany()
-                        .HasForeignKey("ReportId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("Job");
-
-                    b.Navigation("Report");
-                });
-
-            modelBuilder.Entity("Taqreerk.Domain.Entities.BulkImportJob", b =>
-                {
-                    b.HasOne("Taqreerk.Domain.Entities.User", "CreatedByUser")
-                        .WithMany()
-                        .HasForeignKey("CreatedByUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Taqreerk.Domain.Entities.Organization", "Organization")
-                        .WithMany()
-                        .HasForeignKey("OrganizationId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("CreatedByUser");
-
-                    b.Navigation("Organization");
-                });
-
             modelBuilder.Entity("Taqreerk.Domain.Entities.ChatMessage", b =>
                 {
                     b.HasOne("Taqreerk.Domain.Entities.ChatSession", "Session")
@@ -5287,11 +5108,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Comparisons");
 
                     b.Navigation("Translations");
-                });
-
-            modelBuilder.Entity("Taqreerk.Domain.Entities.BulkImportJob", b =>
-                {
-                    b.Navigation("Items");
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.ChatSession", b =>

@@ -181,4 +181,85 @@ public class MeService : IMeService
 
         return await query.Take(take).ToListAsync(ct);
     }
+
+    public async Task<PlanFeaturesDto> GetPlanFeaturesAsync(Guid userId, CancellationToken ct = default)
+    {
+        // Resolve the caller's active subscription + plan in one go.
+        // If the row is missing, that's a misconfiguration (registration
+        // should auto-link to the free plan) — surface it loudly so the
+        // dev sees the broken backfill instead of returning a misleading
+        // empty plan.
+        var plan = await _db.Subscriptions
+            .AsNoTracking()
+            .Where(s => s.UserId == userId && s.Status == SubscriptionStatus.Active)
+            .OrderByDescending(s => s.CreatedAt)
+            .Select(s => s.Plan)
+            .FirstOrDefaultAsync(ct);
+
+        if (plan is null)
+            throw new InvalidOperationException(
+                $"User {userId} has no active subscription. Registration should auto-link to the free plan; check the backfill ran.");
+
+        // This-month usage. Same window UsageService uses to enforce
+        // the cap — first day of the current UTC month → start of next.
+        var now = DateTime.UtcNow;
+        var periodStart = new DateOnly(now.Year, now.Month, 1);
+        var periodStartUtc = new DateTime(periodStart.Year, periodStart.Month, periodStart.Day, 0, 0, 0, DateTimeKind.Utc);
+        var resetsAt = periodStartUtc.AddMonths(1);
+
+        var consumed = await _db.UsageTracking
+            .AsNoTracking()
+            .Where(u => u.UserId == userId && u.BillingPeriodStart == periodStart)
+            .GroupBy(u => u.ActionType)
+            .Select(g => new { ActionType = g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+
+        var consumedByAction = consumed.ToDictionary(
+            x => x.ActionType.ToString(),
+            x => x.Count,
+            StringComparer.Ordinal);
+
+        return new PlanFeaturesDto(
+            plan.Id,
+            plan.NameAr,
+            plan.NameEn,
+            plan.TargetType.ToString(),
+            new PlanLimitsDto(
+                plan.IndividualReadsLimit,
+                plan.IndividualSavedReportsLimit,
+                plan.IndividualDownloadsLimit,
+                plan.UserLimit,
+                plan.ReportsUploadLimit,
+                plan.FeaturedReportsMonthly,
+                plan.AiSummarizeLimit,
+                plan.AiKeyFindingsLimit,
+                plan.AiTranslateLimit,
+                plan.AiSimilarSuggestionsLimit,
+                plan.AiCompareLimit,
+                plan.AiCompareMaxReports),
+            new PlanFlagsDto(
+                plan.HasNotifications,
+                plan.HasAdvancedSearch,
+                plan.HasInteractions,
+                plan.HasExclusiveContent,
+                plan.HasTrendAnalysis,
+                plan.HasIndicatorExtraction,
+                plan.HasSmartRecommendations,
+                plan.HasKnowledgeGraph,
+                plan.HasSmartAlerts,
+                plan.HasOpportunityDiscovery,
+                plan.HasSectoralAnalysis),
+            new PlanTiersDto(
+                plan.AiAccessLevel,
+                plan.AdvancedSearchPrecision,
+                plan.OrgPageTier,
+                plan.SupportTier,
+                plan.DashboardTier,
+                plan.NotificationsTier,
+                plan.UpdatesCadence),
+            new UsageSnapshotDto(
+                periodStartUtc,
+                resetsAt,
+                consumedByAction));
+    }
 }

@@ -167,6 +167,7 @@ public class GcsFileStorage : IFileStorage
         return keys;
     }
 
+
     private static string SanitizeFolder(string folder)
     {
         if (string.IsNullOrWhiteSpace(folder)) return string.Empty;

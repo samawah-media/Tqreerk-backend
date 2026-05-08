@@ -90,6 +90,7 @@ public static class ServiceExtensions
         services.AddScoped<IAdminUsersService, AdminUsersService>();
         services.AddScoped<IAdminCategoriesService, AdminCategoriesService>();
         services.AddScoped<IAdminFeaturedService, AdminFeaturedService>();
+        services.AddScoped<IAdminPlansService, AdminPlansService>();
         services.AddScoped<IAdminStatsService, AdminStatsService>();
         services.AddScoped<IAdminSettingsService, AdminSettingsService>();
         services.AddScoped<IUserService, UserService>();
@@ -119,6 +120,13 @@ public static class ServiceExtensions
         // long-running RPC (ingest can take minutes); the per-call timeout is
         // controlled via AiServiceSettings.TimeoutSeconds inside the client.
         services.AddHttpClient<IAiServiceClient, AiServiceClient>();
+
+        // Bulk-import (admin Excel-driven third-party report ingestion).
+        // The service handles parse + queue; the processor pumps rows
+        // through fetch/upload/AI in the background.
+        services.AddScoped<IBulkImportService, BulkImportService>();
+        services.AddHttpClient(); // Default named client used by BulkImportProcessor
+        services.AddHostedService<BulkImportProcessor>();
 
         // Background worker that drains the ai_jobs queue. Single instance —
         // see ReportProcessingWorker.cs for scaling notes.
