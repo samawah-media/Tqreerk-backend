@@ -62,10 +62,11 @@ class Settings(BaseSettings):
     # the warmup branch in main.py if needed.
     florence_model_id: str = "microsoft/Florence-2-base-ft"
 
-    # Gemini Vision model used for figure captioning. Same default as
-    # ai-service so we stay on a single quota pool. Override per-deploy
-    # via env var GEMINI_VISION_MODEL.
-    gemini_vision_model: str = "gemini-2.5-flash"
+    # Gemini Vision model used for figure captioning. Lite tier so the
+    # captioning burst from a single ingest (one call per figure × N
+    # figures × M reports) doesn't hit the Flash quota that user-facing
+    # chat / summary share. Override per-deploy via GEMINI_VISION_MODEL.
+    gemini_vision_model: str = "gemini-2.5-flash-lite"
 
     # EasyOCR languages — ['ar', 'en'] downloads ~120MB per language at first
     # run. Add more via env (CSV) without rebuilding the image.
