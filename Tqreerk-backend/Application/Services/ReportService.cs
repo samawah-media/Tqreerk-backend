@@ -6,6 +6,7 @@ using Taqreerk.Application.Interfaces;
 using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
+using Taqreerk.Infrastructure.Storage;
 
 namespace Taqreerk.Application.Services;
 
@@ -90,13 +91,7 @@ public class ReportService : IReportService
         {
             try
             {
-                var storedCover = await _files.UploadAsync(
-                    coverImage.Content, coverImage.OriginalFileName, coverImage.ContentType,
-                    $"{CoverFolder}/{orgId}", ct);
-                coverKey = storedCover.ObjectKey;
-                _logger.LogInformation(
-                    "Cover image uploaded for org {OrgId}: {ObjectKey} ({Size} bytes, {ContentType})",
-                    orgId, storedCover.ObjectKey, storedCover.SizeBytes, storedCover.ContentType);
+                coverKey = await ReencodeAndUploadCoverAsync(coverImage, orgId, ct);
             }
             catch (Exception ex)
             {
@@ -371,10 +366,9 @@ public class ReportService : IReportService
         {
             try
             {
-                var storedCover = await _files.UploadAsync(
-                    coverImage.Content, coverImage.OriginalFileName, coverImage.ContentType,
-                    $"{CoverFolder}/{orgId}", ct);
-                report.CoverImageUrl = storedCover.ObjectKey;
+                var newCoverKey = await ReencodeAndUploadCoverAsync(coverImage, orgId, ct);
+                if (!string.IsNullOrEmpty(newCoverKey))
+                    report.CoverImageUrl = newCoverKey;
             }
             catch (Exception ex)
             {
@@ -573,5 +567,39 @@ public class ReportService : IReportService
         // 6 lowercase alphanumeric chars from a fresh GUID. Plenty for our
         // collision domain and short enough to keep slugs readable.
         return Guid.NewGuid().ToString("N").Substring(0, 6);
+    }
+
+    /// <summary>
+    /// Re-encode whatever image the user uploaded as WebP and store
+    /// it under <c>covers/{orgId}</c>. Centralised here so both the
+    /// initial upload and the resubmit path share the exact same
+    /// "every cover is .webp on disk" guarantee. Returns the stored
+    /// object key, or null on a non-fatal failure (caller logs +
+    /// skips the cover so the report can still be published).
+    /// </summary>
+    private async Task<string?> ReencodeAndUploadCoverAsync(
+        UploadedFile coverImage, Guid orgId, CancellationToken ct)
+    {
+        // Pull the bytes into memory in one read — covers are capped at
+        // 5 MB so this is cheap, and SkiaSharp's decoder needs random
+        // access anyway.
+        using var ms = new MemoryStream();
+        await coverImage.Content.CopyToAsync(ms, ct);
+        var sourceBytes = ms.ToArray();
+
+        var webpBytes = CoverImageEncoder.EncodeWebp(sourceBytes);
+        var webpName = CoverImageEncoder.WithWebpExtension(coverImage.OriginalFileName);
+
+        using var webpStream = new MemoryStream(webpBytes);
+        var stored = await _files.UploadAsync(
+            webpStream,
+            webpName,
+            CoverImageEncoder.ContentType,
+            $"{CoverFolder}/{orgId}",
+            ct);
+        _logger.LogInformation(
+            "Cover image re-encoded to WebP for org {OrgId}: {ObjectKey} ({Size} bytes, was {OriginalType})",
+            orgId, stored.ObjectKey, stored.SizeBytes, coverImage.ContentType);
+        return stored.ObjectKey;
     }
 }

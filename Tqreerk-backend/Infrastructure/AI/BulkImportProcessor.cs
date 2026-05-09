@@ -2,12 +2,12 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PDFtoImage;
-using SkiaSharp;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Settings;
 using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
+using Taqreerk.Infrastructure.Storage;
 
 namespace Taqreerk.Infrastructure.AI;
 
@@ -451,19 +451,23 @@ public class BulkImportProcessor : BackgroundService
         IFileStorage files, byte[] pdfBytes, string slug, Guid orgId, CancellationToken ct)
     {
         // PDFtoImage's API is sync; offload to a worker thread so we don't
-        // block the polling loop's task scheduler.
+        // block the polling loop's task scheduler. We render straight to
+        // WebP via the shared CoverImageEncoder so every cover stored in
+        // GCS — bulk-import or manual upload — is .webp.
         var bytes = await Task.Run(() =>
         {
             using var pdfStream = new MemoryStream(pdfBytes);
             using var bitmap = Conversion.ToImage(pdfStream, page: 0);
-            using var img = SKImage.FromBitmap(bitmap);
-            using var data = img.Encode(SKEncodedImageFormat.Jpeg, quality: 80);
-            return data.ToArray();
+            return CoverImageEncoder.EncodeBitmapAsWebp(bitmap);
         }, ct);
 
         using var ms = new MemoryStream(bytes);
         var stored = await files.UploadAsync(
-            ms, $"{slug}-cover.jpg", "image/jpeg", $"covers/{orgId}", ct);
+            ms,
+            $"{slug}-cover{CoverImageEncoder.Extension}",
+            CoverImageEncoder.ContentType,
+            $"covers/{orgId}",
+            ct);
         return stored.ObjectKey;
     }
 
