@@ -101,6 +101,18 @@ class Settings(BaseSettings):
     reranker_candidate_pool: int = 20    # how many to fetch from hybrid before rerank
     reranker_top_k: int          = 5     # how many to keep after rerank
 
+    # ── Multimodal page-image tool ───────────────────────────────────────────
+    # Exposes `get_page_image(report_id, page)` to the chat agent. The tool
+    # renders one PDF page (PyMuPDF, 150 DPI), base64-encodes it, and the
+    # agent loop injects it as a multimodal HumanMessage so the next Gemini
+    # call can read the chart / figure directly. Use case: visual questions
+    # the text retrieval path can't answer (exact data points off a chart,
+    # legend colors, fine layout details).
+    #
+    # Disabled flips the tool into a stub that returns "tool disabled" —
+    # safe instant rollback without redeploy.
+    page_image_tool_enabled: bool = True
+
     # ── Fuzzy / trigram retrieval arm ────────────────────────────────────────
     # Third RRF arm using pg_trgm against arabic_normalize("Content"). Catches
     # typos, OCR errors, and partial-name lookups that dense + BM25 both miss.

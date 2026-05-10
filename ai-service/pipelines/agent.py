@@ -62,7 +62,15 @@ import logging
 from typing import Annotated, Any, TypedDict
 from uuid import UUID
 
-from langchain_core.messages import AnyMessage, BaseMessage, SystemMessage
+import json
+
+from langchain_core.messages import (
+    AnyMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_google_vertexai import ChatVertexAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -105,7 +113,7 @@ class AgentState(TypedDict):
 
 SYSTEM_PROMPT = """You are the Taqreerk AI research assistant. You help users explore Arabic and English research reports from the GCC region.
 
-You have access to a fixed toolset (search_chunks, get_page, list_reports, get_report_metadata, get_report_summary, get_report_indicators, get_report_trends, get_report_recommendations, get_report_keywords, get_report_topics, get_translation, list_saved_reports, list_user_interests, find_similar_reports, get_session_history). Use them to ground every factual claim in retrieved data — do not answer from prior knowledge.
+You have access to a fixed toolset (search_chunks, get_page, get_page_image, list_reports, get_report_metadata, get_report_summary, get_report_indicators, get_report_trends, get_report_recommendations, get_report_keywords, get_report_topics, get_translation, list_saved_reports, list_user_interests, find_similar_reports, get_session_history). Use them to ground every factual claim in retrieved data — do not answer from prior knowledge.
 
 CORE PRINCIPLE — never refuse a question just because pre-baked data is missing.
 Most of the structured tools (`get_report_keywords`, `get_report_summary`, `get_report_indicators`, `get_report_trends`, `get_report_recommendations`) return AI-generated content that may not have been computed yet for a given report. **An empty result from these tools does NOT mean the answer is unavailable — it just means the shortcut isn't ready.** The report's full text is always available via `search_chunks` and `get_page`.
@@ -234,6 +242,39 @@ Selection guidelines:
     Editorial / opening sentences that are NOT factual claims (e.g. "Here is a summary of the key findings:") don't need citations. Everything that asserts a number, date, name, or fact does.
   • `find_similar_reports` returns `similarity` (embedding cosine), `shared_topics` (count), `shared_keywords` (count), and a combined `score`. When recommending similar reports, mention WHY they're related — e.g. "shares 3 topics with your report" — using the shared_* counts.
 
+VISUAL QUESTIONS — when to use `get_page_image`:
+This tool renders a single PDF page as an image and attaches it to the
+conversation. Your next response is generated with vision-capable multimodal
+input, so you can read charts, figures, legends, and fine layout details
+directly. It is more expensive than text tools — spend the hop deliberately.
+
+USE it for:
+  • "What is the exact value at year X in the chart on page N?" — when the
+    captioned text (from search_chunks block_types=["figure"]) summarised
+    the chart but didn't list the data point.
+  • "What color is the line for revenue?" — colors are never captured by
+    captions.
+  • "Read me the legend / axes / footnote" — when search_chunks returned
+    "[Figure]" with no extracted_text, or partial extracted_text.
+  • Layout questions: "Which bar is tallest after the dashed threshold?"
+
+DO NOT use it for:
+  • Questions answerable from chunk text. If `search_chunks` already
+    returned a caption containing the number you need, cite it and stop.
+  • "Summarize the page" — that's `get_page` (text), much cheaper.
+  • Wide questions across many pages — pick ONE page first via
+    `search_chunks` / `get_report_summary`, then narrow to the right page
+    before calling `get_page_image`.
+
+Workflow: always try the text tools FIRST. If they return enough to answer,
+do so. If they returned a `[Figure]` block or an obviously truncated chart
+caption AND the user is asking about visual specifics, only then call
+`get_page_image(report_id, page_number)` to see the page.
+
+After `get_page_image` returns, your NEXT response is the one that sees the
+image. Read the chart yourself in that response — don't call the tool again
+for the same page (the result is cached and you'll get a stop-message back).
+
 Other rules:
   • PDFs are NEVER downloadable through chat. `get_translation` returns translated text only; if a user asks for a download, explain that translated text is available inline.
   • Respond in the same language the user used (Arabic ↔ English). If they mix, default to the dominant language in their last message.
@@ -288,15 +329,67 @@ def _build_agent_node(model: ChatVertexAI):
 
 
 async def _tools_node_with_counter(state: AgentState, tool_node: ToolNode) -> dict[str, Any]:
-    """Wrap LangGraph's prebuilt ToolNode so we can increment hop_count.
+    """Wrap LangGraph's prebuilt ToolNode to:
 
-    ToolNode itself returns just `{"messages": [...]}`; we add the counter
-    bump in the same dict so the state reducer applies both in one step.
+      1. increment hop_count (so the conditional edge can stop runaway loops).
+      2. post-process any tool that returned an `image_b64` payload — strip
+         the base64 out of the ToolMessage content (otherwise the model sees
+         it as a ~300 KB blob of base64 noise in its context) and re-attach
+         the image as a multimodal HumanMessage so the next Gemini call can
+         actually look at the page.
+
+    The `get_page_image` tool is the only producer of this payload shape
+    today. Adding new image-producing tools? Make them emit the same
+    `{"image_b64": "...", "mime_type": "image/...", "page_number": int}`
+    JSON shape and this loop will pick them up automatically.
     """
     out = await tool_node.ainvoke(state)
     hops = state.get("hop_count", 0) + 1
-    out = {**out, "hop_count": hops}
-    return out
+
+    new_messages = list(out.get("messages") or [])
+    image_attachments: list[HumanMessage] = []
+    for msg in new_messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        content = msg.content if isinstance(msg.content, str) else None
+        if not content or '"image_b64"' not in content:
+            continue
+        try:
+            data = json.loads(content)
+        except Exception:
+            continue
+        b64 = data.pop("image_b64", None)
+        if not b64:
+            continue
+        mime = data.get("mime_type", "image/png")
+        page = data.get("page_number")
+        # Mutate the existing ToolMessage in place so add_messages doesn't
+        # produce a duplicate. The stripped JSON keeps the agent's
+        # "I requested page X" context intact without the base64 noise.
+        msg.content = json.dumps(data, ensure_ascii=False)
+        image_attachments.append(HumanMessage(content=[
+            {
+                "type": "text",
+                "text": (
+                    f"(System: rendered image of page {page} is attached "
+                    "below for your analysis. Use it to answer visual "
+                    "questions the text tools could not.)"
+                ),
+            },
+            {
+                "type": "image_url",
+                "image_url": f"data:{mime};base64,{b64}",
+            },
+        ]))
+        logger.info(
+            "[agent] attached page=%s image (%d KB b64) for next hop",
+            page, len(b64) // 1024,
+        )
+
+    if image_attachments:
+        new_messages.extend(image_attachments)
+
+    return {"messages": new_messages, "hop_count": hops}
 
 
 # ── Routing ─────────────────────────────────────────────────────────────────

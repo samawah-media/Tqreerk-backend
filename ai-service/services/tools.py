@@ -18,10 +18,11 @@ ToolContext object. The agent calls tools with their *typed args only*;
 the wrapper consumes the ToolContext from the LangGraph state. This is
 how we keep auth out of the LLM-controllable surface area.
 
-Tool list (14)
+Tool list (16)
 ==============
-search_chunks            — semantic + BM25 retrieval over a single report
+search_chunks            — semantic + BM25 + fuzzy retrieval over a single report
 get_page                 — fetch one page's full text
+get_page_image           — render one PDF page as an image for multimodal Q&A
 list_reports             — filtered metadata search
 get_report_metadata      — title, org, sector, country, year, status, page count
 get_report_summary       — AI-generated summary + key findings
@@ -1277,11 +1278,176 @@ async def _get_session_history_impl(ctx: ToolContext, args: GetSessionHistoryArg
     return _serialize(payload)
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# 16. get_page_image — multimodal page render (Option C)
+# ────────────────────────────────────────────────────────────────────────────
+
+class GetPageImageArgs(BaseModel):
+    """Render one PDF page as a base64 PNG so the next agent hop can read
+    the chart / figure / visual element directly via Gemini multimodal.
+
+    The agent SHOULD reach for this tool only when the user is asking about
+    something that text from search_chunks / get_page can't answer — exact
+    data points off a chart, color of a series, contents of a legend, etc.
+    For most factual questions the text tools are cheaper and sufficient.
+    """
+    report_id: str = Field(..., description="The report's UUID.")
+    page_number: int = Field(..., ge=1, description="1-based page number to render.")
+
+
+# Module-level PDF cache. Bytes cached for the lifetime of one Cloud Run
+# instance. FIFO eviction once the total cached size exceeds the cap so a
+# burst of requests against many reports can't OOM the container.
+from collections import OrderedDict  # noqa: E402 — local to this section
+
+_PDF_BYTES_CACHE: "OrderedDict[str, bytes]" = OrderedDict()
+_PDF_CACHE_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
+_PDF_CACHE_LOCK = asyncio.Lock()
+
+
+async def _fetch_pdf_bytes(file_url: str) -> bytes:
+    """Fetch the source PDF for a report, cached in memory.
+
+    Supports `gs://...` URIs (the production storage path) and `https://...`
+    (used in some staging / migration setups). Calls run in a thread for the
+    blocking GCS / httpx work so the event loop stays free for other chats.
+    """
+    async with _PDF_CACHE_LOCK:
+        cached = _PDF_BYTES_CACHE.get(file_url)
+        if cached is not None:
+            _PDF_BYTES_CACHE.move_to_end(file_url)
+            return cached
+
+    if file_url.startswith("gs://"):
+        from google.cloud import storage  # noqa: E402 — lazy import
+
+        bucket_name, _, blob_path = file_url[5:].partition("/")
+
+        def _dl() -> bytes:
+            client = storage.Client()
+            blob = client.bucket(bucket_name).blob(blob_path)
+            return blob.download_as_bytes()
+
+        pdf_bytes = await asyncio.to_thread(_dl)
+    elif file_url.startswith(("http://", "https://")):
+        import httpx  # noqa: E402 — lazy import
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.get(file_url)
+            r.raise_for_status()
+            pdf_bytes = r.content
+    else:
+        raise ValueError(f"unsupported file_url scheme: {file_url[:20]}…")
+
+    async with _PDF_CACHE_LOCK:
+        _PDF_BYTES_CACHE[file_url] = pdf_bytes
+        # FIFO evict until total cached bytes ≤ cap.
+        current = sum(len(v) for v in _PDF_BYTES_CACHE.values())
+        while current > _PDF_CACHE_MAX_BYTES and len(_PDF_BYTES_CACHE) > 1:
+            _, evicted = _PDF_BYTES_CACHE.popitem(last=False)
+            current -= len(evicted)
+    return pdf_bytes
+
+
+async def _get_page_image_impl(ctx: ToolContext, args: GetPageImageArgs) -> str:
+    """Render one PDF page → base64 PNG, return as JSON with `image_b64`.
+
+    The agent loop's `_tools_node_with_counter` post-processes the result,
+    strips the b64 out of the ToolMessage content, and injects it as a
+    multimodal HumanMessage so the next Gemini call can see the image
+    natively. The b64 never leaves agent-internal state — it is not echoed
+    back to the user or persisted to chat history.
+    """
+    if not settings.page_image_tool_enabled:
+        return _no_results("page image tool is disabled")
+    if args.report_id not in ctx.accessible_ids:
+        return _no_results("report_id is outside accessible scope")
+
+    # 1. Look up the file URL + page count for bounds checking.
+    async with conn_ctx() as conn:
+        cur = await conn.execute(
+            'SELECT "FileUrl", "PageCount" FROM reports WHERE "Id" = %s',
+            [args.report_id],
+        )
+        row = await cur.fetchone()
+
+    if not row or not row[0]:
+        return _no_results(
+            "this report has no stored PDF on file; get_page_image is unavailable"
+        )
+    file_url: str = row[0]
+    page_count: int | None = int(row[1]) if row[1] is not None else None
+    if page_count is not None and args.page_number > page_count:
+        return _no_results(
+            f"page_number {args.page_number} exceeds the report's page_count {page_count}"
+        )
+
+    # 2. Fetch (and cache) the PDF bytes.
+    try:
+        pdf_bytes = await _fetch_pdf_bytes(file_url)
+    except Exception as exc:
+        logger.warning(
+            "get_page_image: PDF fetch failed report=%s url=%s err=%s",
+            args.report_id, file_url[:80], exc,
+        )
+        return _no_results(f"could not fetch source PDF: {exc}")
+
+    # 3. Render the requested page via PyMuPDF — sync, run in thread.
+    import base64  # noqa: E402 — local to this function
+    import fitz    # noqa: E402 — PyMuPDF, already a dep
+
+    def _render() -> bytes | None:
+        try:
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                if args.page_number < 1 or args.page_number > len(doc):
+                    return None
+                page = doc[args.page_number - 1]
+                mat = fitz.Matrix(150 / 72, 150 / 72)  # DPI=150 matches ingest renderer
+                pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                return pix.tobytes("png")
+        except Exception as exc:
+            logger.warning("get_page_image: render failed: %s", exc)
+            return None
+
+    png_bytes = await asyncio.to_thread(_render)
+    if not png_bytes:
+        return _no_results(f"could not render page {args.page_number}")
+
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    # Hard cap so a pathological page can't blow up agent state. 5 MB b64 ≈
+    # 3.6 MB PNG — well above any reasonable single page at 150 DPI.
+    if len(b64) > 5 * 1024 * 1024:
+        return _no_results(
+            f"rendered image for page {args.page_number} is too large to attach"
+        )
+
+    logger.info(
+        "get_page_image: report=%s page=%d rendered=%d KB",
+        args.report_id, args.page_number, len(png_bytes) // 1024,
+    )
+    # NOTE: this JSON is intercepted by the agent loop. `image_b64` is
+    # stripped from the ToolMessage and re-attached as a multimodal
+    # HumanMessage in the same turn. Do NOT change this field name without
+    # updating pipelines/agent.py._tools_node_with_counter as well.
+    return json.dumps(
+        {
+            "page_number": args.page_number,
+            "mime_type":   "image/png",
+            "image_b64":   b64,
+            "note": (
+                f"Page {args.page_number} has been rendered and attached as "
+                "an image. Read it directly to answer the question."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 # ── Tool registry — used by the agent to bind to ChatVertexAI ──────────────
 
 
 def build_tools(ctx: ToolContext) -> list[StructuredTool]:
-    """Return the 14 tools bound to a per-turn ToolContext.
+    """Return the 16 tools bound to a per-turn ToolContext.
 
     Two boundary concerns are handled here so the inner `_xxx_impl(ctx, args)`
     bodies can stay simple:
@@ -1433,6 +1599,15 @@ def build_tools(ctx: ToolContext) -> list[StructuredTool]:
          "Recent messages in the current chat session, oldest-first. Use to recall earlier context the user is referring back to.",
          GetSessionHistoryArgs,
          _get_session_history_impl),
+
+        ("get_page_image",
+         "Render one PDF page as an image so you can read it directly via multimodal vision. "
+         "Use ONLY for VISUAL questions where text from search_chunks / get_page is insufficient: "
+         "exact data points off a chart, color of a series, contents of a legend, fine layout details. "
+         "Do NOT use it for questions whose answer is in the captioned text — that's wasteful. "
+         "Costs more than text tools; spend the hop deliberately.",
+         GetPageImageArgs,
+         _get_page_image_impl),
     ]
 
     return [
