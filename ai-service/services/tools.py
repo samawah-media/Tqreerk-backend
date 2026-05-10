@@ -1336,14 +1336,18 @@ async def _fetch_pdf_bytes(file_url: str) -> bytes:
             r.raise_for_status()
             pdf_bytes = r.content
     else:
-        # GCS — the .NET side stores FileUrl as a bare `bucket/blob_path`
-        # (no `gs://` prefix). Prepend the scheme so Blob.from_string can
-        # parse it as a normal GCS URI. The bucket name in the stored URL
-        # is taken as-is — IAM / bucket lifecycle is an infra concern, not
-        # something this layer rewrites.
+        # GCS — the bucket is ALWAYS `settings.gcs_bucket`. The stored
+        # FileUrl is the full blob path within that bucket, including
+        # any environment-prefix folder (e.g. `taqreerk-uploads-dev/...`
+        # is a FOLDER inside the live bucket, not a separate bucket).
+        # If the URL already has a `gs://` scheme we honour the bucket
+        # encoded in it, but the .NET writer doesn't emit that form today.
         from google.cloud import storage  # noqa: E402 — lazy import
 
-        gs_uri = file_url if file_url.startswith("gs://") else f"gs://{file_url}"
+        if file_url.startswith("gs://"):
+            gs_uri = file_url
+        else:
+            gs_uri = f"gs://{settings.gcs_bucket}/{file_url}"
 
         def _dl() -> bytes:
             client = storage.Client()
