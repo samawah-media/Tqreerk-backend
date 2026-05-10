@@ -1308,9 +1308,19 @@ _PDF_CACHE_LOCK = asyncio.Lock()
 async def _fetch_pdf_bytes(file_url: str) -> bytes:
     """Fetch the source PDF for a report, cached in memory.
 
-    Supports `gs://...` URIs (the production storage path) and `https://...`
-    (used in some staging / migration setups). Calls run in a thread for the
-    blocking GCS / httpx work so the event loop stays free for other chats.
+    Three supported URL shapes — the .NET side has historically stored each
+    of these at different times, so we handle them all here rather than
+    forcing a backfill:
+
+        gs://<bucket>/<blob_path>      — explicit GCS URI (preferred)
+        https://... / http://...       — direct HTTPS download (some imports)
+        <bucket>/<blob_path>           — bare GCS bucket+path (no scheme)
+
+    The bare form is what bulk-import / admin-UI flows currently emit; the
+    leading bucket segment is unambiguous because GCS bucket names cannot
+    contain '/' and our schema never stores a relative blob path without
+    a bucket. Calls run in a thread for the blocking GCS / httpx work so
+    the event loop stays free for other chats.
     """
     async with _PDF_CACHE_LOCK:
         cached = _PDF_BYTES_CACHE.get(file_url)
@@ -1318,18 +1328,7 @@ async def _fetch_pdf_bytes(file_url: str) -> bytes:
             _PDF_BYTES_CACHE.move_to_end(file_url)
             return cached
 
-    if file_url.startswith("gs://"):
-        from google.cloud import storage  # noqa: E402 — lazy import
-
-        bucket_name, _, blob_path = file_url[5:].partition("/")
-
-        def _dl() -> bytes:
-            client = storage.Client()
-            blob = client.bucket(bucket_name).blob(blob_path)
-            return blob.download_as_bytes()
-
-        pdf_bytes = await asyncio.to_thread(_dl)
-    elif file_url.startswith(("http://", "https://")):
+    if file_url.startswith(("http://", "https://")):
         import httpx  # noqa: E402 — lazy import
 
         async with httpx.AsyncClient(timeout=60) as client:
@@ -1337,7 +1336,20 @@ async def _fetch_pdf_bytes(file_url: str) -> bytes:
             r.raise_for_status()
             pdf_bytes = r.content
     else:
-        raise ValueError(f"unsupported file_url scheme: {file_url[:20]}…")
+        # GCS path — either `gs://bucket/blob` or bare `bucket/blob`.
+        from google.cloud import storage  # noqa: E402 — lazy import
+
+        gcs_path = file_url[5:] if file_url.startswith("gs://") else file_url
+        bucket_name, _, blob_path = gcs_path.partition("/")
+        if not bucket_name or not blob_path:
+            raise ValueError(f"unparseable GCS file_url: {file_url[:60]}…")
+
+        def _dl() -> bytes:
+            client = storage.Client()
+            blob = client.bucket(bucket_name).blob(blob_path)
+            return blob.download_as_bytes()
+
+        pdf_bytes = await asyncio.to_thread(_dl)
 
     async with _PDF_CACHE_LOCK:
         _PDF_BYTES_CACHE[file_url] = pdf_bytes
