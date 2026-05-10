@@ -101,6 +101,17 @@ class Settings(BaseSettings):
     reranker_candidate_pool: int = 20    # how many to fetch from hybrid before rerank
     reranker_top_k: int          = 5     # how many to keep after rerank
 
+    # ── Fuzzy / trigram retrieval arm ────────────────────────────────────────
+    # Third RRF arm using pg_trgm against arabic_normalize("Content"). Catches
+    # typos, OCR errors, and partial-name lookups that dense + BM25 both miss.
+    # Backed by the GIN expression index created in
+    # Feature_ArabicSearchTuning. Disable to fall back to two-arm hybrid.
+    #
+    # The trigram filter uses pg_trgm's default similarity_threshold (0.3),
+    # which is empirically a reasonable floor for Arabic text — tighter
+    # cuts off legitimate stem/spelling variants, looser pulls in noise.
+    fuzzy_retrieval_enabled: bool = True
+
     # ── Query rewriter (bilingual + decomposition) ───────────────────────────
     # One Gemini Flash call before retrieval that produces up to N variants
     # of the user's question — typically the cross-language counterpart

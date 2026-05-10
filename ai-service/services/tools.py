@@ -84,21 +84,57 @@ class ToolContext:
 _MAX_TOOL_OUTPUT_CHARS = 8000
 
 
-def _normalize_query_for_fts(text: str) -> str:
-    """Prepare a user query string for PostgreSQL full-text search.
+# ── Arabic normalization (mirror of arabic_normalize() SQL function) ─────
+# Index-side and query-side MUST produce identical canonical forms or hybrid
+# retrieval misses the very matches this normalization is supposed to catch.
+# The SQL function lives in migration Feature_ArabicSearchTuning; if you
+# change either side, change the other.
 
-    Two passes:
-      1. NFKC — collapses Arabic presentation forms (U+FB50–FEFF) to standard
-         codepoints, matching how passages were normalised at index time.
-      2. Strip Arabic diacritics (harakat, U+064B–U+065F) — users often omit
-         them; indexed text may or may not include them, so stripping both sides
-         aligns the token spaces.
+# Codepoints to strip outright.
+_ARABIC_STRIP_CODEPOINTS = frozenset(
+    list(range(0x064B, 0x0660))  # harakat: fathatan .. wavy hamza below
+    + [0x0640]                   # tatweel / kashida
+    + [0x0670]                   # superscript alef
+)
+
+# Single-char folds: variant -> canonical form.
+_ARABIC_FOLD_TABLE = str.maketrans({
+    "أ": "ا",  # alef-with-hamza-above   -> alef
+    "إ": "ا",  # alef-with-hamza-below   -> alef
+    "آ": "ا",  # alef-with-madda-above   -> alef
+    "ٱ": "ا",  # alef-wasla              -> alef
+    "ى": "ي",  # alef-maksura            -> yeh
+    "ة": "ه",  # teh-marbuta             -> heh
+    "ؤ": "و",  # waw-with-hamza-above    -> waw
+    "ئ": "ي",  # yeh-with-hamza-above    -> yeh
+})
+
+
+def _normalize_query_for_fts(text: str) -> str:
+    """Canonicalize a user query for FTS (and trigram) lookup.
+
+    Mirror of the `arabic_normalize(text)` SQL function in the
+    Feature_ArabicSearchTuning migration. Pipeline:
+
+      1. NFKC — collapse Arabic presentation forms (U+FB50-FEFF) and other
+         compatibility characters to their canonical codepoints.
+      2. Strip harakat (U+064B-U+065F), tatweel (U+0640), superscript alef
+         (U+0670). Users routinely omit these; indexed text was inconsistent
+         with them. Both sides must drop them.
+      3. Fold alef/yaa/taa-marbuta/hamza variants to canonical forms — the
+         single biggest Arabic-FTS win we have today (resolves the
+         "السعودية" vs "السعوديه" / "أحمد" vs "احمد" mismatches).
+      4. lower() — applied last so the english arm of the FTS sees
+         case-folded Latin and the trigram index sees one canonical form
+         for mixed-script chunks.
 
     We do NOT reverse RTL order: user keyboard input is already in logical
     Unicode order (unlike PDF glyph extraction, which arrives in visual order).
     """
     text = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in text if not (0x064B <= ord(ch) <= 0x065F))
+    text = "".join(ch for ch in text if ord(ch) not in _ARABIC_STRIP_CODEPOINTS)
+    text = text.translate(_ARABIC_FOLD_TABLE)
+    return text.lower()
 
 
 def _truncate(s: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> str:
@@ -227,18 +263,84 @@ async def _hybrid_retrieve_one(
     bt_sql: str,
     bt_params: list[Any],
 ) -> list[dict[str, Any]]:
-    """Run dense + BM25 + RRF for one query variant.
+    """Run dense + BM25 (+ optional fuzzy/trigram) + RRF for one query variant.
 
-    The BM25 arm includes a vector-cosine floor: a sparse candidate only
-    contributes to RRF when its embedding is at least
-    `settings.hybrid_bm25_vector_floor` cosine-similar to `qvec`. This stops
-    keyword-heavy noise (page numbers, footers, repeated boilerplate) from
-    riding BM25 alone into the top-K. Setting the floor to 0.0 disables the
-    gate and reverts to legacy hybrid behaviour.
+    Three retrieval arms feeding one RRF (k=60) fusion:
+
+      • dense  — pgvector cosine ANN over `embedding`.
+      • sparse — Postgres FTS over `search_vector` (Arabic + English),
+        with a vector-cosine floor (`hybrid_bm25_vector_floor`) so keyword-
+        heavy noise (page numbers, footers, repeated boilerplate) cannot ride
+        BM25 alone into the top-K. Setting the floor to 0.0 disables the gate.
+
+      • fuzzy  — pg_trgm trigram similarity over arabic_normalize("Content").
+        Catches typos, OCR errors, partial-name lookups, and Arabic spelling
+        variants the synonym fold doesn't cover. Backed by the GIN expression
+        index `IX_report_chunks_content_trgm`. Disabled when
+        `settings.fuzzy_retrieval_enabled=False`.
+
+    Both fts_query and the trigram query string are produced by the same
+    `_normalize_query_for_fts` so query-side and index-side share one
+    canonical form (the SQL function arabic_normalize() built by the
+    Feature_ArabicSearchTuning migration).
     """
     rrf_k = 60
     fts_query = _normalize_query_for_fts(query_text)
     bm25_floor = float(settings.hybrid_bm25_vector_floor)
+    fuzzy_on = settings.fuzzy_retrieval_enabled
+
+    # ── Optional fuzzy CTE + RRF pieces composed into the f-string ──────────
+    # When disabled we emit no CTE and no extra RRF term, keeping the legacy
+    # two-arm shape exactly. When enabled, fuzzy joins as a third FULL OUTER
+    # arm using `Id` equality (same key as dense/sparse).
+    if fuzzy_on:
+        fuzzy_cte_sql = f""",
+            fuzzy AS (
+                SELECT rc."Id", rc."ReportId", rc."PageNumber", rc."ChunkIndex",
+                       rc."Content", rc."ParentChunkId",
+                       rc.metadata->>'section_title' AS section_title,
+                       ROW_NUMBER() OVER (
+                           ORDER BY arabic_normalize(rc."Content") <-> %s
+                       ) AS rnk
+                FROM report_chunks rc
+                WHERE rc."ReportId" = ANY(%s)
+                  AND rc.embedding IS NOT NULL
+                  AND arabic_normalize(rc."Content") %% %s
+                  {bt_sql}
+                LIMIT %s
+            )"""
+        fuzzy_select_extra = """,
+                       fz."Id"             AS fz_id,
+                       fz."ReportId"       AS fz_report_id,
+                       fz."PageNumber"     AS fz_page_number,
+                       fz."ChunkIndex"     AS fz_chunk_index,
+                       fz."Content"        AS fz_content,
+                       fz."ParentChunkId"  AS fz_parent_chunk_id,
+                       fz.section_title    AS fz_section_title"""
+        fuzzy_join_sql = (
+            "FULL OUTER JOIN fuzzy fz "
+            'ON fz."Id" = COALESCE(d."Id", s."Id")'
+        )
+        fuzzy_coalesce_id     = 'COALESCE(d."Id",            s."Id",            fz."Id")'
+        fuzzy_coalesce_rid    = 'COALESCE(d."ReportId",      s."ReportId",      fz."ReportId")'
+        fuzzy_coalesce_page   = 'COALESCE(d."PageNumber",    s."PageNumber",    fz."PageNumber")'
+        fuzzy_coalesce_chunk  = 'COALESCE(d."ChunkIndex",    s."ChunkIndex",    fz."ChunkIndex")'
+        fuzzy_coalesce_cont   = 'COALESCE(d."Content",       s."Content",       fz."Content")'
+        fuzzy_coalesce_parent = 'COALESCE(d."ParentChunkId", s."ParentChunkId", fz."ParentChunkId")'
+        fuzzy_coalesce_sec    = 'COALESCE(d.section_title,   s.section_title,   fz.section_title)'
+        fuzzy_rrf_term        = " + COALESCE(1.0 / (%s + fz.rnk), 0)"
+    else:
+        fuzzy_cte_sql = ""
+        fuzzy_select_extra = ""
+        fuzzy_join_sql = ""
+        fuzzy_coalesce_id     = 'COALESCE(d."Id",            s."Id")'
+        fuzzy_coalesce_rid    = 'COALESCE(d."ReportId",      s."ReportId")'
+        fuzzy_coalesce_page   = 'COALESCE(d."PageNumber",    s."PageNumber")'
+        fuzzy_coalesce_chunk  = 'COALESCE(d."ChunkIndex",    s."ChunkIndex")'
+        fuzzy_coalesce_cont   = 'COALESCE(d."Content",       s."Content")'
+        fuzzy_coalesce_parent = 'COALESCE(d."ParentChunkId", s."ParentChunkId")'
+        fuzzy_coalesce_sec    = 'COALESCE(d.section_title,   s.section_title)'
+        fuzzy_rrf_term        = ""
 
     async with conn_ctx() as conn:
         cur = await conn.execute(
@@ -276,19 +378,20 @@ async def _hybrid_retrieve_one(
                   AND (1 - (rc.embedding <=> %s::vector)) >= %s
                   {bt_sql}
                 LIMIT %s
-            ),
+            ){fuzzy_cte_sql},
             fused AS (
-                SELECT COALESCE(d."Id",            s."Id")            AS hit_id,
-                       COALESCE(d."ReportId",      s."ReportId")      AS report_id,
-                       COALESCE(d."PageNumber",    s."PageNumber")    AS page_number,
-                       COALESCE(d."ChunkIndex",    s."ChunkIndex")    AS chunk_index,
-                       COALESCE(d."Content",       s."Content")       AS content,
-                       COALESCE(d."ParentChunkId", s."ParentChunkId") AS parent_chunk_id,
-                       COALESCE(d.section_title,   s.section_title)   AS section_title,
+                SELECT {fuzzy_coalesce_id}     AS hit_id,
+                       {fuzzy_coalesce_rid}    AS report_id,
+                       {fuzzy_coalesce_page}   AS page_number,
+                       {fuzzy_coalesce_chunk}  AS chunk_index,
+                       {fuzzy_coalesce_cont}   AS content,
+                       {fuzzy_coalesce_parent} AS parent_chunk_id,
+                       {fuzzy_coalesce_sec}    AS section_title,
                        COALESCE(1.0 / (%s + d.rnk), 0)
-                     + COALESCE(1.0 / (%s + s.rnk), 0)               AS rrf_score
+                     + COALESCE(1.0 / (%s + s.rnk), 0){fuzzy_rrf_term} AS rrf_score
                 FROM dense d
                 FULL OUTER JOIN sparse s ON d."Id" = s."Id"
+                {fuzzy_join_sql}
             ),
             -- HyQE substitution: when a hit row has ParentChunkId set (i.e.
             -- a hypothetical question), swap in the parent chunk's identity
@@ -329,8 +432,11 @@ async def _hybrid_retrieve_one(
                 # sparse: fts x2 (ts_rank), ids, fts x2 (@@), vec, floor, [bt?], pool
                 fts_query, fts_query, target_ids,
                 fts_query, fts_query, qvec, bm25_floor, *bt_params, pool,
-                # rrf k x2
+                # fuzzy: <-> query, ids, % query, [bt?], pool
+                *([fts_query, target_ids, fts_query, *bt_params, pool] if fuzzy_on else []),
+                # rrf k for dense + sparse (+ fuzzy)
                 rrf_k, rrf_k,
+                *([rrf_k] if fuzzy_on else []),
                 # final limit
                 pool,
             ],

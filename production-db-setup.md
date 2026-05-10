@@ -133,6 +133,81 @@ Both must be `true`.
 
 ---
 
+## Step 3.5 — Apply Arabic search tuning (`Feature_ArabicSearchTuning`)
+
+Migration `20260510000000_Feature_ArabicSearchTuning` enables `pg_trgm`, replaces the `report_chunks` FTS trigger with an Arabic-normalizing version, adds a trigram GIN index, and backfills existing rows. `dotnet ef database update` runs it for you.
+
+If you need to apply it by hand (e.g. running ahead of the .NET deploy), use this idempotent block. **Run during off-peak — the final `UPDATE` rebuilds `search_vector` for every existing chunk row.**
+
+```sql
+-- 3.5a. pg_trgm extension (fuzzy / typo-tolerant matching)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- 3.5b. arabic_normalize(text) — canonical form for FTS + trigram
+-- IMMUTABLE + PARALLEL SAFE so it can back an expression index.
+CREATE OR REPLACE FUNCTION arabic_normalize(input text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+    SELECT lower(
+        translate(
+            regexp_replace(
+                COALESCE(input, ''),
+                E'[ً-ٟـٰ]',  -- harakat + tatweel + superscript alef
+                '',
+                'g'
+            ),
+            E'أإآٱىةؤئ',  -- variants
+            E'اااايهوي'   -- canonical
+        )
+    )
+$$;
+
+-- 3.5c. Rewrite the FTS trigger to use arabic_normalize on the arabic arm
+CREATE OR REPLACE FUNCTION report_chunks_search_vector_update()
+RETURNS trigger AS $$
+BEGIN
+    NEW.search_vector :=
+        to_tsvector('arabic',  arabic_normalize(NEW."Content")) ||
+        to_tsvector('english', COALESCE(NEW."Content", ''));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3.5d. Trigram GIN index (used by the fuzzy arm in services/tools.py)
+CREATE INDEX IF NOT EXISTS "IX_report_chunks_content_trgm"
+ON report_chunks
+USING GIN (arabic_normalize("Content") gin_trgm_ops);
+
+-- 3.5e. Backfill — fires the trigger on every existing row to rebuild
+-- search_vector under the new normalization rule. No-op UPDATE.
+UPDATE report_chunks SET "Content" = "Content";
+```
+
+### Verify
+```sql
+SELECT
+  EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')                          AS pg_trgm_enabled,
+  EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'arabic_normalize')                      AS normalize_function,
+  EXISTS (SELECT 1 FROM pg_indexes
+          WHERE indexname = 'IX_report_chunks_content_trgm')                             AS trigram_index,
+  -- The trigger body now references arabic_normalize — proves Step 3.5c ran.
+  EXISTS (SELECT 1 FROM pg_proc
+          WHERE proname = 'report_chunks_search_vector_update'
+            AND pg_get_functiondef(oid) LIKE '%arabic_normalize%')                       AS trigger_updated;
+```
+All four must be `true`. Sanity check the normalizer behaves:
+```sql
+SELECT arabic_normalize('السَّعُوْدِيَّةِ') = arabic_normalize('السعوديه') AS folds_match;
+-- expected: t
+```
+
+> **Heads-up on the backfill duration.** Cost scales with `report_chunks` row count. Staging (~100k rows) finishes in seconds; production may take longer. The trigger is `BEFORE INSERT OR UPDATE OF "Content"`, so unrelated columns can be updated concurrently without re-firing it. Run this step inside a maintenance window if your `report_chunks` table is large.
+
+---
+
 ## Step 4 — Enable the Vertex AI Discovery Engine API (reranker)
 
 The chat endpoint reranks retrieval candidates through the Vertex AI Ranking API. Enable it once per project:
@@ -156,7 +231,8 @@ INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion") VALUES
   ('20260424000000_AddAiServiceTables',                   '8.0.0'),
   ('20260426000000_AddReportPagesFullTextSearch',         '8.0.0'),
   ('20260429000000_ReplaceReportPagesWithReportChunks',   '8.0.0'),
-  ('20260429000100_AddChatCache',                         '8.0.0')
+  ('20260429000100_AddChatCache',                         '8.0.0'),
+  ('20260510000000_Feature_ArabicSearchTuning',           '8.0.0')
 ON CONFLICT DO NOTHING;
 ```
 
