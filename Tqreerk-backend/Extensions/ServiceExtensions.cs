@@ -125,7 +125,23 @@ public static class ServiceExtensions
         // The service handles parse + queue; the processor pumps rows
         // through fetch/upload/AI in the background.
         services.AddScoped<IBulkImportService, BulkImportService>();
-        services.AddHttpClient(); // Default named client used by BulkImportProcessor
+        // Named HttpClient used by BulkImportProcessor when fetching
+        // arbitrary third-party PDFs from the URLs in the uploaded
+        // Excel. We override the global 100 s default because admin
+        // URLs can sit behind slow CDNs or large multi-MB downloads —
+        // 5 min is generous enough to ride out worst-case TLS
+        // handshakes + redirects without ever hanging the worker
+        // pipeline forever.
+        services.AddHttpClient(BulkImportProcessor.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(5);
+            // Polite UA so origin servers (and especially Cloudflare /
+            // bot-walls) treat us as a real browser-grade client rather
+            // than an anonymous bot. The header is purely informational
+            // — request bodies / auth come from `Authorization`.
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "TaqreerkBulkImporter/1.0 (+https://taqreerk.com)");
+        });
         services.AddHostedService<BulkImportProcessor>();
 
         // Background worker that drains the ai_jobs queue. Single instance —

@@ -2,12 +2,12 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PDFtoImage;
-using SkiaSharp;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Settings;
 using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
+using Taqreerk.Infrastructure.Storage;
 
 namespace Taqreerk.Infrastructure.AI;
 
@@ -43,9 +43,15 @@ public class BulkImportProcessor : BackgroundService
     /// ReportsController.</summary>
     private const long MaxFetchBytes = 50 * 1024 * 1024;
 
+    /// Named client key registered in ServiceExtensions; we resolve via
+    /// the factory each time we fetch so HttpMessageHandler lifetime
+    /// rotation works correctly for this long-running BackgroundService
+    /// (a captured HttpClient on a singleton never refreshes its handler).
+    public const string HttpClientName = "BulkImportProcessor";
+
     private readonly IServiceProvider _services;
     private readonly ILogger<BulkImportProcessor> _logger;
-    private readonly HttpClient _http;
+    private readonly IHttpClientFactory _httpFactory;
 
     public BulkImportProcessor(
         IServiceProvider services,
@@ -54,13 +60,7 @@ public class BulkImportProcessor : BackgroundService
     {
         _services = services;
         _logger = logger;
-
-        // We use a standalone HttpClient (not the typed AiServiceClient) for
-        // fetching arbitrary third-party URLs. Generous timeout + automatic
-        // redirect; the URL is admin-trusted (from the Excel they uploaded)
-        // so we don't gate on internal-only allowlists here.
-        _http = httpFactory.CreateClient(nameof(BulkImportProcessor));
-        _http.Timeout = TimeSpan.FromSeconds(120);
+        _httpFactory = httpFactory;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -326,12 +326,16 @@ public class BulkImportProcessor : BackgroundService
         item.StartedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
 
-        // 1. Fetch the PDF.
+        // 1. Fetch the PDF. Resolve the named client per-fetch so the
+        //    factory's handler-lifetime rotation actually fires (a
+        //    singleton-captured HttpClient on a BackgroundService would
+        //    pin one handler for the lifetime of the process).
         byte[] pdfBytes;
         string contentType;
         try
         {
-            using var resp = await _http.GetAsync(item.FileUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var http = _httpFactory.CreateClient(HttpClientName);
+            using var resp = await http.GetAsync(item.FileUrl, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!resp.IsSuccessStatusCode)
                 throw new InvalidOperationException(
                     $"تعذّر تحميل الملف من الرابط (HTTP {(int)resp.StatusCode}).");
@@ -447,19 +451,23 @@ public class BulkImportProcessor : BackgroundService
         IFileStorage files, byte[] pdfBytes, string slug, Guid orgId, CancellationToken ct)
     {
         // PDFtoImage's API is sync; offload to a worker thread so we don't
-        // block the polling loop's task scheduler.
+        // block the polling loop's task scheduler. We render straight to
+        // WebP via the shared CoverImageEncoder so every cover stored in
+        // GCS — bulk-import or manual upload — is .webp.
         var bytes = await Task.Run(() =>
         {
             using var pdfStream = new MemoryStream(pdfBytes);
             using var bitmap = Conversion.ToImage(pdfStream, page: 0);
-            using var img = SKImage.FromBitmap(bitmap);
-            using var data = img.Encode(SKEncodedImageFormat.Jpeg, quality: 80);
-            return data.ToArray();
+            return CoverImageEncoder.EncodeBitmapAsWebp(bitmap);
         }, ct);
 
         using var ms = new MemoryStream(bytes);
         var stored = await files.UploadAsync(
-            ms, $"{slug}-cover.jpg", "image/jpeg", $"covers/{orgId}", ct);
+            ms,
+            $"{slug}-cover{CoverImageEncoder.Extension}",
+            CoverImageEncoder.ContentType,
+            $"covers/{orgId}",
+            ct);
         return stored.ObjectKey;
     }
 
