@@ -376,9 +376,14 @@ async def _tools_node_with_counter(state: AgentState, tool_node: ToolNode) -> di
                     "questions the text tools could not.)"
                 ),
             },
+            # langchain_google_vertexai's multimodal content shape mirrors
+            # OpenAI's: `image_url` MUST be a dict `{"url": "..."}`, not a
+            # bare string. Passing a string makes the adapter fail with
+            # "string indices must be integers, not 'str'" when it tries
+            # to read image_url["url"].
             {
                 "type": "image_url",
-                "image_url": f"data:{mime};base64,{b64}",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
             },
         ]))
         logger.info(
