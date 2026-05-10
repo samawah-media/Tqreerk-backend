@@ -214,24 +214,24 @@ async def _fetch_section_chunks(
             f"""
             WITH want(rid, pg, sec) AS (VALUES {vals_sql}),
             ranked AS (
-                SELECT rc."ReportId"::text AS rid,
-                       rc."PageNumber"     AS pg,
-                       w.sec               AS sec,
-                       rc."ChunkIndex"     AS ci,
-                       rc."Content"        AS content,
+                SELECT rc."ReportId"        AS rid,
+                       rc."PageNumber"      AS pg,
+                       w.sec                AS sec,
+                       rc."ChunkIndex"      AS ci,
+                       rc."Content"         AS content,
                        ROW_NUMBER() OVER (
                            PARTITION BY rc."ReportId", rc."PageNumber", w.sec
                            ORDER BY rc."ChunkIndex"
                        ) AS rnk
                 FROM report_chunks rc
                 JOIN want w
-                  ON rc."ReportId"::text = w.rid
-                 AND rc."PageNumber"     = w.pg
+                  ON rc."ReportId" = w.rid
+                 AND rc."PageNumber" = w.pg
                  AND COALESCE(rc.metadata->>'section_title', '') = w.sec
                 WHERE rc."ReportId" = ANY(%s)
                   AND rc."ParentChunkId" IS NULL
             )
-            SELECT rid, pg, sec, ci, content
+            SELECT rid::text, pg, sec, ci, content
               FROM ranked
              WHERE rnk <= %s
              ORDER BY rid, pg, sec, ci
