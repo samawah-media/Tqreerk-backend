@@ -1444,10 +1444,14 @@ async def _get_page_image_impl(ctx: ToolContext, args: GetPageImageArgs) -> str:
     )
     # NOTE: this JSON is intercepted by the agent loop. `image_b64` is
     # stripped from the ToolMessage and re-attached as a multimodal
-    # HumanMessage in the same turn. Do NOT change this field name without
-    # updating pipelines/agent.py._tools_node_with_counter as well.
+    # HumanMessage in the same turn. `report_id` + `page_number` are also
+    # captured by the chat handler so the (report, page) pair can be
+    # persisted with the assistant message and the image re-injected on
+    # subsequent turns. Do NOT change these field names without updating
+    # pipelines/agent.py._tools_node_with_counter AND api/chat.py.
     return json.dumps(
         {
+            "report_id":   args.report_id,
             "page_number": args.page_number,
             "mime_type":   "image/png",
             "image_b64":   b64,
@@ -1458,6 +1462,65 @@ async def _get_page_image_impl(ctx: ToolContext, args: GetPageImageArgs) -> str:
         },
         ensure_ascii=False,
     )
+
+
+# ── Public render helper (used by api/chat.py to re-inject historical images)
+# ────────────────────────────────────────────────────────────────────────────
+
+async def render_page_to_b64(report_id: str, page_number: int) -> str | None:
+    """Fetch the report's PDF (cached), render `page_number` at 150 DPI,
+    return base64-encoded PNG. Returns None on any failure.
+
+    Exposed for api/chat.py so it can re-attach pages from prior turns
+    without going through the full agent + tool flow. Shares the same
+    `_fetch_pdf_bytes` cache as `get_page_image` so a hot turn pays
+    near-zero IO cost on repeat (report, page) pairs.
+    """
+    if not settings.page_image_tool_enabled:
+        return None
+
+    async with conn_ctx() as conn:
+        cur = await conn.execute(
+            'SELECT "FileUrl" FROM reports WHERE "Id" = %s',
+            [report_id],
+        )
+        row = await cur.fetchone()
+    if not row or not row[0]:
+        return None
+    file_url: str = row[0]
+
+    try:
+        pdf_bytes = await _fetch_pdf_bytes(file_url)
+    except Exception as exc:
+        logger.warning(
+            "render_page_to_b64: PDF fetch failed report=%s url=%s err=%s",
+            report_id, file_url[:80], exc,
+        )
+        return None
+
+    import base64  # noqa: E402 — local to this function
+    import fitz    # noqa: E402
+
+    def _render() -> bytes | None:
+        try:
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                if page_number < 1 or page_number > len(doc):
+                    return None
+                page = doc[page_number - 1]
+                mat = fitz.Matrix(150 / 72, 150 / 72)
+                pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                return pix.tobytes("png")
+        except Exception as exc:
+            logger.warning("render_page_to_b64: render failed: %s", exc)
+            return None
+
+    png_bytes = await asyncio.to_thread(_render)
+    if not png_bytes:
+        return None
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    if len(b64) > 5 * 1024 * 1024:
+        return None
+    return b64
 
 
 # ── Tool registry — used by the agent to bind to ChatVertexAI ──────────────

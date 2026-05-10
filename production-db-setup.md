@@ -208,6 +208,51 @@ SELECT arabic_normalize('السَّعُوْدِيَّةِ') = arabic_normalize('
 
 ---
 
+## Step 3.6 — Add `ImagesAttached` column for cross-turn image persistence
+
+Migration `20260511000000_Feature_ChatImageAttachments` adds an `ImagesAttached jsonb` column to `chat_messages`. The chat agent's `get_page_image` tool records which `(report_id, page)` pairs it rendered for the user, so the next chat turn can re-attach those images instead of re-running the tool (saves ~10-15 s per multi-turn visual conversation). `dotnet ef database update` runs it for you.
+
+The column is intentionally not mapped on the .NET `ChatMessage` entity — the Python service owns the read/write path. EF doesn't complain about columns it doesn't know about.
+
+If you need to apply it by hand (e.g. running ahead of the .NET deploy):
+
+```sql
+ALTER TABLE chat_messages
+  ADD COLUMN IF NOT EXISTS "ImagesAttached" jsonb NULL;
+```
+
+### Verify
+```sql
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'chat_messages'
+      AND column_name = 'ImagesAttached'
+) AS images_attached_column;
+```
+Must be `true`.
+
+### Shape of the stored value
+
+A short JSONB array, one entry per page the agent attached this turn — dedup'd, oldest-first:
+
+```json
+[
+  {"r": "a3df9adc-aa47-4f05-a686-fc7fa35b9228", "p": 1},
+  {"r": "a3df9adc-aa47-4f05-a686-fc7fa35b9228", "p": 7}
+]
+```
+
+Use `r` / `p` short keys to keep the row tight — these never reach end users.
+
+### Rollback
+
+Set `PAGE_IMAGE_PERSIST_ENABLED=false` on the ai-service Cloud Run service to disable rehydration without dropping the column. To fully revert, drop the column after disabling:
+```sql
+ALTER TABLE chat_messages DROP COLUMN IF EXISTS "ImagesAttached";
+```
+
+---
+
 ## Step 4 — Enable the Vertex AI Discovery Engine API (reranker)
 
 The chat endpoint reranks retrieval candidates through the Vertex AI Ranking API. Enable it once per project:
@@ -232,7 +277,8 @@ INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion") VALUES
   ('20260426000000_AddReportPagesFullTextSearch',         '8.0.0'),
   ('20260429000000_ReplaceReportPagesWithReportChunks',   '8.0.0'),
   ('20260429000100_AddChatCache',                         '8.0.0'),
-  ('20260510000000_Feature_ArabicSearchTuning',           '8.0.0')
+  ('20260510000000_Feature_ArabicSearchTuning',           '8.0.0'),
+  ('20260511000000_Feature_ChatImageAttachments',         '8.0.0')
 ON CONFLICT DO NOTHING;
 ```
 

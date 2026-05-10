@@ -341,6 +341,96 @@ async def send_message(
                 *history_msgs,
             ]
 
+    # ── Re-attach images from recent assistant turns ──────────────────────
+    # Conversation history rows hold text only; the multimodal HumanMessages
+    # produced by get_page_image evaporate at end of turn. Re-render the
+    # pages the agent attached in the last few turns so it doesn't waste a
+    # tool-call hop fetching them again. Bounded by
+    # `page_image_persist_lookback_turns` to keep multimodal-token cost
+    # in check on long sessions.
+    if settings.page_image_persist_enabled:
+        try:
+            img_cur = await conn.execute(
+                """
+                SELECT "ImagesAttached"
+                FROM chat_messages
+                WHERE "SessionId" = %s
+                  AND "Role" = 'assistant'
+                  AND "ImagesAttached" IS NOT NULL
+                ORDER BY "CreatedAt" DESC
+                LIMIT %s
+                """,
+                [sid, int(settings.page_image_persist_lookback_turns)],
+            )
+            img_rows = await img_cur.fetchall()
+            # Reverse so oldest comes first in the rehydration list.
+            seen: set[tuple[str, int]] = set()
+            to_rehydrate: list[dict] = []
+            for (raw,) in reversed(img_rows):
+                if not raw:
+                    continue
+                try:
+                    entries = (json.loads(raw)
+                               if isinstance(raw, (str, bytes, bytearray))
+                               else raw)
+                except Exception:
+                    continue
+                if not isinstance(entries, list):
+                    continue
+                for e in entries:
+                    if not isinstance(e, dict):
+                        continue
+                    rid = e.get("r")
+                    pg = e.get("p")
+                    if not rid or pg is None:
+                        continue
+                    key = (str(rid), int(pg))
+                    if key in seen:
+                        continue
+                    # Only re-attach images the user still has access to.
+                    # We don't know `accessible_ids` here yet, so defer the
+                    # auth check to the render step (which reads reports."FileUrl"
+                    # — that read fails closed if the report was deleted).
+                    seen.add(key)
+                    to_rehydrate.append({"r": str(rid), "p": int(pg)})
+
+            if to_rehydrate:
+                from services.tools import render_page_to_b64  # local import
+                results = await asyncio.gather(
+                    *[render_page_to_b64(e["r"], e["p"]) for e in to_rehydrate],
+                    return_exceptions=True,
+                )
+                for e, b64 in zip(to_rehydrate, results):
+                    if isinstance(b64, Exception) or not b64:
+                        continue
+                    history_msgs.append(HumanMessage(content=[
+                        {
+                            "type": "text",
+                            "text": (
+                                f"(Context: page {e['p']} from a prior turn "
+                                "is re-attached below. You have already seen "
+                                "this image — refer to it instead of calling "
+                                "get_page_image again for the same page.)"
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64}",
+                            },
+                        },
+                    ]))
+                logger.info(
+                    "chat[%s] rehydrated %d historical page image(s)",
+                    sid_short, sum(1 for r in results
+                                   if not isinstance(r, Exception) and r),
+                )
+        except Exception as exc:
+            # Rehydration is a perf optimisation; never block the chat on it.
+            logger.warning(
+                "chat[%s] image_rehydrate_failed: %s", sid_short, exc,
+            )
+
     t2 = _mark("load_history", t1)
 
     # ── Resolve the user's accessible report set (Published OR own org) ───
@@ -509,6 +599,11 @@ async def send_message(
         # "contexts" the answer was grounded on. Bounded to avoid OOM on a
         # chatty agent that ran a half-dozen search_chunks.
         tool_contexts: list[str] = []
+        # (report_id, page) pairs that get_page_image attached this turn.
+        # Persisted to chat_messages.ImagesAttached so the NEXT turn can
+        # re-render them and feed them straight to the model — no
+        # additional tool-call hop required. See settings.page_image_*.
+        images_attached_this_turn: list[dict] = []
 
         try:
             async for ev in graph.astream_events(
@@ -553,6 +648,26 @@ async def send_message(
                         all_pages.extend(pages)
                     if output_text:
                         tool_contexts.append(output_text[:4000])
+
+                    # Capture (report_id, page) pairs from get_page_image so
+                    # we can persist them and re-attach on the next turn.
+                    # ToolMessage content already had `image_b64` stripped by
+                    # `_tools_node_with_counter`, but `report_id` and
+                    # `page_number` are still in the payload.
+                    if name == "get_page_image" and output_text:
+                        try:
+                            td = json.loads(output_text)
+                            if (isinstance(td, dict)
+                                    and td.get("report_id")
+                                    and td.get("page_number") is not None):
+                                images_attached_this_turn.append({
+                                    "r": str(td["report_id"]),
+                                    "p": int(td["page_number"]),
+                                })
+                        except Exception:
+                            # Tool may have errored or returned non-JSON;
+                            # silently skip — capture is best-effort.
+                            pass
 
                     yield (
                         "data: " + json.dumps({
@@ -672,14 +787,31 @@ async def send_message(
         # ── Persist the assistant message ──────────────────────────────────
         full_answer = "".join(full_answer_parts).strip()
         source_pages = _dedup_in_order(all_pages)
+        # Dedup (report_id, page) pairs while preserving order so the next
+        # turn re-attaches them once each, oldest-first.
+        seen_imgs: set[tuple[str, int]] = set()
+        images_payload: list[dict] = []
+        for ent in images_attached_this_turn:
+            key = (ent["r"], ent["p"])
+            if key in seen_imgs:
+                continue
+            seen_imgs.add(key)
+            images_payload.append(ent)
         try:
             async with conn_ctx() as save_conn:
                 await save_conn.execute(
                     """
-                    INSERT INTO chat_messages ("Id", "SessionId", "Role", "Content", "SourcePages", "CreatedAt")
-                    VALUES (gen_random_uuid(), %s, 'assistant', %s, %s, now())
+                    INSERT INTO chat_messages
+                        ("Id", "SessionId", "Role", "Content",
+                         "SourcePages", "ImagesAttached", "CreatedAt")
+                    VALUES (gen_random_uuid(), %s, 'assistant', %s, %s, %s, now())
                     """,
-                    [sid, full_answer, json.dumps(source_pages)],
+                    [
+                        sid,
+                        full_answer,
+                        json.dumps(source_pages),
+                        json.dumps(images_payload) if images_payload else None,
+                    ],
                 )
                 await save_conn.commit()
         except Exception as exc:

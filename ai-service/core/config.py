@@ -113,6 +113,16 @@ class Settings(BaseSettings):
     # safe instant rollback without redeploy.
     page_image_tool_enabled: bool = True
 
+    # When enabled, every assistant turn records (report_id, page) pairs
+    # for any get_page_image calls into chat_messages.ImagesAttached. On
+    # the next turn, those pages are re-rendered and re-injected as
+    # multimodal HumanMessages so the agent doesn't have to re-call the
+    # tool for pages it already analysed. Limits the number of recent
+    # assistant turns we rehydrate from to keep multimodal-token cost
+    # bounded on long conversations.
+    page_image_persist_enabled: bool = True
+    page_image_persist_lookback_turns: int = 2
+
     # ── Fuzzy / trigram retrieval arm ────────────────────────────────────────
     # Third RRF arm using pg_trgm against arabic_normalize("Content"). Catches
     # typos, OCR errors, and partial-name lookups that dense + BM25 both miss.
