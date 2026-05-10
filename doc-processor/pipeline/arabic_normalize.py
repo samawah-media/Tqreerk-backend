@@ -39,7 +39,10 @@ the price of avoiding a heavyweight bidi dependency.
 """
 from __future__ import annotations
 
+import logging
 import unicodedata
+
+logger = logging.getLogger(__name__)
 
 
 # Codepoint ranges that count as Arabic for the "is this an Arabic line?" check.
@@ -94,9 +97,25 @@ def normalize(text: str) -> str:
         return text
 
     out_lines: list[str] = []
+    reversed_count = 0
+    skipped_count = 0
     for line in text.split("\n"):
         normalized = unicodedata.normalize("NFKC", line)
-        if _arabic_ratio(normalized) >= _RTL_REVERSE_THRESHOLD:
+        ratio = _arabic_ratio(normalized)
+        if ratio >= _RTL_REVERSE_THRESHOLD:
             normalized = normalized[::-1]
+            reversed_count += 1
+        elif ratio > 0:
+            # Track lines that have Arabic but didn't meet the threshold so
+            # we can spot mis-classifications in logs.
+            skipped_count += 1
         out_lines.append(normalized)
+    # Temporary diagnostic — remove after confirming the pipeline is healthy.
+    # Emits one line per normalize() call. Cardinality: one per text region,
+    # roughly 5-50 per page. Acceptable for staging debugging.
+    if reversed_count or skipped_count:
+        logger.info(
+            "arabic_normalize: reversed=%d skipped_with_arabic=%d total_lines=%d",
+            reversed_count, skipped_count, len(out_lines),
+        )
     return "\n".join(out_lines)
