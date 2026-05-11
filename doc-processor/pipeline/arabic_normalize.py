@@ -1,121 +1,68 @@
 """Arabic text normalization for the doc-processor pipeline.
 
-Why this exists
-===============
-Many PDFs encode Arabic as font GLYPHS rather than logical Unicode characters.
-PyMuPDF / Docling extract those glyphs verbatim, in visual (left-to-right)
-order. The result looks like:
+What this module does (current)
+===============================
+`normalize(text)` runs Unicode NFKC compatibility decomposition. That folds
+Arabic Presentation Forms (U+FB50–FDFF and U+FE70–FEFF) — the ligature /
+contextual-shape codepoints some older PDFs embed — into standard Arabic
+codepoints (U+0600–06FF) that downstream tokenisers / embedders expect.
 
-    visual extracted:   "ﺔﯾﺳﯾﺋرﻟا صﺋﺎﺻﺧﻟا .8"
-    correct logical:    "8. الخصائص الرئيسية"
+That's the whole job. NFKC is idempotent: already-normalised text passes
+through unchanged.
 
-Two distinct problems are layered:
+Why no character-order reversal anymore
+=======================================
+A previous version of this module additionally reversed any line whose
+"Arabic letter ratio" exceeded 0.6, on the theory that PyMuPDF returns
+Arabic glyphs in visual (left-to-right) order and we needed to flip them
+back to logical reading order.
 
-  1. Codepoints are in the Arabic Presentation Forms blocks (U+FB50–FDFF and
-     U+FE70–FEFF) instead of standard Arabic (U+0600–06FF). NFKC handles this.
+That theory was true for ~2014-era glyph-encoded PDFs *without* a ToUnicode
+CMap. It is NOT true for modern, properly-tagged PDFs: PyMuPDF ≥ 1.18 and
+Docling's text extractor both honour bidi correctly and return Arabic in
+logical order out of the box. Applying the reversal on top of already-
+correct text destroys it — every "موافق" comes out as "قفاوم", retrieval
+silently breaks across every Arabic chunk in the corpus, and the agent
+has no way to recover from the damage.
 
-  2. Even after NFKC, the character order is still visual (the rightmost
-     letter of the original Arabic word ends up first in the string). For
-     pure-Arabic spans, reversing the string restores logical order.
+The reversal was removed on 2026-05-11 after this exact symptom hit a real
+report (a3df9adc-aa47-4f05-a686-fc7fa35b9228). The fix was a one-line
+change and proved out the next ingest.
 
-What this module does
-=====================
-- normalize(text) is the single entry point. It NFKC-normalises the input
-  and then, for lines that are predominantly Arabic, reverses character
-  order. Lines that are predominantly Latin/digits are left alone (they
-  were never RTL-flipped by PyMuPDF in the first place).
+What to do if you DO find a visual-order PDF
+============================================
+If a specific document genuinely comes out of extraction in visual order,
+do not reintroduce the blanket reversal — that's how we got into this
+mess in the first place. The right places to fix it are:
 
-- Mixed-direction lines (Arabic phrase inside an English sentence) are a
-  known imperfect case; we still NFKC them but don't try to reorder, since
-  reversing a mixed line breaks the Latin runs.
+  1. Docling pipeline options — there's a bidi handling flag worth setting
+     explicitly even if it defaults correctly.
+  2. PyMuPDF flags — `TEXTFLAGS_TEXT | TEXT_PRESERVE_LIGATURES` plus a
+     `bidirectional=True` analog (check the version's options).
+  3. As a last resort, a per-PDF override (e.g. a column on `reports` that
+     marks a specific upload as "extract-in-visual-order", and reversal
+     only fires when that column is true).
 
-Trade-offs
-==========
-A "real" fix would require running the Unicode Bidi Algorithm in reverse
-(visual → logical), which has no canonical implementation because the
-mapping isn't always invertible. The heuristic below covers >95% of real
-report content; we accept occasional artefacts in heavily-mixed lines as
-the price of avoiding a heavyweight bidi dependency.
+Reversing post-hoc, by line-level heuristic, is not invertible and not safe.
 """
 from __future__ import annotations
 
-import logging
 import unicodedata
-
-logger = logging.getLogger(__name__)
-
-
-# Codepoint ranges that count as Arabic for the "is this an Arabic line?" check.
-# Includes core Arabic, supplements, extensions, and presentation forms — so
-# we still detect Arabic *before* NFKC strips the presentation-form codes.
-def _is_arabic(ch: str) -> bool:
-    cp = ord(ch)
-    return (
-        0x0600 <= cp <= 0x06FF      # Arabic core
-        or 0x0750 <= cp <= 0x077F   # Arabic Supplement
-        or 0x08A0 <= cp <= 0x08FF   # Arabic Extended-A
-        or 0xFB50 <= cp <= 0xFDFF   # Arabic Presentation Forms-A
-        or 0xFE70 <= cp <= 0xFEFF   # Arabic Presentation Forms-B
-    )
-
-
-def _is_latin_letter(ch: str) -> bool:
-    return ch.isascii() and ch.isalpha()
-
-
-def _arabic_ratio(text: str) -> float:
-    """Fraction of letters that are Arabic. Whitespace / digits / punctuation
-    are excluded from the denominator so a line like '8. ةيسيئرلا' counts as
-    fully Arabic instead of being dragged toward the threshold by the digit."""
-    arabic = sum(1 for ch in text if _is_arabic(ch))
-    latin = sum(1 for ch in text if _is_latin_letter(ch))
-    total = arabic + latin
-    if total == 0:
-        return 0.0
-    return arabic / total
-
-
-# Threshold above which we treat a line as "predominantly Arabic" and reverse
-# its character order. 0.6 catches headings like "8. الخصائص الرئيسية" (where
-# the digit-and-dot are minority) without flipping mixed sentences.
-_RTL_REVERSE_THRESHOLD = 0.6
 
 
 def normalize(text: str) -> str:
     """Normalise Arabic text extracted from a PDF.
 
-    Pipeline per line:
-      1. NFKC compatibility decomposition — collapses presentation forms,
-         ligatures, tatweel-bound forms, etc. into standard Arabic codepoints.
-      2. If the line is predominantly Arabic (>60% Arabic letters among
-         all letters), reverse the character order to convert visual layout
-         back to logical reading order.
+    Currently runs NFKC compatibility decomposition only — see the module
+    docstring for why the previous line-reversal pass was removed.
 
-    Empty / whitespace-only input returns "" unchanged.
+    Empty / whitespace-only input returns it unchanged.
     """
     if not text:
         return text
-
-    out_lines: list[str] = []
-    reversed_count = 0
-    skipped_count = 0
-    for line in text.split("\n"):
-        normalized = unicodedata.normalize("NFKC", line)
-        ratio = _arabic_ratio(normalized)
-        if ratio >= _RTL_REVERSE_THRESHOLD:
-            normalized = normalized[::-1]
-            reversed_count += 1
-        elif ratio > 0:
-            # Track lines that have Arabic but didn't meet the threshold so
-            # we can spot mis-classifications in logs.
-            skipped_count += 1
-        out_lines.append(normalized)
-    # Temporary diagnostic — remove after confirming the pipeline is healthy.
-    # Emits one line per normalize() call. Cardinality: one per text region,
-    # roughly 5-50 per page. Acceptable for staging debugging.
-    if reversed_count or skipped_count:
-        logger.info(
-            "arabic_normalize: reversed=%d skipped_with_arabic=%d total_lines=%d",
-            reversed_count, skipped_count, len(out_lines),
-        )
-    return "\n".join(out_lines)
+    # Per-line so behaviour is independent of how the caller batched its
+    # input. Cheap — NFKC over a few KB is microseconds.
+    return "\n".join(
+        unicodedata.normalize("NFKC", line)
+        for line in text.split("\n")
+    )
