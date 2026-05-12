@@ -22,6 +22,7 @@ import io
 import logging
 import os
 import threading
+import time
 from typing import Iterable
 
 import numpy as np
@@ -85,14 +86,23 @@ def ocr_image(img: bytes | np.ndarray | Image.Image) -> str:
     PIL Image. Returns "" if no text was detected — never raises on empty
     input.
     """
+    started = time.perf_counter()
     if not is_ready():
         init()
 
     pil_img = _coerce_to_pil(img)
     if pil_img is None:
+        logger.warning(
+            "surya: input rejected — could not coerce %s to PIL", type(img).__name__,
+        )
+        return ""
+    w, h = pil_img.size
+    if w == 0 or h == 0:
+        logger.warning("surya: input rejected — zero-size image (w=%d h=%d)", w, h)
         return ""
 
     langs = _configured_langs()
+    logger.info("surya: recognizing image=%dx%d langs=%s", w, h, langs or "auto")
 
     try:
         # Surya predictor signature: rec([images], [langs_per_image], det_predictor)
@@ -108,16 +118,35 @@ def ocr_image(img: bytes | np.ndarray | Image.Image) -> str:
         logger.warning("surya: recognition failed: %s", exc)
         return ""
 
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
     if not predictions:
+        logger.warning(
+            "surya: predictor returned no results for %dx%d image (%d ms) — "
+            "likely a Surya internal failure on this input", w, h, elapsed_ms,
+        )
         return ""
 
     result = predictions[0]
     lines = getattr(result, "text_lines", None) or []
-    return "\n".join(
+    text = "\n".join(
         (line.text or "").strip()
         for line in lines
         if (line.text or "").strip()
     )
+    if not text:
+        logger.warning(
+            "surya: %d line(s) detected but all empty after strip "
+            "(image=%dx%d, %d ms) — detection ran but recognition produced no text",
+            len(lines), w, h, elapsed_ms,
+        )
+    else:
+        preview = text.replace("\n", " ⏎ ")[:80]
+        logger.info(
+            "surya: ok — %d line(s), %d chars, %d ms — preview: %s%s",
+            len(lines), len(text), elapsed_ms, preview,
+            "…" if len(text) > 80 else "",
+        )
+    return text
 
 
 def ocr_crop(
@@ -128,16 +157,27 @@ def ocr_crop(
     regions where Docling didn't return any (scanned PDFs, image-only pages).
     """
     if page_img is None or page_img.size == 0:
+        logger.warning("surya: ocr_crop got empty page_img — skipping")
         return ""
 
-    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
+    x0_raw, y0_raw, x1_raw, y1_raw = (int(round(v)) for v in bbox)
     h, w = page_img.shape[:2]
-    x0, x1 = max(0, x0), min(w, x1)
-    y0, y1 = max(0, y0), min(h, y1)
+    x0, x1 = max(0, x0_raw), min(w, x1_raw)
+    y0, y1 = max(0, y0_raw), min(h, y1_raw)
     if x1 <= x0 or y1 <= y0:
+        logger.warning(
+            "surya: bbox clamped to empty — raw=(%d,%d,%d,%d) page=%dx%d "
+            "clamped=(%d,%d,%d,%d). If this fires on a real figure region, "
+            "_resolve_bbox upstream is producing bad geometry.",
+            x0_raw, y0_raw, x1_raw, y1_raw, w, h, x0, y0, x1, y1,
+        )
         return ""
 
     crop = page_img[y0:y1, x0:x1]
+    logger.info(
+        "surya: ocr_crop cropping bbox=(%d,%d,%d,%d) page=%dx%d → crop=%dx%d",
+        x0, y0, x1, y1, w, h, crop.shape[1], crop.shape[0],
+    )
     return ocr_image(crop)
 
 

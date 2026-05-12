@@ -35,6 +35,7 @@ from docling.datamodel.accelerator_options import (
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling_core.types.doc import CoordOrigin
 
 from core.config import settings
 from pipeline.errors import InvalidPdfError
@@ -44,6 +45,14 @@ logger = logging.getLogger(__name__)
 # Minimum plausible PDF size — anything below this is either empty or a
 # truncated upload. Real PDFs are >1 KB; 32 B is just a sanity floor.
 _MIN_PDF_BYTES = 32
+
+# DPI at which the orchestrator renders pages for figure / OCR crops. Must
+# match _RENDER_DPI in pipeline.orchestrator: Docling returns bboxes in PDF
+# points (72/inch) but consumers slice page_img as a pixel array, so we
+# scale here once at layout time. Duplicated rather than imported to avoid
+# pulling orchestrator → layout → orchestrator dep cycle.
+_RENDER_DPI = 150
+_POINTS_TO_PIXELS = _RENDER_DPI / 72.0
 
 
 # ── Output dataclasses ──────────────────────────────────────────────────────
@@ -225,6 +234,20 @@ def _bucket_regions_by_page(doc) -> dict[int, list[LayoutRegion]]:
     its own page — the orchestrator joins on that to flow content
     page-by-page even when callers process pages independently.
     """
+    # Pre-build {page_no: page_height_pt} so _resolve_bbox can flip
+    # BOTTOMLEFT-origin bboxes to TOPLEFT (the orientation page_img uses).
+    # Empty / malformed page entries fall back to 0.0 — _resolve_bbox treats
+    # 0 as "skip the flip", which is safe for TOPLEFT pages.
+    page_heights: dict[int, float] = {}
+    try:
+        for page_no_key, page in (getattr(doc, "pages", {}) or {}).items():
+            try:
+                page_heights[int(page_no_key)] = float(page.size.height)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
     by_page: dict[int, list[LayoutRegion]] = {}
     page_orders: dict[int, int] = {}
 
@@ -238,7 +261,7 @@ def _bucket_regions_by_page(doc) -> dict[int, list[LayoutRegion]]:
         if page_no is None:
             continue
 
-        bbox = _resolve_bbox(item)
+        bbox = _resolve_bbox(item, page_heights.get(page_no, 0.0))
         text = _resolve_text(item, kind)
         table_data = _resolve_table(item) if kind == "table" else None
 
@@ -289,17 +312,51 @@ def _resolve_page_no(item) -> int | None:
     return None
 
 
-def _resolve_bbox(item) -> tuple[float, float, float, float]:
-    """Best-effort bbox extraction. Docling items vary; falls back to (0,0,0,0)
-    so callers never have to None-check."""
+def _resolve_bbox(
+    item,
+    page_height_pt: float = 0.0,
+) -> tuple[float, float, float, float]:
+    """Return bbox in pixel space at _RENDER_DPI, top-left origin.
+
+    Docling exposes BoundingBox with `coord_origin` in {TOPLEFT, BOTTOMLEFT}
+    and coordinates in PDF points. The orchestrator slices page_img as a
+    pixel array, so any consumer that uses this bbox needs pixel
+    coordinates with top-left origin. Doing both normalisations here once
+    eliminates a class of silent crop-mismatch bugs:
+
+      • BOTTOMLEFT pages otherwise produce y0 > y1, yielding zero-row
+        slices that Surya / Gemini Vision describe as empty without raising.
+      • Even TOPLEFT pages were ~2× under-cropped because raw points (72/in)
+        were used to index a 150-dpi pixel array.
+
+    `page_height_pt` is needed only for BOTTOMLEFT → TOPLEFT flips; pass 0
+    when unavailable and the function skips the flip (safe degradation for
+    TOPLEFT pages, no-op for already-correct items).
+    """
     try:
         prov = item.prov[0] if getattr(item, "prov", None) else None
-        if prov and getattr(prov, "bbox", None):
-            b = prov.bbox
-            return (float(b.l), float(b.t), float(b.r), float(b.b))
+        if not prov or not getattr(prov, "bbox", None):
+            return (0.0, 0.0, 0.0, 0.0)
+        b = prov.bbox
+
+        if page_height_pt and getattr(b, "coord_origin", None) == CoordOrigin.BOTTOMLEFT:
+            b = b.to_top_left_origin(page_height_pt)
+
+        x0 = float(b.l) * _POINTS_TO_PIXELS
+        x1 = float(b.r) * _POINTS_TO_PIXELS
+        y0 = float(b.t) * _POINTS_TO_PIXELS
+        y1 = float(b.b) * _POINTS_TO_PIXELS
+
+        # Defensive: ensure ordered. After to_top_left_origin we expect
+        # y0 < y1, but Docling occasionally emits reversed boxes on
+        # degenerate items.
+        if y0 > y1:
+            y0, y1 = y1, y0
+        if x0 > x1:
+            x0, x1 = x1, x0
+        return (x0, y0, x1, y1)
     except Exception:
-        pass
-    return (0.0, 0.0, 0.0, 0.0)
+        return (0.0, 0.0, 0.0, 0.0)
 
 
 def _resolve_text(item, kind: str) -> str:

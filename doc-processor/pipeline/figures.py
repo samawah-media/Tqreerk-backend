@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -119,13 +120,27 @@ def caption(img: bytes | np.ndarray | Image.Image) -> str:
     orchestrator falls back to a generic placeholder + OCR'd text in
     that case.
     """
+    started = time.perf_counter()
     pil = _coerce_to_pil(img)
     if pil is None:
+        logger.warning(
+            "figures: input rejected — could not coerce %s to PIL", type(img).__name__,
+        )
+        return ""
+    w, h = pil.size
+    if w == 0 or h == 0:
+        logger.warning("figures: input rejected — zero-size image (w=%d h=%d)", w, h)
         return ""
 
     png_bytes = _pil_to_png_bytes(pil)
     if not png_bytes:
+        logger.warning("figures: PNG encode produced 0 bytes for %dx%d image", w, h)
         return ""
+
+    logger.info(
+        "figures: captioning image=%dx%d png_bytes=%d model=%s",
+        w, h, len(png_bytes), settings.gemini_vision_model,
+    )
 
     try:
         client = _get_client()
@@ -137,10 +152,37 @@ def caption(img: bytes | np.ndarray | Image.Image) -> str:
             ],
             config=types.GenerateContentConfig(temperature=0.2),
         )
-        return (response.text or "").strip()
     except Exception as exc:
         logger.warning("figures: caption failed: %s", exc)
         return ""
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    raw = getattr(response, "text", None)
+    text = (raw or "").strip()
+    if raw is None:
+        # response.text is None when Gemini returned no candidates — usually
+        # a safety filter trip or an empty model response. Surface enough
+        # detail in the log to debug without dumping the full response.
+        finish_reasons = _extract_finish_reasons(response)
+        logger.warning(
+            "figures: Vertex returned no text (response.text=None, %d ms) — "
+            "finish_reasons=%s",
+            elapsed_ms, finish_reasons or "unknown",
+        )
+        return ""
+    if not text:
+        logger.warning(
+            "figures: Vertex returned empty text (raw=%r stripped to '', %d ms)",
+            raw[:40] if raw else raw, elapsed_ms,
+        )
+        return ""
+
+    preview = text.replace("\n", " ⏎ ")[:80]
+    logger.info(
+        "figures: ok — caption=%d chars, %d ms — preview: %s%s",
+        len(text), elapsed_ms, preview, "…" if len(text) > 80 else "",
+    )
+    return text
 
 
 def caption_crop(
@@ -148,15 +190,50 @@ def caption_crop(
     bbox: tuple[float, float, float, float],
 ) -> str:
     """Crop the figure region off the page and run captioning."""
-    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
+    if page_img is None or page_img.size == 0:
+        logger.warning("figures: caption_crop got empty page_img — skipping")
+        return ""
+
+    x0_raw, y0_raw, x1_raw, y1_raw = (int(round(v)) for v in bbox)
     h, w = page_img.shape[:2]
-    x0, x1 = max(0, x0), min(w, x1)
-    y0, y1 = max(0, y0), min(h, y1)
+    x0, x1 = max(0, x0_raw), min(w, x1_raw)
+    y0, y1 = max(0, y0_raw), min(h, y1_raw)
     if x1 <= x0 or y1 <= y0:
+        logger.warning(
+            "figures: bbox clamped to empty — raw=(%d,%d,%d,%d) page=%dx%d "
+            "clamped=(%d,%d,%d,%d). If this fires on a real figure region, "
+            "_resolve_bbox upstream is producing bad geometry.",
+            x0_raw, y0_raw, x1_raw, y1_raw, w, h, x0, y0, x1, y1,
+        )
         return ""
 
     crop = page_img[y0:y1, x0:x1]
+    logger.info(
+        "figures: caption_crop cropping bbox=(%d,%d,%d,%d) page=%dx%d → crop=%dx%d",
+        x0, y0, x1, y1, w, h, crop.shape[1], crop.shape[0],
+    )
     return caption(crop)
+
+
+def _extract_finish_reasons(response) -> list[str]:
+    """Pull `finish_reason` off each candidate of a Vertex generate_content
+    response. Useful when `response.text` is None — the finish_reason tells
+    us whether the model stopped naturally, hit a safety filter, exceeded
+    max_output_tokens, etc. Returns [] when the response shape is
+    unexpected so the caller's log line stays compact.
+    """
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        out: list[str] = []
+        for c in candidates:
+            fr = getattr(c, "finish_reason", None)
+            if fr is None:
+                continue
+            # Enum or plain str — stringify either way.
+            out.append(getattr(fr, "name", None) or str(fr))
+        return out
+    except Exception:
+        return []
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
