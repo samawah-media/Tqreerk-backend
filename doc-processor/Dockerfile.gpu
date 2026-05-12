@@ -3,7 +3,7 @@
 # Stack:
 #   • Docling      — layout, reading order, tables (TableFormer)
 #   • Florence-2   — figure captioning (transformers)
-#   • EasyOCR      — Arabic + English text recognition
+#   • Surya OCR    — Arabic + English text recognition (detection + recognition)
 #   • pix2tex      — formula image → LaTeX
 #
 # Runs on Cloud Run with NVIDIA L4 (24 GB). All four models fit in VRAM at the
@@ -50,7 +50,7 @@ ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     TRANSFORMERS_OFFLINE=0 \
     HF_HOME=/app/.hf-cache \
-    EASYOCR_MODULE_PATH=/app/.easyocr-cache \
+    TORCH_DEVICE=cuda \
     PATH="/opt/venv/bin:$PATH"
 
 # python3.11 (no pip, no venv tooling) + OpenCV runtime libs.
@@ -69,9 +69,15 @@ WORKDIR /app
 # Pre-download model weights so cold start only pays for VRAM transfer, not
 # network I/O. snapshot_download fetches files only; the actual model init
 # (which needs a real CUDA driver) happens at container startup.
+#
+# Surya pulls its detection + recognition checkpoints from HF via transformers,
+# so importing the predictors here is enough to populate HF_HOME. We force
+# TORCH_DEVICE=cpu during the build step because the builder has no GPU —
+# weights still land in the cache and the runtime container re-uses them on
+# CUDA at startup.
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download(repo_id='microsoft/Florence-2-base-ft')" \
-    && python -c "import easyocr; easyocr.Reader(['ar', 'en'], gpu=False, download_enabled=True)"
+    && TORCH_DEVICE=cpu python -c "from surya.detection import DetectionPredictor; from surya.recognition import RecognitionPredictor; DetectionPredictor(); RecognitionPredictor()"
 
 COPY . .
 

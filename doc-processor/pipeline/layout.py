@@ -7,8 +7,8 @@ Docling is the spine of this pipeline. A single `convert()` call gives us:
     • text extraction   (PyMuPDF for digital PDFs, no OCR involvement)
 
 We do NOT use Docling for OCR — its built-in OCR backend is slower than
-EasyOCR for our use case and doesn't have an Arabic-tuned model. We post-
-process Docling's output and run EasyOCR in `pipeline.ocr` on regions that
+Surya for our use case and doesn't ship Arabic-tuned recognition. We post-
+process Docling's output and run Surya in `pipeline.ocr` on regions that
 came back empty.
 
 Two entry points

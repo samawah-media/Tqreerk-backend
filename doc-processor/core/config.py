@@ -68,8 +68,10 @@ class Settings(BaseSettings):
     # chat / summary share. Override per-deploy via GEMINI_VISION_MODEL.
     gemini_vision_model: str = "gemini-2.5-flash-lite"
 
-    # EasyOCR languages — ['ar', 'en'] downloads ~120MB per language at first
-    # run. Add more via env (CSV) without rebuilding the image.
+    # Surya OCR language hint (CSV). Surya can auto-detect script per line,
+    # but passing the expected languages gives a small accuracy bump on mixed
+    # AR/EN reports. Set to "" to let Surya auto-detect. Weights live in
+    # HF_HOME and are pre-baked into the image — no per-language download tax.
     ocr_languages: str = "ar,en"
 
     # Multilingual sentence-transformer for /v1/embed.
@@ -85,7 +87,7 @@ class Settings(BaseSettings):
     # so query and chunk vectors live in compatible representation spaces;
     # joint scoring is meaningfully better than re-scoring with cosine.
     # ~568M params, ~2.5 GB VRAM in fp16 alongside bge-m3 + Florence-2 +
-    # Docling + EasyOCR — total ~9 GB on the L4's 24 GB headroom.
+    # Docling + Surya OCR — total ~11 GB on the L4's 24 GB headroom.
     rerank_model_id: str = "BAAI/bge-reranker-v2-m3"
     rerank_max_seq_length: int = 1024      # 512 query + 512 passage is plenty for chunk-level rerank
     rerank_batch_size: int = 8             # bge-reranker-v2-m3 is heavier than the embedder; smaller batch
@@ -101,8 +103,8 @@ class Settings(BaseSettings):
 
     # Skip OCR fallback on regions that are too small to contain meaningful
     # text or are visually empty (solid-color rectangles, decorative borders).
-    # Each skipped region saves ~2-3 s of EasyOCR work; a typical bulk ingest
-    # has 5-10 such regions per page.
+    # Each skipped region saves ~2-3 s of Surya OCR work; a typical bulk
+    # ingest has 5-10 such regions per page.
     ocr_min_region_area_ratio: float = 0.005     # < 0.5% of page area → skip
     ocr_min_pixel_stddev: float = 8.0            # solid-color crops → skip
 

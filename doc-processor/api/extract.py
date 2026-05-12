@@ -2,7 +2,7 @@
 
 The route is intentionally thin: it validates the request, decodes the image
 bytes, and hands off to the orchestrator. Heavy lifting (model inference)
-happens in a thread pool because Florence-2 / EasyOCR / Docling all use
+happens in a thread pool because Florence-2 / Surya / Docling all use
 blocking PyTorch / OpenCV calls — running them on the FastAPI event loop
 would freeze the /health probe during inference.
 

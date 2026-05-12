@@ -1,23 +1,27 @@
-"""EasyOCR wrapper — Arabic + English text recognition.
+"""Surya OCR wrapper — Arabic + English text recognition.
 
 We run OCR only on regions where Docling's text-layer extraction came back
 empty (or suspiciously short). Two reasons:
-    1. OCR is the slowest step per region (~50-200ms each on GPU).
+    1. OCR is the slowest step per region (~80-300ms each on GPU).
     2. Native PDF text is always more accurate than OCR'd text — never
        overwrite real text with an OCR guess.
 
-Why EasyOCR over PaddleOCR
-==========================
-EasyOCR is PyTorch-native (matches the rest of the stack — no second
-deep-learning framework), works on the same CUDA driver as Docling and
-Florence-2, and ships solid Arabic + English models out of the box. PaddleOCR
-is marginally better on Arabic but pulls in paddlepaddle-gpu which doubles
-the container image size and creates CUDA-version-pinning headaches.
+Why Surya over EasyOCR (swapped 2026-05-12)
+===========================================
+Surya is a transformer-based OCR stack (detection + recognition) that
+benchmarks ahead of EasyOCR on Arabic line-level accuracy and is markedly
+better on multi-column / RTL layouts — which is the bulk of Taqreerk's
+input. It's PyTorch-native (no second DL framework), uses the same CUDA
+driver as Docling, and pulls weights from Hugging Face via `transformers`
+so it slots into our existing HF_HOME cache. The trade-off is ~2 GB extra
+VRAM and a GPL-3 / commercial dual license — see ops notes.
 """
 from __future__ import annotations
 
 import io
 import logging
+import os
+import threading
 from typing import Iterable
 
 import numpy as np
@@ -30,31 +34,46 @@ logger = logging.getLogger(__name__)
 
 # ── Module state ────────────────────────────────────────────────────────────
 
-_reader = None  # easyocr.Reader
+_rec_predictor = None       # surya.recognition.RecognitionPredictor
+_det_predictor = None       # surya.detection.DetectionPredictor
+_init_lock = threading.Lock()
 
 
 def init() -> None:
-    """Load EasyOCR models for the configured languages.
+    """Load Surya detection + recognition predictors.
 
-    Languages are provided as a CSV via `OCR_LANGUAGES` env (default 'ar,en').
-    The reader is GPU-bound when settings.device == 'cuda'; first call after
-    init pre-warms the CUDA kernels.
+    Surya picks its device from the `TORCH_DEVICE` env var; we set it here
+    from settings.device so the same code path works on CPU dev machines and
+    CUDA Cloud Run instances. Weights are pulled from Hugging Face into
+    HF_HOME on first call — pre-baked into the image at build time (see
+    Dockerfile.gpu) so cold start only pays for VRAM transfer.
     """
-    global _reader
-    if _reader is not None:
+    global _rec_predictor, _det_predictor
+    if _rec_predictor is not None and _det_predictor is not None:
         return
 
-    import easyocr
+    with _init_lock:
+        if _rec_predictor is not None and _det_predictor is not None:
+            return
 
-    langs = [s.strip() for s in settings.ocr_languages.split(",") if s.strip()]
-    use_gpu = settings.device == "cuda"
-    logger.info("easyocr: initialising languages=%s gpu=%s", langs, use_gpu)
-    _reader = easyocr.Reader(langs, gpu=use_gpu, verbose=False)
-    logger.info("easyocr: ready")
+        # Surya reads TORCH_DEVICE at import time on some versions, so set
+        # it before importing the predictors.
+        os.environ.setdefault("TORCH_DEVICE", settings.device)
+
+        from surya.detection import DetectionPredictor
+        from surya.recognition import RecognitionPredictor
+
+        logger.info(
+            "surya: initialising detection + recognition (device=%s, langs hint=%s)",
+            settings.device, settings.ocr_languages,
+        )
+        _det_predictor = DetectionPredictor()
+        _rec_predictor = RecognitionPredictor()
+        logger.info("surya: ready")
 
 
 def is_ready() -> bool:
-    return _reader is not None
+    return _rec_predictor is not None and _det_predictor is not None
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -66,23 +85,39 @@ def ocr_image(img: bytes | np.ndarray | Image.Image) -> str:
     PIL Image. Returns "" if no text was detected — never raises on empty
     input.
     """
-    if _reader is None:
+    if not is_ready():
         init()
 
-    arr = _coerce_to_ndarray(img)
-    if arr is None or arr.size == 0:
+    pil_img = _coerce_to_pil(img)
+    if pil_img is None:
         return ""
+
+    langs = _configured_langs()
 
     try:
-        # detail=0 → return list[str] only (no boxes / scores) since we only
-        # need the text. paragraph=True merges adjacent boxes into reading
-        # order — important for Arabic right-to-left columns.
-        result = _reader.readtext(arr, detail=0, paragraph=True)
+        # Surya predictor signature: rec([images], [langs_per_image], det_predictor)
+        # Recent versions accept langs=None and auto-detect script per line;
+        # we still pass the configured hint for slightly better accuracy on
+        # mixed AR/EN text where script switches mid-line are rare.
+        predictions = _rec_predictor(
+            [pil_img],
+            [langs] if langs else [None],
+            _det_predictor,
+        )
     except Exception as exc:
-        logger.warning("easyocr: readtext failed: %s", exc)
+        logger.warning("surya: recognition failed: %s", exc)
         return ""
 
-    return "\n".join(line.strip() for line in result if line and line.strip())
+    if not predictions:
+        return ""
+
+    result = predictions[0]
+    lines = getattr(result, "text_lines", None) or []
+    return "\n".join(
+        (line.text or "").strip()
+        for line in lines
+        if (line.text or "").strip()
+    )
 
 
 def ocr_crop(
@@ -108,19 +143,36 @@ def ocr_crop(
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def _coerce_to_ndarray(img: bytes | np.ndarray | Image.Image) -> np.ndarray | None:
-    """Normalise the various accepted input forms into an RGB ndarray.
+def _configured_langs() -> list[str] | None:
+    """Parse OCR_LANGUAGES env into the list Surya expects. Returns None when
+    the setting is empty/whitespace so Surya falls back to auto-detect."""
+    raw = (settings.ocr_languages or "").strip()
+    if not raw:
+        return None
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
-    EasyOCR is happy with either RGB or BGR but we standardise on RGB for
-    consistency with the rest of the pipeline (PIL is RGB by default).
+
+def _coerce_to_pil(img: bytes | np.ndarray | Image.Image) -> Image.Image | None:
+    """Normalise the various accepted input forms into a PIL RGB image.
+
+    Surya predictors only accept PIL Images, so callers passing numpy arrays
+    or raw bytes get converted here.
     """
-    if isinstance(img, np.ndarray):
-        return img if img.ndim in (2, 3) else None
     if isinstance(img, Image.Image):
-        return np.array(img.convert("RGB"))
+        return img.convert("RGB")
+    if isinstance(img, np.ndarray):
+        if img.size == 0 or img.ndim not in (2, 3):
+            return None
+        try:
+            if img.ndim == 2:
+                return Image.fromarray(img).convert("RGB")
+            return Image.fromarray(img).convert("RGB")
+        except Exception as exc:
+            logger.warning("ocr: failed to convert ndarray to PIL: %s", exc)
+            return None
     if isinstance(img, (bytes, bytearray)):
         try:
-            return np.array(Image.open(io.BytesIO(img)).convert("RGB"))
+            return Image.open(io.BytesIO(img)).convert("RGB")
         except Exception as exc:
             logger.warning("ocr: failed to decode image bytes: %s", exc)
             return None

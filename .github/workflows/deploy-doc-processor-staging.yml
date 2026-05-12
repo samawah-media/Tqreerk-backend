@@ -37,7 +37,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       # Cloud Build does the heavy lifting. The image is ~12 GB (CUDA +
-      # PyTorch + Florence-2 + EasyOCR + pix2tex weights pre-cached) which
+      # PyTorch + Florence-2 + Surya OCR + pix2tex weights pre-cached) which
       # routinely OOMs the GitHub-hosted runner if we build there.
       - name: Build & push image via Cloud Build
         run: |

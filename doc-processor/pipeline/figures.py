@@ -16,7 +16,7 @@ API contract is unchanged
 =========================
 `caption(img)` and `caption_crop(page_img, bbox)` keep their signatures
 so the orchestrator doesn't need to change. Failure returns "" so the
-caller can still embed the figure region with whatever text EasyOCR
+caller can still embed the figure region with whatever text Surya OCR
 pulled out (axis labels, legends).
 
 Cost model

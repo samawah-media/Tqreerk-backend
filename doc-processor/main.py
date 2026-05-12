@@ -68,7 +68,7 @@ async def _startup() -> None:
     """
     for name, fn in [
         ("docling",     layout.init),
-        ("easyocr",     ocr.init),
+        ("surya",       ocr.init),
         ("pix2tex",     formulas.init),
         # figures: now backed by Vertex Gemini Vision (2026-05-08), not
         # local Florence-2. init() pre-builds the Vertex client so the
@@ -119,7 +119,7 @@ async def health() -> HealthResponse:
     error — operators inspect models_loaded to debug a stuck instance.
 
     Readiness scope (2026-04-30): the doc-processor is responsible only for
-    the EXTRACT pipeline (docling, easyocr, pix2tex, florence-2). bge-m3
+    the EXTRACT pipeline (docling, surya, pix2tex, florence-2). bge-m3
     and bge-reranker-v2-m3 were deliberately dropped from the warmup path
     when chat moved to Vertex APIs — they're no longer part of the
     "service is ready to serve" definition. We still surface `embeddings`
@@ -137,7 +137,7 @@ async def health() -> HealthResponse:
     # it required.
     required = {
         "docling":    layout.is_ready(),
-        "easyocr":    ocr.is_ready(),
+        "surya":      ocr.is_ready(),
         "pix2tex":    formulas.is_ready(),
         "figures":    figures.is_ready(),
     }

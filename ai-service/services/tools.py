@@ -255,6 +255,96 @@ async def _fetch_section_chunks(
     return out
 
 
+async def _fetch_orphan_neighbors(
+    *,
+    orphan_keys: list[tuple[str, int, int]],
+    target_ids: list[str],
+    max_chars: int,
+) -> dict[tuple[str, int, int], str]:
+    """Stitched ±1 neighbour content for hits the section-fetch couldn't
+    place — atomic-block chunks on heading-less pages, chunks before the
+    first heading in a report, or pages where layout broke heading detection.
+
+    Same-page neighbours are always pulled. The cross-page edge case is
+    handled by checking whether the orphan is at the page boundary
+    (chunk_index = 0 → also pull previous page's last chunk; chunk_index =
+    MAX → also pull next page's first chunk). Other cross-page neighbours
+    are deliberately NOT pulled — they sit across a section break and
+    would dilute relevance.
+
+    The orphan's own content is included in the join so the caller's
+    `section_content != content` gate still skips no-op results when no
+    neighbour rows exist.
+    """
+    if not orphan_keys:
+        return {}
+
+    vals_sql = ", ".join("(%s::uuid, %s::int, %s::int)" for _ in orphan_keys)
+    vals_params: list[Any] = [x for t in orphan_keys for x in t]
+
+    async with conn_ctx() as conn:
+        cur = await conn.execute(
+            f"""
+            WITH want(rid, pg, ci) AS (VALUES {vals_sql}),
+            boundaries AS (
+                SELECT w.rid, w.pg, w.ci,
+                       (w.ci = 0) AS is_first,
+                       (w.ci = (
+                           SELECT MAX("ChunkIndex")
+                             FROM report_chunks
+                            WHERE "ReportId"      = w.rid
+                              AND "PageNumber"    = w.pg
+                              AND "ParentChunkId" IS NULL
+                       )) AS is_last
+                  FROM want w
+            )
+            SELECT b.rid::text       AS hit_rid,
+                   b.pg              AS hit_pg,
+                   b.ci              AS hit_ci,
+                   rc."PageNumber"   AS pg,
+                   rc."ChunkIndex"   AS ci,
+                   rc."Content"      AS content
+              FROM boundaries b
+              JOIN report_chunks rc
+                ON rc."ReportId"      = b.rid
+               AND rc."ParentChunkId" IS NULL
+               AND (
+                   (rc."PageNumber" = b.pg
+                    AND rc."ChunkIndex" BETWEEN b.ci - 1 AND b.ci + 1)
+                OR (b.is_first
+                    AND rc."PageNumber" = b.pg - 1
+                    AND rc."ChunkIndex" = (
+                        SELECT MAX("ChunkIndex")
+                          FROM report_chunks
+                         WHERE "ReportId"      = b.rid
+                           AND "PageNumber"    = b.pg - 1
+                           AND "ParentChunkId" IS NULL
+                    ))
+                OR (b.is_last
+                    AND rc."PageNumber" = b.pg + 1
+                    AND rc."ChunkIndex" = 0)
+               )
+             WHERE rc."ReportId" = ANY(%s)
+             ORDER BY hit_rid, hit_pg, hit_ci, pg, ci
+            """,
+            [*vals_params, target_ids],
+        )
+        rows = await cur.fetchall()
+
+    grouped: dict[tuple[str, int, int], list[str]] = {}
+    for r in rows:
+        key = (str(r[0]), int(r[1]), int(r[2]))
+        grouped.setdefault(key, []).append(r[5] or "")
+
+    out: dict[tuple[str, int, int], str] = {}
+    for key, parts in grouped.items():
+        joined = "\n\n".join(p for p in parts if p.strip())
+        if len(joined) > max_chars:
+            joined = joined[:max_chars] + "\n…[neighbours truncated]"
+        out[key] = joined
+    return out
+
+
 async def _hybrid_retrieve_one(
     *,
     target_ids: list[str],
@@ -627,10 +717,39 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
             max_chars=settings.parent_section_max_chars,
             max_chunks=settings.parent_section_max_chunks,
         )
+
+        # Hits the section fetch can't place (empty section_title, or section
+        # fetch returned nothing) fall through to a targeted ±1 neighbour
+        # fetch — same-page always, cross-page only when the orphan sits at
+        # the page boundary. Covers atomic-block hits on heading-less pages
+        # and sections that bleed across a page break.
+        orphan_keys: list[tuple[str, int, int]] = []
+        seen_orphan: set[tuple[str, int, int]] = set()
+        for c in final:
+            rid = c.get("report_id")
+            pg  = c.get("page_number")
+            ci  = c.get("chunk_index")
+            sec = (c.get("section_title") or "").strip()
+            if not rid or pg is None or ci is None:
+                continue
+            if sec and section_map.get((str(rid), int(pg), sec)):
+                continue
+            key = (str(rid), int(pg), int(ci))
+            if key in seen_orphan:
+                continue
+            seen_orphan.add(key)
+            orphan_keys.append(key)
+        orphan_map = await _fetch_orphan_neighbors(
+            orphan_keys=orphan_keys,
+            target_ids=target_ids,
+            max_chars=settings.parent_section_max_chars,
+        )
+
         results = []
         for c in final:
             rid = c["report_id"]
             pg = c.get("page_number")
+            ci = c.get("chunk_index")
             sec = (c.get("section_title") or "").strip()
             entry: dict[str, Any] = {
                 "report_id":     rid,
@@ -640,6 +759,8 @@ async def _search_chunks_impl(ctx: ToolContext, args: SearchChunksArgs) -> str:
                 "content":       c.get("content"),
             }
             section_content = section_map.get((rid, pg, sec)) if pg is not None else None
+            if not section_content and pg is not None and ci is not None:
+                section_content = orphan_map.get((str(rid), int(pg), int(ci)))
             if section_content and section_content != c.get("content"):
                 entry["section_content"] = section_content
             results.append(entry)

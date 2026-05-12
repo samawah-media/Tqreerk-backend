@@ -10,7 +10,10 @@
       "Bash(python -c \"import docx; print\\(docx.__version__\\)\")",
       "Bash(python3 -c \"import docx; print\\(docx.__version__\\)\")",
       "Bash(python docs/generate_rag_doc.py)",
-      "Bash(xargs wc *)"
+      "Bash(xargs wc *)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }
