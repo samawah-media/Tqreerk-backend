@@ -6082,6 +6082,28 @@
         }
       }
     },
+    "/api/plans": {
+      "get": {
+        "tags": [
+          "Reference"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PublicPlanDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/reports/{id}/comments": {
       "get": {
         "tags": [
@@ -10388,6 +10410,42 @@
           }
         },
         "additionalProperties": { }
+      },
+      "PublicPlanDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "nameEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "targetType": {
+            "type": "string",
+            "nullable": true
+          },
+          "annualPrice": {
+            "type": "number",
+            "format": "double"
+          },
+          "isHighlighted": {
+            "type": "boolean"
+          },
+          "featuresAr": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "PublicReportDetailDto": {
         "type": "object",
