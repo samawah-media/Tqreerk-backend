@@ -66,7 +66,7 @@ sentence-transformers==3.2.1
 
 # ── Image / PDF support ──────────────────────────────────────────────────────
 pymupdf==1.24.14
-opencv-python-headless==4.10.0.84
+opencv-python-headless==4.11.0.86
 numpy==1.26.4
 
 # ── Chunking + Vertex embedding (used by /v1/ingest_full and /v1/ingest) ─────
