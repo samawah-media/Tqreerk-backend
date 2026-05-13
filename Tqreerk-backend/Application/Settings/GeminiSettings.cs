@@ -27,19 +27,25 @@ public class GeminiSettings
     public string ProjectId { get; set; } = string.Empty;
 
     /// <summary>
-    /// Vertex AI region. <c>me-central1</c> matches the project's default
-    /// region and keeps the request in-region of the Cloud Run service —
-    /// no cross-region hop on the hot path.
+    /// Vertex AI location. Defaults to <c>global</c> — same as the
+    /// ai-service's <c>vertex_location</c> setting — because it auto-
+    /// routes every request to whichever region has the requested model
+    /// and gives the highest aggregate quota of any single endpoint.
+    /// Regional locations (e.g. <c>me-central1</c>) only carry a subset
+    /// of Gemini models and would 404 on <c>gemini-2.5-flash*</c> in
+    /// this project. If a contract ever pins data residency to a
+    /// specific region, override per-deploy via the env var.
     /// </summary>
-    public string Region { get; set; } = "me-central1";
+    public string Region { get; set; } = "global";
 
     /// <summary>
-    /// Gemini model id (Vertex AI publisher: google). Default favours
-    /// the fast, cheap tier — short passages translate well at this size
-    /// and p95 latency stays under ~1 s. Override per-env if a different
-    /// tier is preferred.
+    /// Gemini model id (Vertex AI publisher: google). Defaults to the
+    /// lite tier — short passages translate well at this size, latency
+    /// is half of <c>gemini-2.5-flash</c>, cost is a fraction. Override
+    /// per-env via <c>Gemini__Model</c> if a heavier tier is needed for
+    /// quality on a specific deploy.
     /// </summary>
-    public string Model { get; set; } = "gemini-2.5-flash";
+    public string Model { get; set; } = "gemini-2.5-flash-lite";
 
     /// <summary>HTTP timeout for the Vertex call (seconds). Short
     /// intentionally — translate-text is interactive UI; if Vertex

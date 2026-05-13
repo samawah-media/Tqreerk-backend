@@ -159,7 +159,6 @@ jobs:
             AiService__WorkerPollSeconds=5
             AiService__TranslationOutputPrefix=gs://taqreerk-uploads/taqreerk-uploads-dev/translations
             Gemini__ProjectId=${{ env.PROJECT_ID }}
-            Gemini__Region=${{ env.REGION }}
             AllowedOrigins__0=https://admin-dashboard-staging-912038409401.me-central1.run.app
             AllowedOrigins__1=https://user-app-staging-bo6ogywxvq-ww.a.run.app
             AllowedOrigins__2=http://localhost:5173

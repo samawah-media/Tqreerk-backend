@@ -56,9 +56,17 @@ public class GeminiTextTranslator : IGeminiTextTranslator
         _credential = GoogleCredential.GetApplicationDefault()
             .CreateScoped(VertexScope);
 
-        // BaseAddress is the region-specific aiplatform host. Trailing
-        // slash so relative routes resolve cleanly.
-        _http.BaseAddress = new Uri($"https://{_settings.Region}-aiplatform.googleapis.com/");
+        // BaseAddress depends on the Vertex location:
+        //   • "global"  → https://aiplatform.googleapis.com/
+        //   • {region}  → https://{region}-aiplatform.googleapis.com/
+        // Regional hosts only serve a subset of Gemini models; the
+        // global endpoint routes to whichever region has the model, so
+        // it's the default and the only one we expect to use in prod.
+        // Trailing slash so relative routes resolve cleanly.
+        var host = _settings.Region.Equals("global", StringComparison.OrdinalIgnoreCase)
+            ? "https://aiplatform.googleapis.com/"
+            : $"https://{_settings.Region}-aiplatform.googleapis.com/";
+        _http.BaseAddress = new Uri(host);
         _http.Timeout = TimeSpan.FromSeconds(_settings.TimeoutSeconds);
     }
 

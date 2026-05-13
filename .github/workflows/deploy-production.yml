@@ -153,7 +153,6 @@ jobs:
             AiService__WorkerPollSeconds=5
             AiService__TranslationOutputPrefix=${{ secrets.AI_SERVICE_TRANSLATION_OUTPUT_PREFIX_PRODUCTION }}
             Gemini__ProjectId=${{ env.PROJECT_ID }}
-            Gemini__Region=${{ env.REGION }}
             Quota__Enabled=true
             Quota__DailyIngestPerOrg=50
             Quota__DailyTranslatePerOrg=25
