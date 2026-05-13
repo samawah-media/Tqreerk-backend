@@ -1,5 +1,16 @@
 namespace Taqreerk.Application.DTOs.Reports;
 
+/// <summary>
+/// Set of three width-bounded WebP variants emitted by the cover-image
+/// pipeline. URLs are public, signature-free, and served from GCS with a
+/// 1-year immutable Cache-Control — the frontend should plug them straight
+/// into a <c>&lt;img srcset="..."&gt;</c>.
+///
+/// Null when a report has no cover, OR when it was uploaded before the
+/// variants pipeline shipped (older rows only have <c>CoverImageUrl</c>).
+/// </summary>
+public record CoverImagesDto(string Thumb, string Medium, string Full);
+
 /// Public summary for the library / homepage carousels. Excludes uploader PII
 /// (no email, no IP, no internal status fields). Slug is the canonical
 /// identifier the public site uses in URLs — never the GUID.
@@ -17,7 +28,13 @@ public record PublicReportListItemDto(
     decimal AvgRating,
     int RatingsCount,
     bool IsFeatured,
+    /// Legacy single-image URL. For new reports this is the medium-variant
+    /// URL (back-compat alias) and <see cref="CoverImages"/> carries the
+    /// full set; for older reports it's a signed URL to a single uploaded
+    /// image and <see cref="CoverImages"/> is null.
     string? CoverImageUrl,
+    /// Three-variant set for srcset rendering. Null for legacy uploads.
+    CoverImagesDto? CoverImages,
     Guid OrganizationId,
     string OrganizationNameAr,
     string OrganizationNameEn,
@@ -44,6 +61,9 @@ public record PublicReportDetailDto(
     int? PageCount,
     string? FileUrl,
     string? CoverImageUrl,
+    /// Three-variant set for srcset rendering on the detail-page hero.
+    /// Null for legacy uploads.
+    CoverImagesDto? CoverImages,
     int ViewsCount,
     int DownloadsCount,
     decimal AvgRating,

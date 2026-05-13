@@ -19,6 +19,7 @@ public class ReportConfiguration : IEntityTypeConfiguration<Report>
         builder.Property(r => r.ReportType).HasMaxLength(100);
         builder.Property(r => r.FileUrl).HasMaxLength(1000);
         builder.Property(r => r.CoverImageUrl).HasMaxLength(1000);
+        builder.Property(r => r.CoverImageBaseKey).HasMaxLength(1000);
         builder.Property(r => r.Source).HasMaxLength(255);
         builder.Property(r => r.Authors).HasMaxLength(2000);
         builder.Property(r => r.Status).HasConversion<string>().HasMaxLength(30);

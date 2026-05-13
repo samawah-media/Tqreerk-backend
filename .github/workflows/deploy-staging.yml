@@ -153,6 +153,7 @@ jobs:
             Sentry__Environment=Staging
             FileStorage__Provider=gcs
             FileStorage__GcsBucketName=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            FileStorage__GcsPublicBucketName=${{ secrets.CLOUD_STORAGE_PUBLIC_BUCKET }}
             AiService__BaseUrl=https://taqreerk-ai-service-staging-912038409401.me-central1.run.app/api/ai
             AiService__TimeoutSeconds=300
             AiService__WorkerPollSeconds=5

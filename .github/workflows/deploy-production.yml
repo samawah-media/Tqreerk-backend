@@ -147,6 +147,7 @@ jobs:
             Sentry__Environment=Production
             FileStorage__Provider=gcs
             FileStorage__GcsBucketName=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            FileStorage__GcsPublicBucketName=${{ secrets.CLOUD_STORAGE_PUBLIC_BUCKET }}
             AiService__BaseUrl=${{ secrets.AI_SERVICE_BASE_URL_PRODUCTION }}
             AiService__TimeoutSeconds=300
             AiService__WorkerPollSeconds=5

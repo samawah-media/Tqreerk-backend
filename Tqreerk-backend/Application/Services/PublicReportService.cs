@@ -5,6 +5,7 @@ using Taqreerk.Application.Interfaces;
 using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
+using Taqreerk.Infrastructure.Storage;
 
 namespace Taqreerk.Application.Services;
 
@@ -69,6 +70,7 @@ public class PublicReportService : IPublicReportService
                 r.PageCount,
                 r.FileUrl,
                 r.CoverImageUrl,
+                r.CoverImageBaseKey,
                 r.ViewsCount,
                 r.DownloadsCount,
                 r.AvgRating,
@@ -96,7 +98,7 @@ public class PublicReportService : IPublicReportService
             .FirstOrDefaultAsync(ct);
 
         var fileUrl = await ResolveFileUrlAsync(row.FileUrl, ct);
-        var coverUrl = await ResolveFileUrlAsync(row.CoverImageUrl, ct);
+        var (coverUrl, coverVariants) = await ResolveCoverAsync(row.CoverImageUrl, row.CoverImageBaseKey, ct);
 
         // Two cheap COUNTs to round out the header. Both are well-indexed
         // and their absence would force the SPA to fan out an extra
@@ -120,6 +122,7 @@ public class PublicReportService : IPublicReportService
             row.PageCount,
             fileUrl,
             coverUrl,
+            coverVariants,
             row.ViewsCount,
             row.DownloadsCount,
             row.AvgRating,
@@ -424,7 +427,8 @@ public class PublicReportService : IPublicReportService
         CancellationToken ct)
     {
         // Project to a flat shape first so we don't carry nav properties
-        // through the second pass; then sign each cover image URL.
+        // through the second pass; then resolve cover URLs (variants vs
+        // legacy signed) per row.
         var raw = await query
             .Select(r => new
             {
@@ -442,6 +446,7 @@ public class PublicReportService : IPublicReportService
                 r.RatingsCount,
                 r.IsFeatured,
                 r.CoverImageUrl,
+                r.CoverImageBaseKey,
                 r.OrganizationId,
                 OrgNameAr = r.Organization.NameAr,
                 OrgNameEn = r.Organization.NameEn,
@@ -456,6 +461,7 @@ public class PublicReportService : IPublicReportService
         var dtos = new List<PublicReportListItemDto>(raw.Count);
         foreach (var r in raw)
         {
+            var (coverUrl, coverVariants) = await ResolveCoverAsync(r.CoverImageUrl, r.CoverImageBaseKey, ct);
             dtos.Add(new PublicReportListItemDto(
                 r.Id,
                 r.Slug,
@@ -470,7 +476,8 @@ public class PublicReportService : IPublicReportService
                 r.AvgRating,
                 r.RatingsCount,
                 r.IsFeatured,
-                await ResolveFileUrlAsync(r.CoverImageUrl, ct),
+                coverUrl,
+                coverVariants,
                 r.OrganizationId,
                 r.OrgNameAr,
                 r.OrgNameEn,
@@ -492,6 +499,28 @@ public class PublicReportService : IPublicReportService
         if (string.IsNullOrWhiteSpace(objectKey)) return null;
         try { return await _files.GetReadUrlAsync(objectKey, ct: ct); }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Pick the cover representation for a report:
+    ///   • If <paramref name="coverImageBaseKey"/> is set the report has the
+    ///     three-variant set on public GCS — emit signature-free URLs that
+    ///     the browser will cache for a year, and surface the medium URL on
+    ///     the legacy <c>coverImageUrl</c> field too so older clients keep
+    ///     working with no DTO change.
+    ///   • Otherwise fall back to signing the legacy single image.
+    /// </summary>
+    private async Task<(string? CoverImageUrl, CoverImagesDto? CoverImages)> ResolveCoverAsync(
+        string? coverImageUrl, string? coverImageBaseKey, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(coverImageBaseKey))
+        {
+            var thumb = _files.GetPublicUrl($"{coverImageBaseKey}/{CoverImageVariants.ThumbName}");
+            var medium = _files.GetPublicUrl($"{coverImageBaseKey}/{CoverImageVariants.MediumName}");
+            var full = _files.GetPublicUrl($"{coverImageBaseKey}/{CoverImageVariants.FullName}");
+            return (medium, new CoverImagesDto(thumb, medium, full));
+        }
+        return (await ResolveFileUrlAsync(coverImageUrl, ct), null);
     }
 
     private static IReadOnlyList<string> ParseJsonStringArray(string? jsonb)

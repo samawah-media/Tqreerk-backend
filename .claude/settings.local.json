@@ -14,7 +14,9 @@
       "WebFetch(domain:pypi.org)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
-      "Bash(python -m py_compile \"c:\\\\Users\\\\sheha\\\\OneDrive\\\\Documents\\\\Tqreerk-backend\\\\doc-processor\\\\pipeline\\\\layout.py\")"
+      "Bash(python -m py_compile \"c:\\\\Users\\\\sheha\\\\OneDrive\\\\Documents\\\\Tqreerk-backend\\\\doc-processor\\\\pipeline\\\\layout.py\")",
+      "Bash(dotnet tool *)",
+      "Bash(winget install *)"
     ]
   }
 }

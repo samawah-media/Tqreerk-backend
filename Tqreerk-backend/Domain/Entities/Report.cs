@@ -20,6 +20,20 @@ public class Report : SoftDeletableEntity
     public int? PageCount { get; set; }
     public string? FileUrl { get; set; }
     public string? CoverImageUrl { get; set; }
+
+    /// <summary>
+    /// Base GCS object-key prefix for the cover-variant set, e.g.
+    /// <c>public/covers/{reportId}</c>. When set, three sibling objects exist:
+    /// <c>thumb.webp</c>, <c>medium.webp</c>, <c>full.webp</c>. All three are
+    /// world-readable with a 1-year immutable Cache-Control so the browser
+    /// can cache them across navigations — that's what makes the public-page
+    /// hero image cheap on the LCP path.
+    ///
+    /// When this is non-null the variant URLs are the canonical cover source;
+    /// <see cref="CoverImageUrl"/> is the legacy single-image fallback, kept
+    /// for reports uploaded before the variant pipeline shipped.
+    /// </summary>
+    public string? CoverImageBaseKey { get; set; }
     public string? ExtractedText { get; set; }
 
     /// <summary>

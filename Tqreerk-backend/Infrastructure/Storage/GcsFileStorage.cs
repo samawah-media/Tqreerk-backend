@@ -99,6 +99,84 @@ public class GcsFileStorage : IFileStorage
         return new StoredFile(objectKey, size, contentType);
     }
 
+    public async Task<StoredFile> UploadPublicAsync(
+        Stream content,
+        string originalFileName,
+        string contentType,
+        string folder,
+        CancellationToken ct = default)
+    {
+        // Public uploads land in a SEPARATE bucket from the primary
+        // (private) one. This keeps the private bucket — which holds
+        // report PDFs, translations, org files — fully PAP-locked, and
+        // confines any future misconfiguration of public-read IAM to the
+        // public-covers bucket where the worst case is exposing cover
+        // images (already meant to be seen on the public web).
+        var publicBucket = _settings.GcsPublicBucketName;
+        if (string.IsNullOrWhiteSpace(publicBucket))
+            throw new InvalidOperationException(
+                "FileStorage:GcsPublicBucketName must be set before calling UploadPublicAsync. " +
+                "Configure a dedicated public bucket; do not point this at GcsBucketName.");
+
+        // We INTENTIONALLY do not auto-randomise the file name here — the
+        // cover-variant pipeline relies on stable, predictable keys like
+        // `public/covers/{reportId}/thumb.webp`, so callers pass the exact
+        // filename they want. Folders still get the bucket prefix applied
+        // so prod/staging deploys sharing the same public bucket don't
+        // collide on coverIds.
+        var safeFolder = SanitizeFolder(folder);
+        var prefix = SanitizeFolder(_settings.GcsBucketPrefix);
+        var withPrefix = string.IsNullOrEmpty(prefix) ? safeFolder
+            : string.IsNullOrEmpty(safeFolder) ? prefix
+            : $"{prefix}/{safeFolder}";
+        var objectKey = string.IsNullOrEmpty(withPrefix)
+            ? originalFileName
+            : $"{withPrefix}/{originalFileName}";
+
+        // The object payload carries the metadata GCS uses to set response
+        // headers on every subsequent GET: Cache-Control turns the browser
+        // into a 1-year edge cache for variants. `immutable` tells the
+        // browser it never needs to revalidate — safe because variant
+        // filenames already encode size, and a re-upload writes new keys
+        // under a new coverId folder.
+        var obj = new Google.Apis.Storage.v1.Data.Object
+        {
+            Bucket = publicBucket,
+            Name = objectKey,
+            ContentType = contentType,
+            CacheControl = "public, max-age=31536000, immutable",
+        };
+        // No per-object ACL: the public bucket is configured with a
+        // bucket-level `allUsers:objectViewer` IAM binding (see PLAN.md
+        // Phase 6 operator runbook). UBLA on the public bucket means ACL
+        // writes are forbidden anyway — bucket IAM is the only path.
+        var uploaded = await _storage.UploadObjectAsync(
+            obj,
+            source: content,
+            options: null,
+            cancellationToken: ct);
+
+        var size = uploaded.Size.HasValue ? (long)uploaded.Size.Value : 0L;
+        _logger.LogInformation(
+            "Uploaded PUBLIC gs://{Bucket}/{Key} ({Size} bytes, cache=1y)",
+            publicBucket, objectKey, size);
+        return new StoredFile(objectKey, size, contentType);
+    }
+
+    public string GetPublicUrl(string objectKey)
+    {
+        if (string.IsNullOrWhiteSpace(objectKey))
+            throw new ArgumentException("Object key is required.", nameof(objectKey));
+        var publicBucket = _settings.GcsPublicBucketName;
+        if (string.IsNullOrWhiteSpace(publicBucket))
+            throw new InvalidOperationException(
+                "FileStorage:GcsPublicBucketName must be set to resolve a public URL.");
+        // storage.googleapis.com is the canonical public host; no signing,
+        // no token. Object key is already URL-safe (we control the alphabet
+        // in SanitizeFolder + the variant naming convention).
+        return $"https://storage.googleapis.com/{publicBucket}/{objectKey}";
+    }
+
     public async Task<string> GetReadUrlAsync(string objectKey, TimeSpan? lifetime = null, CancellationToken ct = default)
     {
         var window = lifetime ?? TimeSpan.FromMinutes(_settings.SignedUrlMinutes);

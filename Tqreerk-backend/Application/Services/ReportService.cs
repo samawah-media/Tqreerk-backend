@@ -81,17 +81,17 @@ public class ReportService : IReportService
             reportFile.Content, reportFile.OriginalFileName, reportFile.ContentType,
             $"{ReportFolder}/{orgId}", ct);
 
-        // Cover image is optional. Upload separately under covers/{orgId}/...
-        // so we can sign it on its own when surfacing thumbnails. We don't
-        // wrap the two uploads in a transaction — if the cover upload fails
-        // after the PDF is in place we still save the report and log the
-        // failure rather than ditch the whole upload.
-        string? coverKey = null;
+        // Cover image is optional. The variant pipeline produces three
+        // public-readable WebP files plus the base-key string we persist;
+        // we don't wrap the two uploads in a transaction — if the cover
+        // upload fails after the PDF is in place we still save the report
+        // and log the failure rather than ditch the whole upload.
+        CoverUploadResult? coverUpload = null;
         if (coverImage is not null)
         {
             try
             {
-                coverKey = await ReencodeAndUploadCoverAsync(coverImage, orgId, ct);
+                coverUpload = await GenerateAndUploadCoverVariantsAsync(coverImage, orgId, ct);
             }
             catch (Exception ex)
             {
@@ -128,7 +128,8 @@ public class ReportService : IReportService
             SectorId = req.SectorId,
             CountryId = req.CountryId,
             FileUrl = storedReport.ObjectKey,
-            CoverImageUrl = coverKey,
+            CoverImageUrl = coverUpload?.MediumKey,
+            CoverImageBaseKey = coverUpload?.BaseKey,
             Status = ReportStatus.PendingReview,
             SubmittedForReviewAt = now,
             SourceType = ReportSourceType.Organization,
@@ -366,9 +367,14 @@ public class ReportService : IReportService
         {
             try
             {
-                var newCoverKey = await ReencodeAndUploadCoverAsync(coverImage, orgId, ct);
-                if (!string.IsNullOrEmpty(newCoverKey))
-                    report.CoverImageUrl = newCoverKey;
+                var newCover = await GenerateAndUploadCoverVariantsAsync(coverImage, orgId, ct);
+                if (newCover is not null)
+                {
+                    report.CoverImageBaseKey = newCover.BaseKey;
+                    report.CoverImageUrl = newCover.MediumKey;
+                    // Old variants under the previous BaseKey become orphan
+                    // GCS objects — cheap to leave for a future sweep job.
+                }
             }
             catch (Exception ex)
             {
@@ -570,36 +576,63 @@ public class ReportService : IReportService
     }
 
     /// <summary>
-    /// Re-encode whatever image the user uploaded as WebP and store
-    /// it under <c>covers/{orgId}</c>. Centralised here so both the
-    /// initial upload and the resubmit path share the exact same
-    /// "every cover is .webp on disk" guarantee. Returns the stored
-    /// object key, or null on a non-fatal failure (caller logs +
-    /// skips the cover so the report can still be published).
+    /// Generate three width-bounded WebP variants (thumb / medium / full)
+    /// from whatever image the user uploaded and store all three under a
+    /// fresh <c>public/covers/{coverId}</c> prefix on the public bucket.
+    /// Centralised here so the initial-upload and resubmit paths produce
+    /// identical artefacts. Returns the base key + the medium-variant key
+    /// (the latter assigned to <c>Report.CoverImageUrl</c> so legacy read
+    /// paths keep working until they migrate to variant URLs), or null on
+    /// a non-fatal failure — caller logs and proceeds without a cover so
+    /// the report can still be published.
     /// </summary>
-    private async Task<string?> ReencodeAndUploadCoverAsync(
+    private async Task<CoverUploadResult?> GenerateAndUploadCoverVariantsAsync(
         UploadedFile coverImage, Guid orgId, CancellationToken ct)
     {
-        // Pull the bytes into memory in one read — covers are capped at
-        // 5 MB so this is cheap, and SkiaSharp's decoder needs random
-        // access anyway.
         using var ms = new MemoryStream();
         await coverImage.Content.CopyToAsync(ms, ct);
         var sourceBytes = ms.ToArray();
 
-        var webpBytes = CoverImageEncoder.EncodeWebp(sourceBytes);
-        var webpName = CoverImageEncoder.WithWebpExtension(coverImage.OriginalFileName);
+        // Decode once, resize three times. CoverImageVariants handles the
+        // up-scale guard + WebP encoding so the caller stays simple.
+        var variants = CoverImageVariants.Generate(sourceBytes);
 
-        using var webpStream = new MemoryStream(webpBytes);
-        var stored = await _files.UploadAsync(
-            webpStream,
-            webpName,
-            CoverImageEncoder.ContentType,
-            $"{CoverFolder}/{orgId}",
-            ct);
+        // One folder per cover upload — decoupled from Report.Id so a
+        // resubmit with a different image lands on a NEW folder (the old
+        // one becomes orphan, cheap on GCS, and a sweep job can GC it).
+        var coverId = Guid.NewGuid().ToString("N");
+        var folder = $"public/covers/{coverId}";
+
+        var thumb = await _files.UploadPublicAsync(
+            new MemoryStream(variants.Thumb),
+            CoverImageVariants.ThumbName, CoverImageEncoder.ContentType, folder, ct);
+        var medium = await _files.UploadPublicAsync(
+            new MemoryStream(variants.Medium),
+            CoverImageVariants.MediumName, CoverImageEncoder.ContentType, folder, ct);
+        var full = await _files.UploadPublicAsync(
+            new MemoryStream(variants.Full),
+            CoverImageVariants.FullName, CoverImageEncoder.ContentType, folder, ct);
+
+        // Derive the base key from the stored medium-variant key so the
+        // bucket prefix (taqreerk-uploads-dev/) ends up baked into the
+        // stored field. Saves us from threading FileStorageSettings down
+        // into this service just to know the prefix.
+        var baseKey = medium.ObjectKey[..medium.ObjectKey.LastIndexOf('/')];
+
         _logger.LogInformation(
-            "Cover image re-encoded to WebP for org {OrgId}: {ObjectKey} ({Size} bytes, was {OriginalType})",
-            orgId, stored.ObjectKey, stored.SizeBytes, coverImage.ContentType);
-        return stored.ObjectKey;
+            "Cover variants uploaded for org {OrgId} at {BaseKey} (thumb={ThumbB}B, med={MedB}B, full={FullB}B)",
+            orgId, baseKey, thumb.SizeBytes, medium.SizeBytes, full.SizeBytes);
+
+        return new CoverUploadResult(BaseKey: baseKey, MediumKey: medium.ObjectKey);
     }
+
+    /// <summary>
+    /// Result of <see cref="GenerateAndUploadCoverVariantsAsync"/>. The base
+    /// key is what we persist on <see cref="Report.CoverImageBaseKey"/>; the
+    /// medium key is the back-compat alias written to
+    /// <see cref="Report.CoverImageUrl"/> so read sites that haven't migrated
+    /// to variant URLs still get a working image (via signed URL, which
+    /// works on public objects too — just wastes a sign cycle).
+    /// </summary>
+    private sealed record CoverUploadResult(string BaseKey, string MediumKey);
 }

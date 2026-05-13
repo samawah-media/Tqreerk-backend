@@ -53,12 +53,51 @@ public class LocalFileStorage : IFileStorage
         return new StoredFile(objectKey, size, contentType);
     }
 
+    public async Task<StoredFile> UploadPublicAsync(
+        Stream content,
+        string originalFileName,
+        string contentType,
+        string folder,
+        CancellationToken ct = default)
+    {
+        // Local storage has no notion of ACL — everything under LocalRoot is
+        // already served by the static-files middleware. We respect the
+        // caller-supplied filename (vs. UploadAsync, which GUID-renames) so
+        // the cover-variant pipeline gets the predictable keys it needs.
+        var safeFolder = SanitizeFolder(folder);
+        var objectKey = string.IsNullOrEmpty(safeFolder)
+            ? originalFileName
+            : $"{safeFolder}/{originalFileName}";
+
+        var rootDir = ResolveRoot();
+        var folderPath = Path.Combine(rootDir, safeFolder);
+        Directory.CreateDirectory(folderPath);
+
+        var fullPath = Path.Combine(folderPath, originalFileName);
+        await using (var fs = File.Create(fullPath))
+        {
+            await content.CopyToAsync(fs, ct);
+        }
+
+        var size = new FileInfo(fullPath).Length;
+        _logger.LogInformation("Stored PUBLIC {ObjectKey} ({Size} bytes) at {Path}", objectKey, size, fullPath);
+        return new StoredFile(objectKey, size, contentType);
+    }
+
     public Task<string> GetReadUrlAsync(string objectKey, TimeSpan? lifetime = null, CancellationToken ct = default)
     {
         // Local storage is "public" via the static-files middleware mounted at LocalPublicBaseUrl.
         // Lifetime is ignored — local URLs don't expire.
         var baseUrl = _settings.LocalPublicBaseUrl.TrimEnd('/');
         return Task.FromResult($"{baseUrl}/{objectKey}");
+    }
+
+    public string GetPublicUrl(string objectKey)
+    {
+        // Public and signed URLs are identical for the local backend — both
+        // resolve to the static-files-middleware-mounted base URL.
+        var baseUrl = _settings.LocalPublicBaseUrl.TrimEnd('/');
+        return $"{baseUrl}/{objectKey}";
     }
 
     public Task DeleteAsync(string objectKey, CancellationToken ct = default)

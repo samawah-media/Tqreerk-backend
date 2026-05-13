@@ -382,10 +382,10 @@ public class BulkImportProcessor : BackgroundService
         // 3. Render first page as cover (best-effort — failure is non-fatal,
         //    the Report just gets no cover and the user-side falls back to a
         //    placeholder).
-        string? coverKey = null;
+        BulkCoverUploadResult? coverUpload = null;
         try
         {
-            coverKey = await RenderAndUploadCoverAsync(files, pdfBytes, slug, orgId, ct);
+            coverUpload = await RenderAndUploadCoverAsync(files, pdfBytes, slug, orgId, ct);
         }
         catch (Exception ex)
         {
@@ -409,7 +409,8 @@ public class BulkImportProcessor : BackgroundService
             OriginalLanguage = string.IsNullOrWhiteSpace(item.OriginalLanguage) ? "ar" : item.OriginalLanguage!,
             PublicationYear = item.PublicationYear,
             FileUrl = stored.ObjectKey,
-            CoverImageUrl = coverKey,
+            CoverImageUrl = coverUpload?.MediumKey,
+            CoverImageBaseKey = coverUpload?.BaseKey,
             SourceType = ReportSourceType.Platform,
             Status = ReportStatus.Approved,
             SubmittedForReviewAt = DateTime.UtcNow,
@@ -442,34 +443,52 @@ public class BulkImportProcessor : BackgroundService
     }
 
     /// <summary>
-    /// Render the first PDF page to a JPEG and upload it as the cover.
-    /// PDFtoImage uses PDFium under the hood — works on Linux Cloud Run
-    /// without extra setup. We cap at the first page only (the admin can
-    /// upload a real cover later via the report edit flow).
+    /// Render the first PDF page and upload three WebP variants (thumb /
+    /// medium / full) under <c>public/covers/{coverId}</c>. PDFtoImage uses
+    /// PDFium under the hood — works on Linux Cloud Run without extra
+    /// setup. We cap at the first page (the admin can upload a real cover
+    /// later via the report edit flow).
     /// </summary>
-    private async Task<string?> RenderAndUploadCoverAsync(
+    private async Task<BulkCoverUploadResult?> RenderAndUploadCoverAsync(
         IFileStorage files, byte[] pdfBytes, string slug, Guid orgId, CancellationToken ct)
     {
         // PDFtoImage's API is sync; offload to a worker thread so we don't
-        // block the polling loop's task scheduler. We render straight to
-        // WebP via the shared CoverImageEncoder so every cover stored in
-        // GCS — bulk-import or manual upload — is .webp.
-        var bytes = await Task.Run(() =>
+        // block the polling loop's task scheduler. Resize happens here too
+        // so the heavy SkiaSharp work all runs off the scheduler.
+        var variants = await Task.Run(() =>
         {
             using var pdfStream = new MemoryStream(pdfBytes);
             using var bitmap = Conversion.ToImage(pdfStream, page: 0);
-            return CoverImageEncoder.EncodeBitmapAsWebp(bitmap);
+            return CoverImageVariants.Generate(bitmap);
         }, ct);
 
-        using var ms = new MemoryStream(bytes);
-        var stored = await files.UploadAsync(
-            ms,
-            $"{slug}-cover{CoverImageEncoder.Extension}",
-            CoverImageEncoder.ContentType,
-            $"covers/{orgId}",
-            ct);
-        return stored.ObjectKey;
+        var coverId = Guid.NewGuid().ToString("N");
+        var folder = $"public/covers/{coverId}";
+
+        var thumb = await files.UploadPublicAsync(
+            new MemoryStream(variants.Thumb),
+            CoverImageVariants.ThumbName, CoverImageEncoder.ContentType, folder, ct);
+        var medium = await files.UploadPublicAsync(
+            new MemoryStream(variants.Medium),
+            CoverImageVariants.MediumName, CoverImageEncoder.ContentType, folder, ct);
+        var full = await files.UploadPublicAsync(
+            new MemoryStream(variants.Full),
+            CoverImageVariants.FullName, CoverImageEncoder.ContentType, folder, ct);
+
+        var baseKey = medium.ObjectKey[..medium.ObjectKey.LastIndexOf('/')];
+        _logger.LogInformation(
+            "Bulk-import cover variants for slug {Slug} at {BaseKey} (thumb={ThumbB}B, med={MedB}B, full={FullB}B)",
+            slug, baseKey, thumb.SizeBytes, medium.SizeBytes, full.SizeBytes);
+
+        return new BulkCoverUploadResult(BaseKey: baseKey, MediumKey: medium.ObjectKey);
     }
+
+    /// <summary>
+    /// Bulk-import equivalent of <c>ReportService.CoverUploadResult</c>.
+    /// Kept private to this file so the two services stay independent —
+    /// bulk import doesn't depend on ReportService.
+    /// </summary>
+    private sealed record BulkCoverUploadResult(string BaseKey, string MediumKey);
 
     // ── Stage 2: Ingesting → Summarizing → Completed ───────────────────────
 

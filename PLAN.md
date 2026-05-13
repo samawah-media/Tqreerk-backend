@@ -565,15 +565,114 @@ image.
       for the happy path and would 307-loop any forwarded HTTP-equivalent
       probe. Kept a comment in `Program.cs` explaining when to re-enable.
 
-### P1 — Image / hero LCP path (TBD)
+### P1 — Image / hero LCP path ✅ (2026-05-13)
 
-The LCP element on a public report page is almost certainly the cover image
-served from GCS. Today's signed URLs are per-request and uncacheable.
+- [x] **Hosting model: public bucket prefix.** Covers now upload to
+      `public/covers/{coverId}/` with `PredefinedAcl=PublicRead` and
+      `Cache-Control: public, max-age=31536000, immutable`. URLs are
+      signature-free, fingerprinted by folder, and browser-cacheable for
+      a year. See `IFileStorage.UploadPublicAsync` /
+      `IFileStorage.GetPublicUrl` (added to the interface; implemented in
+      `GcsFileStorage` and `LocalFileStorage`).
+- [x] **Variants pre-generated at upload** — `CoverImageVariants.Generate`
+      emits three WebP payloads (thumb 320w / medium 768w / full 1280w)
+      from the decoded source, with no up-scaling. Wired into both
+      `ReportService.GenerateAndUploadCoverVariantsAsync` (manual upload
+      + resubmit) and `BulkImportProcessor.RenderAndUploadCoverAsync`
+      (PDF page-1 render).
+- [x] **DTO shape** — new `CoverImagesDto(Thumb, Medium, Full)` field on
+      `PublicReportListItemDto` + `PublicReportDetailDto`. Existing
+      `CoverImageUrl` field stays (now aliases the medium variant for
+      new uploads) so the frontend can migrate to `srcset` incrementally.
+- [x] **Schema** — `Report.CoverImageBaseKey` column added via migration
+      `20260513073733_Feature_CoverImageVariants`. Nullable; only new
+      uploads populate it. Legacy reports continue to render via the
+      signed-URL fallback on `CoverImageUrl`.
+- [x] **`PublicReportService`** now resolves covers via
+      `ResolveCoverAsync`: variants when `CoverImageBaseKey` is set,
+      signed-URL fallback otherwise. Both `/public/reports` and
+      `/public/reports/{slug}` return the new shape.
 
-- [ ] Decide hosting model for public report covers (public bucket with
-      long max-age vs cached signed URL string).
-- [ ] Pre-generate cover variants at upload (thumb 320w / medium 768w /
-      full 1280w, WebP + JPEG) and return a `coverUrls` map for `srcset`.
+### P1 — Operator runbook (one-time)
+
+**Two-bucket model.** The existing `taqreerk-uploads` bucket stays
+PAP-Enforced + UBLA-locked — it's the private store for PDFs,
+translations, legacy covers, and org files (all signed-URL-gated). A
+**new** bucket is created for public cover variants only; if its IAM
+policy is ever broadened by mistake, the worst case is exposing cover
+images (already meant for the public web), not PDFs.
+
+#### 1. Create the public bucket
+
+```bash
+gcloud storage buckets create gs://taqreerk-public-covers \
+  --location=me-central1 \
+  --uniform-bucket-level-access \
+  --no-public-access-prevention
+```
+
+- `--uniform-bucket-level-access` — IAM-only permissions (consistent
+  with the primary bucket).
+- `--no-public-access-prevention` — allow IAM grants to `allUsers`.
+  This is the deliberate trade-off; mitigated by keeping the bucket
+  scope-limited to cover variants.
+
+#### 2. Grant public read on the whole bucket
+
+No condition needed — the entire bucket is for public covers, and
+nothing private should ever land here:
+
+```bash
+gcloud storage buckets add-iam-policy-binding gs://taqreerk-public-covers \
+  --member='allUsers' \
+  --role='roles/storage.objectViewer'
+```
+
+#### 3. Add the bucket name as a GitHub secret
+
+The deploy workflows reference `secrets.CLOUD_STORAGE_PUBLIC_BUCKET`.
+In the repo settings → Secrets → Actions, add:
+
+| Name | Value |
+|---|---|
+| `CLOUD_STORAGE_PUBLIC_BUCKET` | `taqreerk-public-covers` |
+
+#### 4. (If using a separate bucket for prod later)
+
+Repeat steps 1–2 with a different name (e.g. `taqreerk-public-covers-prod`)
+and set the prod secret accordingly. Until then, both envs share the
+same public bucket; the bucket-prefix logic in `UploadPublicAsync`
+keeps their object keys isolated.
+
+#### Verify after a fresh cover upload
+
+```bash
+curl -sI "https://storage.googleapis.com/taqreerk-public-covers/public/covers/<id>/medium.webp"
+# Expect:
+#   HTTP/2 200
+#   content-type: image/webp
+#   cache-control: public, max-age=31536000, immutable
+```
+
+#### Safety properties
+
+| Concern | Mitigation |
+|---|---|
+| PDFs accidentally exposed by a broad IAM grant | PDFs live in the PAP-Enforced `taqreerk-uploads` bucket — no public IAM grant is even *possible* against it. |
+| Public cover bucket misconfigured to a different role | Worst case: cover thumbnails (designed-to-be-public images) become writable / listable. No PDF exposure. |
+| Future engineer points `UploadAsync` at the public bucket | `UploadAsync` reads `GcsBucketName` (private); `UploadPublicAsync` reads `GcsPublicBucketName`. Code review + the `UploadPublicAsync` name make the boundary explicit. |
+
+### P1 — Known follow-ups (not blockers)
+
+- [ ] Read sites other than `PublicReportService` (org dashboard
+      projections in `ReportService`, `MeService.SavedReportsAsync`,
+      `CompareService`, `OrganizationAnalyticsService`) still sign the
+      `CoverImageUrl` field. They function correctly — signing a public
+      object works — but waste a sign-cycle per row. Worth migrating
+      when those endpoints come up on the perf board.
+- [ ] No GC for orphan cover folders. Resubmitting a report leaves the
+      old `public/covers/{coverId}/` orphan on GCS. Storage is cheap;
+      add a periodic sweep job once the cumulative cost matters.
 
 ### P2 — CDN + edge (TBD)
 
