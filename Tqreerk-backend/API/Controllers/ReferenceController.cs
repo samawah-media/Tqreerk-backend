@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 using Taqreerk.Application.DTOs.Organizations;
 using Taqreerk.Application.Interfaces;
 
@@ -19,12 +20,14 @@ public class ReferenceController : ControllerBase
 
     [HttpGet("countries")]
     [ResponseCache(Duration = 600)]
+    [OutputCache(PolicyName = "Reference")]
     [ProducesResponseType(typeof(IReadOnlyList<CountryDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetCountries(CancellationToken ct)
         => Ok(await _orgs.ListCountriesAsync(ct));
 
     [HttpGet("sectors")]
     [ResponseCache(Duration = 600)]
+    [OutputCache(PolicyName = "Reference")]
     [ProducesResponseType(typeof(IReadOnlyList<SectorDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetSectors(CancellationToken ct)
         => Ok(await _orgs.ListSectorsAsync(ct));

@@ -519,6 +519,111 @@ Tqreerk-backend/
 
 ---
 
+## Phase 6 — Frontend Performance Enablement (Lighthouse ≥ 90, LCP ≤ 2.5s on 4G)
+
+These are browser-rendered targets. The backend cannot produce them, but it
+owns TTFB, payload size, cache headers, and image delivery — roughly the
+first 800–1000 ms of any LCP. Frontend owns the rest (bundle, fonts,
+render-blocking JS, layout). Backend contract: **p75 TTFB ≤ 600 ms** on every
+endpoint the SPA hits during first paint, **≤ 20 KB compressed** for
+`/public/reports` page-1 default, and stable cacheable URLs for the hero
+image.
+
+### P0 — Backend-side LCP enablers ✅ (2026-05-13)
+
+- [x] Response compression (Brotli + Gzip, `CompressionLevel.Fastest`,
+      `EnableForHttps=true`) — wired in `ServiceExtensions.AddPerformance()`
+      and `app.UseResponseCompression()` early in the pipeline. Expected
+      ~80% shrink on `/public/reports` JSON, ~150–300 ms LCP win on 4G.
+- [x] `AddOutputCache()` + `app.UseOutputCache()` with named policies
+      (`PublicList`, `PublicFacets`, `PublicFeatured`, `PublicTrending`,
+      `PublicRecent`, `PublicRelated`, `PublicStats`, `Reference`).
+      `[OutputCache(PolicyName=...)]` added alongside `[ResponseCache]` on
+      `PublicReportsController` (5 of 6 endpoints — slug detail excluded
+      to keep cache memory bounded), `ReferenceController` (countries +
+      sectors), and `PublicStatsController`. ResponseCache headers kept so
+      CDN/browser caching still works.
+- [x] CORS preflight cache — `.SetPreflightMaxAge(TimeSpan.FromHours(2))`
+      on the `DefaultCors` policy. Saves one ~150 ms RTT per cold cross-
+      origin call.
+- [x] Cloud Run startup CPU boost — `--cpu-boost` added to
+      `deploy-production.yml` and `deploy-staging.yml`. Doubles CPU during
+      container startup, cutting cold-start ~30–50%.
+      *(Min-instances bump deferred per direction; staying at 1/0
+      prod/staging.)*
+- [x] ReadyToRun — `<PublishReadyToRun Condition="...Release...">true`
+      in `Tqreerk-backend.csproj`. Native pre-JIT cuts cold-start
+      ~30–50% on top of `--cpu-boost`.
+- [x] Npgsql pool tuning — `MinPoolSize=5`, `MaxPoolSize=20`,
+      `ConnectionIdleLifetime=60` injected via
+      `NpgsqlConnectionStringBuilder` in `AddDatabase()`. Keeps 5 warm
+      connections per instance and caps blast radius at 20 (vs default
+      100) so 20 instances × 20 ≤ Cloud SQL's connection ceiling.
+      Operator can still override via env-var connection string.
+- [x] Dropped `app.UseHttpsRedirection()` — Cloud Run terminates TLS at
+      the LB and only exposes `:443` externally; the redirect was a no-op
+      for the happy path and would 307-loop any forwarded HTTP-equivalent
+      probe. Kept a comment in `Program.cs` explaining when to re-enable.
+
+### P1 — Image / hero LCP path (TBD)
+
+The LCP element on a public report page is almost certainly the cover image
+served from GCS. Today's signed URLs are per-request and uncacheable.
+
+- [ ] Decide hosting model for public report covers (public bucket with
+      long max-age vs cached signed URL string).
+- [ ] Pre-generate cover variants at upload (thumb 320w / medium 768w /
+      full 1280w, WebP + JPEG) and return a `coverUrls` map for `srcset`.
+
+### P2 — CDN + edge (TBD)
+
+- [ ] Cloud CDN in front of Cloud Run (Cloud LB + serverless NEG).
+      Anonymous endpoints already emit correct `Cache-Control` from
+      `[ResponseCache]`; CDN can honour them as-is.
+- [ ] HTTP/3 / QUIC on the LB.
+- [ ] `Server-Timing` middleware so frontend RUM can attribute backend
+      slice of LCP.
+
+### P3 — Payload hygiene (TBD)
+
+- [ ] Audit `/public/reports` default response size (target ≤ 1.5 KB per
+      item compressed; ≤ 20 KB for page=1 pageSize=20).
+- [ ] `?fields=` projection or `*-mini` variant for index pages.
+- [ ] N+1 audit on public report endpoints (move from Phase 4).
+
+### Acceptance criteria
+
+| Metric | Target | How measured |
+|---|---|---|
+| Backend p75 TTFB on `/public/reports?page=1` (warm) | ≤ 250 ms | Synthetic 4G probe from Doha |
+| Backend p75 TTFB on `/public/reports?page=1` (cold) | ≤ 600 ms | post-deploy curl |
+| Backend p75 TTFB on `/public/reports/{slug}` | ≤ 300 ms | same |
+| `/public/reports` compressed payload | ≤ 20 KB at page=1, pageSize=20 | `curl -H 'Accept-Encoding: br' \| wc -c` |
+| Cover image `medium` variant size | ≤ 80 KB WebP | object size in GCS |
+| Cover image cache-control | `public, max-age=31536000, immutable` (or 1h-pinned signed URL) | response headers |
+| CDN hit rate on public read endpoints | ≥ 70% after warm-up | Cloud CDN metrics |
+
+### Out of scope (frontend owns)
+
+JS bundle / code splitting, font loading strategy, critical CSS inlining,
+image lazy-loading + `fetchpriority="high"` on hero, service worker, React
+hydration cost. Frontend will not hit ≥ 90 Lighthouse without doing those,
+regardless of what the backend ships.
+
+### Verification checklist (post-deploy)
+
+- [ ] `curl -sI -H 'Accept-Encoding: br' https://<host>/api/public/reports`
+      shows `content-encoding: br` and `cache-control: public, max-age=60`.
+- [ ] Second call to same URL within 60 s shows TTFB ≪ first call (output
+      cache hit).
+- [ ] `curl -sI -X OPTIONS -H 'Origin: https://taqreerk.com' -H 'Access-Control-Request-Method: GET' https://<host>/api/public/reports`
+      shows `access-control-max-age: 7200`.
+- [ ] Cloud Run revision in `gcloud run services describe taqreerk-backend-prod`
+      shows `startupCpuBoost: true`.
+- [ ] Cold-deploy `/healthz` first-200 time ≤ previous baseline (R2R win).
+
+---
+
 ## Open Issues / Watchlist (2026-05-04)
 
 - [ ] **Free-tier subscription auto-link gap** — `/api/usage/me` and other gated paths throw `InvalidOperationException("User has no active subscription")` (mapped to 409 by middleware) for at least one user. Registration is supposed to insert a row in `Subscriptions` with `Status = Active`; either the path is broken for some flow (org members? invited users?) or the backfill never ran in staging. Check [UsageService.cs:222-240](Tqreerk-backend/Application/Services/UsageService.cs#L222-L240) and registration logic.

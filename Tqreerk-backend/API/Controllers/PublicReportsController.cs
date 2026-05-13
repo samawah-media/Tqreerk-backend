@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 using Taqreerk.Application.DTOs.Reports;
 using Taqreerk.Application.Interfaces;
 
@@ -24,6 +25,7 @@ public class PublicReportsController : ControllerBase
     /// <summary>Paginated list of published reports with search + filters.</summary>
     [HttpGet]
     [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Any)]
+    [OutputCache(PolicyName = "PublicList")]
     [ProducesResponseType(typeof(PagedResult<PublicReportListItemDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> List(
         [FromQuery(Name = "q")] string? q = null,
@@ -62,6 +64,7 @@ public class PublicReportsController : ControllerBase
     /// every filter EXCEPT the dimension itself.</summary>
     [HttpGet("facets")]
     [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Any)]
+    [OutputCache(PolicyName = "PublicFacets")]
     [ProducesResponseType(typeof(PublicReportFacetsDto), StatusCodes.Status200OK)]
     public async Task<IActionResult> Facets(
         [FromQuery(Name = "q")] string? q = null,
@@ -94,11 +97,12 @@ public class PublicReportsController : ControllerBase
     /// SectorTop / CountryTop). Omit it to get hero + carousel
     /// fall-through.</summary>
     [HttpGet("featured")]
-    // Client/CDN-side caching only (5 min). Different ?take and ?section
-    // values use different URLs and therefore different cache entries
-    // automatically — VaryByQueryKeys would also enable server-side
-    // caching, which we don't run UseResponseCaching for.
+    // Two layers of cache: ResponseCache writes Cache-Control headers so any
+    // CDN / browser caches the response for 5 min, and OutputCache stores
+    // the rendered bytes in-process so the first hit of each (take, section)
+    // pair after instance start is the only one that touches the DB.
     [ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any)]
+    [OutputCache(PolicyName = "PublicFeatured")]
     [ProducesResponseType(typeof(IReadOnlyList<PublicReportListItemDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Featured(
         [FromQuery] int take = 5,
@@ -109,6 +113,7 @@ public class PublicReportsController : ControllerBase
     /// <summary>Most-viewed reports in the last 7 days.</summary>
     [HttpGet("trending")]
     [ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any)]
+    [OutputCache(PolicyName = "PublicTrending")]
     [ProducesResponseType(typeof(IReadOnlyList<PublicReportListItemDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Trending([FromQuery] int take = 5, CancellationToken ct = default)
         => Ok(await _reports.GetTrendingAsync(take, ct));
@@ -116,6 +121,7 @@ public class PublicReportsController : ControllerBase
     /// <summary>Most recent published reports.</summary>
     [HttpGet("recent")]
     [ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any)]
+    [OutputCache(PolicyName = "PublicRecent")]
     [ProducesResponseType(typeof(IReadOnlyList<PublicReportListItemDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Recent([FromQuery] int take = 8, CancellationToken ct = default)
         => Ok(await _reports.GetRecentAsync(take, ct));
@@ -131,6 +137,7 @@ public class PublicReportsController : ControllerBase
     /// overall as a backfill. Never includes the source report itself.</summary>
     [HttpGet("{slug}/related")]
     [ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any)]
+    [OutputCache(PolicyName = "PublicRelated")]
     [ProducesResponseType(typeof(IReadOnlyList<PublicReportListItemDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Related(
         string slug, [FromQuery] int take = 3, CancellationToken ct = default)

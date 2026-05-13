@@ -1,9 +1,12 @@
+using System.IO.Compression;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Npgsql;
 using Taqreerk.API.Authorization;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Services;
@@ -19,12 +22,101 @@ public static class ServiceExtensions
 {
     public static IServiceCollection AddDatabase(this IServiceCollection services, IConfiguration config)
     {
+        // Pool tuning: Npgsql defaults to MinPoolSize=0/MaxPoolSize=100 per
+        // process. On Cloud Run that means every instance can independently
+        // open 100 connections — multiplied across max-instances we'd blow
+        // past Cloud SQL's connection cap. We cap at 20 per instance (more
+        // than enough for our throughput) and keep 5 warm so the first
+        // request after idle doesn't pay TCP+SSL handshake to Cloud SQL.
+        // We only set these when not already specified in the connection
+        // string so an operator can still override via env var.
+        var raw = config.GetConnectionString("DefaultConnection")
+            ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is required.");
+        var builder = new NpgsqlConnectionStringBuilder(raw);
+        if (!builder.ContainsKey("Pooling")) builder.Pooling = true;
+        if (!builder.ContainsKey("Minimum Pool Size")) builder.MinPoolSize = 5;
+        if (!builder.ContainsKey("Maximum Pool Size")) builder.MaxPoolSize = 20;
+        if (!builder.ContainsKey("Connection Idle Lifetime")) builder.ConnectionIdleLifetime = 60;
+
         services.AddDbContext<TaqreerkDbContext>(options =>
             options.UseNpgsql(
-                config.GetConnectionString("DefaultConnection"),
+                builder.ConnectionString,
                 npgsql => npgsql.MigrationsAssembly(typeof(TaqreerkDbContext).Assembly.FullName)
             )
         );
+        return services;
+    }
+
+    public static IServiceCollection AddPerformance(this IServiceCollection services)
+    {
+        // Response compression — JSON list payloads (e.g. /api/public/reports
+        // with facets) easily reach 50-200 KB; on 4G that's 100-300 ms of
+        // transfer cost alone. Brotli typically shrinks JSON by 80-90%.
+        // EnableForHttps is required since Cloud Run terminates TLS at the LB
+        // but inbound to Kestrel is HTTPS-equivalent (X-Forwarded-Proto=https).
+        // BREACH risk is low: API responses don't reflect user-supplied
+        // secrets back in plaintext bodies.
+        services.AddResponseCompression(o =>
+        {
+            o.EnableForHttps = true;
+            o.Providers.Add<BrotliCompressionProvider>();
+            o.Providers.Add<GzipCompressionProvider>();
+            // application/json is included in ResponseCompressionDefaults
+            // already; we don't override the mime-types list.
+        });
+        // CompressionLevel.Fastest: for hot API paths the CPU cost of
+        // Optimal (~5-10× more CPU) outweighs the marginal extra shrink.
+        // We're optimizing TTFB, not bytes-on-disk.
+        services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+        services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
+        // Output caching — serves cached response bytes from in-process
+        // memory on a hit, skipping the controller + DB entirely. Different
+        // from [ResponseCache] which only writes Cache-Control headers and
+        // depends on the client/CDN to honour them. We keep both: header for
+        // CDN/browser, OutputCache for the first hit on each instance.
+        // 64 MB cache is well within the 1 GB Cloud Run allotment and large
+        // enough for hundreds of cached public-list responses.
+        services.AddOutputCache(o =>
+        {
+            o.SizeLimit = 64L * 1024 * 1024;
+            o.MaximumBodySize = 256L * 1024;
+            o.DefaultExpirationTimeSpan = TimeSpan.FromMinutes(5);
+
+            // Named policies referenced from [OutputCache(PolicyName=...)] on
+            // anonymous-readable controllers. Keeping them here (instead of
+            // duplicating Duration/VaryByQueryKeys per action) keeps the
+            // cache key surface auditable in one place.
+            o.AddPolicy("PublicList", b => b
+                .Expire(TimeSpan.FromSeconds(60))
+                .SetVaryByQuery(
+                    "q", "sectors", "countries", "organizations",
+                    "year_from", "year_to", "page_count_min", "page_count_max",
+                    "language", "sort", "page", "pageSize"));
+            o.AddPolicy("PublicFacets", b => b
+                .Expire(TimeSpan.FromSeconds(60))
+                .SetVaryByQuery(
+                    "q", "sectors", "countries", "organizations",
+                    "year_from", "year_to", "page_count_min", "page_count_max",
+                    "language"));
+            o.AddPolicy("PublicFeatured", b => b
+                .Expire(TimeSpan.FromMinutes(5))
+                .SetVaryByQuery("take", "section"));
+            o.AddPolicy("PublicTrending", b => b
+                .Expire(TimeSpan.FromMinutes(5))
+                .SetVaryByQuery("take"));
+            o.AddPolicy("PublicRecent", b => b
+                .Expire(TimeSpan.FromMinutes(5))
+                .SetVaryByQuery("take"));
+            o.AddPolicy("PublicRelated", b => b
+                .Expire(TimeSpan.FromMinutes(5))
+                .SetVaryByQuery("take"));
+            o.AddPolicy("PublicStats", b => b
+                .Expire(TimeSpan.FromMinutes(5)));
+            o.AddPolicy("Reference", b => b
+                .Expire(TimeSpan.FromMinutes(10)));
+        });
+
         return services;
     }
 

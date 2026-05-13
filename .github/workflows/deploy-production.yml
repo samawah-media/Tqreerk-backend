@@ -128,6 +128,7 @@ jobs:
             --port=8080
             --memory=1Gi
             --cpu=1
+            --cpu-boost
             --min-instances=1
             --max-instances=20
             --timeout=300

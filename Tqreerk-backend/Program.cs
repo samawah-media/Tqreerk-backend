@@ -55,8 +55,17 @@ builder.Services.AddCors(options =>
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials()
+              // Cache preflight responses for 2 h. Without this, browsers
+              // emit an OPTIONS request before every cross-origin call —
+              // on 4G that's an extra ~150 ms RTT per cold endpoint hit.
+              // 2 h is below Chromium's 7200 s cap.
+              .SetPreflightMaxAge(TimeSpan.FromHours(2))
     )
 );
+
+// Performance: response compression (Brotli/Gzip) + output caching.
+// See AddPerformance for the rationale on each option.
+builder.Services.AddPerformance();
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 // Migrations are applied by the CI/CD pipeline before each deploy (see
@@ -76,16 +85,23 @@ if (app.Environment.IsDevelopment())
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
+// Compression runs as outer middleware so cached/static/dynamic responses
+// alike get Brotli'd on the way out. Must be registered before any
+// middleware that writes response bodies (auth, controllers).
+app.UseResponseCompression();
+
 if (!app.Environment.IsProduction())
 {
     app.UseSwagger();
     app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Taqreerk API v1"));
 }
 
-if (!app.Environment.IsDevelopment())
-{
-    app.UseHttpsRedirection();
-}
+// HTTPS redirection is intentionally NOT enabled. Cloud Run terminates TLS
+// at its frontend LB and only exposes :443 externally — there is no http://
+// path a client could reach our container with. UseHttpsRedirection here
+// would inspect the proxied connection (which is plain HTTP to Kestrel)
+// and try to 307 already-HTTPS clients back to themselves. Re-enable only
+// if we move off Cloud Run and have to handle http:// ingress in-app.
 
 
 // Serve files from the local-storage root when the LocalFileStorage provider is in use.
@@ -116,6 +132,12 @@ app.UseAuthorization();
 // read is cached for 30s in IMemoryCache so per-request overhead is
 // effectively zero.
 app.UseMiddleware<MaintenanceMiddleware>();
+
+// Output cache must run after auth/maintenance (so cached responses don't
+// bypass them) and before MapControllers (so the cache short-circuits
+// controller execution on a hit). Endpoints opt-in via [OutputCache(...)]
+// with a named PolicyName defined in AddPerformance().
+app.UseOutputCache();
 
 // Endpoints must be registered after UseAuthorization()
 app.MapGet("/healthz", async (TaqreerkDbContext db) =>
