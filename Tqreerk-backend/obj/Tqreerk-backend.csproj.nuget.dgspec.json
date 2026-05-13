@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "c:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj": {}
+    "C:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj": {}
   },
   "projects": {
-    "c:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj": {
+    "C:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "c:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
+        "projectUniqueName": "C:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
         "projectName": "Tqreerk-backend",
-        "projectPath": "c:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
+        "projectPath": "C:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
         "packagesPath": "C:\\Users\\sheha\\.nuget\\packages\\",
-        "outputPath": "c:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\obj\\",
+        "outputPath": "C:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
@@ -129,15 +129,19 @@
               "version": "[8.0.23, 8.0.23]"
             },
             {
+              "name": "Microsoft.AspNetCore.App.Runtime.linux-x64",
+              "version": "[8.0.23, 8.0.23]"
+            },
+            {
               "name": "Microsoft.NETCore.App.Crossgen2.win-x64",
               "version": "[8.0.23, 8.0.23]"
             },
             {
-              "name": "Microsoft.NETCore.App.Host.win-x64",
+              "name": "Microsoft.NETCore.App.Ref",
               "version": "[8.0.23, 8.0.23]"
             },
             {
-              "name": "Microsoft.NETCore.App.Ref",
+              "name": "Microsoft.NETCore.App.Runtime.linux-x64",
               "version": "[8.0.23, 8.0.23]"
             },
             {
@@ -154,6 +158,11 @@
             }
           },
           "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.102/PortableRuntimeIdentifierGraph.json"
+        }
+      },
+      "runtimes": {
+        "linux-x64": {
+          "#import": []
         }
       }
     }

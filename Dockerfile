@@ -3,11 +3,21 @@ WORKDIR /src
 
 COPY ["Tqreerk-backend.sln", "./"]
 COPY ["Tqreerk-backend/Tqreerk-backend.csproj", "Tqreerk-backend/"]
-RUN dotnet restore "Tqreerk-backend/Tqreerk-backend.csproj"
+# Restore for linux-x64 explicitly. PublishReadyToRun (set in the csproj
+# for Release builds) triggers an RID-specific publish; without --runtime
+# here the restore writes a portable assets file and the publish step
+# fails with NETSDK1047 "doesn't have a target for net8.0/linux-x64".
+RUN dotnet restore "Tqreerk-backend/Tqreerk-backend.csproj" --runtime linux-x64
 
 COPY . .
+# --runtime linux-x64 matches the restore above. --no-self-contained keeps
+# the publish framework-dependent — the final stage's `aspnet:8.0` base
+# image already ships the runtime, so bundling it would only inflate the
+# image by ~80 MB for no win.
 RUN dotnet publish "Tqreerk-backend/Tqreerk-backend.csproj" \
     -c Release \
+    --runtime linux-x64 \
+    --no-self-contained \
     -o /app/publish \
     /p:UseAppHost=false \
     --no-restore

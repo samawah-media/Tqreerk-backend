@@ -137,6 +137,22 @@ public class AiServiceClient : IAiServiceClient
         );
     }
 
+    public async Task<TranslateTextResult> TranslateTextAsync(
+        string text, string targetLanguage, CancellationToken ct = default)
+    {
+        // /tools/translate-text on the Python side is a thin Gemini wrapper.
+        // Body shape matches the FastAPI TranslateTextRequest exactly:
+        //   { text, target_language }
+        // Response: { translated_text, target_language }.
+        var body = new { text, target_language = targetLanguage };
+        var raw = await PostAsync("tools/translate-text", body, ct);
+        var dto = JsonSerializer.Deserialize<TranslateTextResponseDto>(raw, Json)
+            ?? throw new InvalidOperationException("ai-service returned empty translate-text response");
+        return new TranslateTextResult(
+            dto.translated_text ?? string.Empty,
+            dto.target_language ?? targetLanguage);
+    }
+
     public async Task<CompareResult> CompareAsync(IReadOnlyList<Guid> reportIds, CancellationToken ct = default)
     {
         // The Python service mounts every endpoint under /api/ai/* — and the
@@ -307,5 +323,7 @@ public class AiServiceClient : IAiServiceClient
 
     private sealed record TranslateResponseDto(
         Guid report_id, string? target_language, string? source_language, string? translated_file_url);
+
+    private sealed record TranslateTextResponseDto(string? translated_text, string? target_language);
 #pragma warning restore IDE1006
 }
