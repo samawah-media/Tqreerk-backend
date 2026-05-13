@@ -95,7 +95,12 @@ public class GeminiTextTranslator : IGeminiTextTranslator
         {
             contents = new[]
             {
-                new { parts = new[] { new { text = prompt } } },
+                // Vertex AI requires `role` on every content entry; valid
+                // values are "user" (prompts) and "model" (responses).
+                // AI Studio is permissive about omitting it but Vertex
+                // returns 400 "Please use a valid role: user, model."
+                // We only ever send a single user-turn so this is constant.
+                new { role = "user", parts = new[] { new { text = prompt } } },
             },
             generationConfig = new
             {
