@@ -3709,6 +3709,24 @@
     ]
   },
   {
+    "ContainingType": "Taqreerk.API.Controllers.ReferenceController",
+    "Method": "GetPlans",
+    "RelativePath": "api/plans",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": [
+      {
+        "Type": "System.Collections.Generic.IReadOnlyList\u00601[[Taqreerk.Application.DTOs.Plans.PublicPlanDto, Tqreerk-backend, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
     "ContainingType": "Taqreerk.API.Controllers.PublicReportsController",
     "Method": "List",
     "RelativePath": "api/public/reports",
