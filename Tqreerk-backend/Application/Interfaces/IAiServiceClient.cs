@@ -62,16 +62,6 @@ public interface IAiServiceClient
     /// per returned job id.
     Task<IReadOnlyList<BulkJobResult>> BulkSummarizeAsync(
         IReadOnlyList<Guid> reportIds, CancellationToken ct = default);
-
-    /// POST /tools/translate-text — ad-hoc translation of a short passage
-    /// (≤ 5000 chars) via Gemini. Used by the PDF-reader selection toolbar,
-    /// not the full-document translate pipeline. Synchronous JSON RPC, no
-    /// job queue. The Python side enforces the 5000-char cap; callers
-    /// should validate input length before paying the round-trip.
-    Task<TranslateTextResult> TranslateTextAsync(
-        string text,
-        string targetLanguage,
-        CancellationToken ct = default);
 }
 
 /// One row of the /bulk/ingest request — exactly what the Python side
@@ -108,11 +98,6 @@ public record SummarizeResult(
     string IndicatorsJson,
     string TrendsJson);
 public record TranslateResult(Guid ReportId, string TargetLanguage, string SourceLanguage, string TranslatedFileUrl);
-
-/// Result of /tools/translate-text. Distinct from <see cref="TranslateResult"/>
-/// (which translates an entire PDF and returns a file URL) — this one returns
-/// the translated string inline because the input is just a passage of text.
-public record TranslateTextResult(string TranslatedText, string TargetLanguage);
 
 /// Compare layer 1 — one entry per (reportA, reportB) ordered pair the
 /// Python service returns. Score is in [0,1]; higher means more similar.

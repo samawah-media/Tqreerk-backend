@@ -8,30 +8,32 @@ using Taqreerk.Domain.Enums;
 namespace Taqreerk.API.Controllers;
 
 /// <summary>
-/// Thin proxy in front of the Python ai-service's /tools/* routes. Same
-/// rationale as ChatController: the ai-service has no auth of its own and
-/// is not reachable from the browser in production. The .NET layer enforces
-/// JWT auth + freemium quota and forwards the user-supplied text payload
-/// via the typed AiServiceClient.
-///
-/// Unlike chat (SSE, streaming), tools are short synchronous JSON RPCs, so
-/// we use IAiServiceClient instead of a raw HttpClient.
+/// Short-passage AI helpers for the PDF reader. Unlike <see cref="ChatController"/>
+/// (which proxies to the Python ai-service because chat needs LangGraph
+/// + RAG + groundedness + caches), translate-text is a single Gemini RPC
+/// and we call Gemini directly from .NET via <see cref="IGeminiTextTranslator"/>.
+/// Drops one Cloud-Run-to-Cloud-Run hop on a hot interactive path and
+/// removes ai-service availability as a SPOF for this feature.
 /// </summary>
 [ApiController]
 [Route("api/ai/tools")]
 [Authorize]
 public class AiToolsController : ControllerBase
 {
-    // Matches Python's TranslateTextRequest cap. Validating here avoids a
-    // round-trip just to get a 422 back.
+    // Validating here avoids paying for a Gemini round-trip just to discover
+    // the input was too long. The 5000-char cap matches the original Python
+    // tools.py contract so the frontend doesn't have to know which path it
+    // hit if we ever bring ai-service back into the loop.
     private const int MaxTextLength = 5000;
 
-    private readonly IAiServiceClient _ai;
+    private readonly IGeminiTextTranslator _translator;
     private readonly ILogger<AiToolsController> _logger;
 
-    public AiToolsController(IAiServiceClient ai, ILogger<AiToolsController> logger)
+    public AiToolsController(
+        IGeminiTextTranslator translator,
+        ILogger<AiToolsController> logger)
     {
-        _ai = ai;
+        _translator = translator;
         _logger = logger;
     }
 
@@ -60,17 +62,18 @@ public class AiToolsController : ControllerBase
 
         try
         {
-            var result = await _ai.TranslateTextAsync(req.Text, target, ct);
-            return Ok(new TranslateTextResponse(result.TranslatedText, result.TargetLanguage));
+            var translated = await _translator.TranslateAsync(req.Text, target, ct);
+            return Ok(new TranslateTextResponse(translated, target));
         }
-        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
-            // AiServiceClient.PostAsync wraps non-2xx + transport failures as
-            // InvalidOperationException with the upstream body in the message.
-            // ExceptionHandlingMiddleware's default mapping for that exception
-            // type is 409, which is wrong here — surface a 502 so the
-            // frontend can show "translation service unavailable" cleanly.
-            _logger.LogWarning(ex, "[ai-tools] translate-text upstream failed");
+            // GeminiTextTranslator throws InvalidOperationException on non-2xx
+            // and HttpRequestException on transport failure. TaskCanceledException
+            // covers the per-request timeout. ExceptionHandlingMiddleware's
+            // default for InvalidOperationException is 409 (Conflict) which is
+            // wrong for an upstream failure — return 502 explicitly so the
+            // frontend shows "translation service unavailable" cleanly.
+            _logger.LogWarning(ex, "[ai-tools] translate-text failed");
             return StatusCode(StatusCodes.Status502BadGateway,
                 new { error = "translation service unavailable" });
         }

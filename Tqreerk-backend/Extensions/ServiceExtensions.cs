@@ -153,6 +153,7 @@ public static class ServiceExtensions
         services.Configure<EmailSettings>(config.GetSection(EmailSettings.Section));
         services.Configure<FileStorageSettings>(config.GetSection(FileStorageSettings.Section));
         services.Configure<AiServiceSettings>(config.GetSection(AiServiceSettings.Section));
+        services.Configure<GeminiSettings>(config.GetSection(GeminiSettings.Section));
         services.Configure<AdminWorkerSettings>(config.GetSection(AdminWorkerSettings.Section));
         services.Configure<QuotaSettings>(config.GetSection(QuotaSettings.Section));
 
@@ -212,6 +213,14 @@ public static class ServiceExtensions
         // long-running RPC (ingest can take minutes); the per-call timeout is
         // controlled via AiServiceSettings.TimeoutSeconds inside the client.
         services.AddHttpClient<IAiServiceClient, AiServiceClient>();
+
+        // Typed HttpClient that talks DIRECTLY to Gemini for short-passage
+        // translation (the PDF-reader selection toolbar). Bypasses the
+        // ai-service to drop one Cloud-Run-to-Cloud-Run hop on a hot
+        // interactive path. The other Gemini-backed flows (chat, ingest,
+        // summarize, document translate) still proxy through ai-service
+        // because they need the chunking + RAG + job-queue machinery there.
+        services.AddHttpClient<IGeminiTextTranslator, GeminiTextTranslator>();
 
         // Bulk-import (admin Excel-driven third-party report ingestion).
         // The service handles parse + queue; the processor pumps rows
