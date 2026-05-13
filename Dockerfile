@@ -7,7 +7,16 @@ COPY ["Tqreerk-backend/Tqreerk-backend.csproj", "Tqreerk-backend/"]
 # for Release builds) triggers an RID-specific publish; without --runtime
 # here the restore writes a portable assets file and the publish step
 # fails with NETSDK1047 "doesn't have a target for net8.0/linux-x64".
-RUN dotnet restore "Tqreerk-backend/Tqreerk-backend.csproj" --runtime linux-x64
+#
+# -p:PublishReadyToRun=true is the second piece: `dotnet restore` defaults
+# to Configuration=Debug, so the csproj's <PublishReadyToRun ... Release>
+# condition does NOT fire here, and the R2R runtime package (carrying
+# crossgen2) never gets pulled. Then the publish step would fail with
+# NETSDK1094 "a valid runtime package was not found". Forcing the flag
+# at restore time guarantees the package is on disk before publish runs.
+RUN dotnet restore "Tqreerk-backend/Tqreerk-backend.csproj" \
+    --runtime linux-x64 \
+    -p:PublishReadyToRun=true
 
 COPY . .
 # --runtime linux-x64 matches the restore above. --no-self-contained keeps

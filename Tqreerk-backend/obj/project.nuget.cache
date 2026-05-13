@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "mnFMgrJNXyQ=",
+  "dgSpecHash": "aG25dYtJToA=",
   "success": true,
   "projectFilePath": "C:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
   "expectedPackageFiles": [
@@ -113,7 +113,9 @@
     "C:\\Users\\sheha\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.23\\microsoft.windowsdesktop.app.ref.8.0.23.nupkg.sha512",
     "C:\\Users\\sheha\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.23\\microsoft.aspnetcore.app.ref.8.0.23.nupkg.sha512",
     "C:\\Users\\sheha\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.linux-x64\\8.0.23\\microsoft.aspnetcore.app.runtime.linux-x64.8.0.23.nupkg.sha512",
-    "C:\\Users\\sheha\\.nuget\\packages\\microsoft.netcore.app.crossgen2.win-x64\\8.0.23\\microsoft.netcore.app.crossgen2.win-x64.8.0.23.nupkg.sha512"
+    "C:\\Users\\sheha\\.nuget\\packages\\microsoft.netcore.app.crossgen2.win-x64\\8.0.23\\microsoft.netcore.app.crossgen2.win-x64.8.0.23.nupkg.sha512",
+    "C:\\Users\\sheha\\.nuget\\packages\\microsoft.netcore.app.host.win-x64\\8.0.23\\microsoft.netcore.app.host.win-x64.8.0.23.nupkg.sha512",
+    "C:\\Users\\sheha\\.nuget\\packages\\microsoft.netcore.app.host.linux-x64\\8.0.23\\microsoft.netcore.app.host.linux-x64.8.0.23.nupkg.sha512"
   ],
   "logs": []
 }
