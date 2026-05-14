@@ -3,7 +3,9 @@ name: Deploy AI Service — Staging
 on:
   push:
     branches: ["staging"]
-    paths: ["ai-service/**"]
+    paths:
+      - "ai-service/**"
+      - ".github/workflows/deploy-ai-service-staging.yml"
   workflow_dispatch:
 
 env:

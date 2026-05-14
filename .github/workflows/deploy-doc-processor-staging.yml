@@ -3,7 +3,9 @@ name: Deploy Doc Processor — Staging
 on:
   push:
     branches: ["staging"]
-    paths: ["doc-processor/**"]
+    paths:
+      - "doc-processor/**"
+      - ".github/workflows/deploy-doc-processor-staging.yml"
   # Manual trigger so we can redeploy without a code change (e.g. to pick
   # up a new model weight pre-download or refresh CUDA layer cache).
   workflow_dispatch:

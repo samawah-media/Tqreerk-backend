@@ -3,7 +3,9 @@ name: Deploy AI Service — Production
 on:
   push:
     branches: ["production"]
-    paths: ["ai-service/**"]
+    paths:
+      - "ai-service/**"
+      - ".github/workflows/deploy-ai-service-production.yml"
   workflow_dispatch:
 
 env:

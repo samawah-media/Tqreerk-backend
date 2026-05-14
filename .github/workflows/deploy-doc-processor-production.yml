@@ -3,7 +3,9 @@ name: Deploy Doc Processor — Production
 on:
   push:
     branches: ["production"]
-    paths: ["doc-processor/**"]
+    paths:
+      - "doc-processor/**"
+      - ".github/workflows/deploy-doc-processor-production.yml"
   # Manual trigger so we can redeploy without a code change.
   workflow_dispatch:
 
