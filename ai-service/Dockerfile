@@ -16,6 +16,7 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 
 
+
 # Single image, two roles. The Cloud Run service sets WORKER_MODE per-deployment:
 #   • WORKER_MODE=api    → FastAPI server on $PORT (default 8080)
 #   • WORKER_MODE=worker → polling loop over ai_jobs (FOR UPDATE SKIP LOCKED)
