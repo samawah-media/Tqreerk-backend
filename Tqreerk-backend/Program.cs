@@ -51,16 +51,26 @@ builder.Services.AddSwaggerWithAuth();
 
 builder.Services.AddCors(options =>
     options.AddPolicy("DefaultCors", policy =>
-        policy.WithOrigins(builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? ["http://localhost:5173"])
-              .AllowAnyHeader()
+    {
+        var origins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? ["http://localhost:5173"];
+        // "*" means any origin — used as a temporary opening before real
+        // prod URLs are known. AllowAnyOrigin is incompatible with
+        // AllowCredentials (browser spec), so cookies/Authorization headers
+        // are NOT sent cross-origin in wildcard mode; switch to specific
+        // origins once they're known.
+        if (origins.Contains("*"))
+            policy.AllowAnyOrigin();
+        else
+            policy.WithOrigins(origins).AllowCredentials();
+
+        policy.AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials()
               // Cache preflight responses for 2 h. Without this, browsers
               // emit an OPTIONS request before every cross-origin call —
               // on 4G that's an extra ~150 ms RTT per cold endpoint hit.
               // 2 h is below Chromium's 7200 s cap.
-              .SetPreflightMaxAge(TimeSpan.FromHours(2))
-    )
+              .SetPreflightMaxAge(TimeSpan.FromHours(2));
+    })
 );
 
 // Performance: response compression (Brotli/Gzip) + output caching.
