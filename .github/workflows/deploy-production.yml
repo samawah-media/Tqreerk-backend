@@ -130,11 +130,11 @@ jobs:
           flags: >-
             --allow-unauthenticated
             --port=8080
-            --memory=1Gi
+            --memory=2Gi
             --cpu=1
             --cpu-boost
-            --min-instances=1
-            --max-instances=20
+            --min-instances=0
+            --max-instances=5
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
@@ -169,7 +169,7 @@ jobs:
 
       - name: Verify deployment & migration
         run: |
-          URL="${{ steps.deploy.outputs.url }}/healthz"
+          URL="${{ steps.deploy.outputs.url }}/healthz/"
           echo "Polling $URL ..."
           for i in $(seq 1 10); do
             RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
