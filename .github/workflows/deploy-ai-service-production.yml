@@ -81,6 +81,8 @@ jobs:
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             ENVIRONMENT=production
             WORKER_URL=https://taqreerk-ai-worker-prod-912038409401.me-central1.run.app
+            DOC_PROCESSOR_ENABLED=true
+            DOC_PROCESSOR_URL=https://taqreerk-doc-processor-prod-912038409401.europe-west4.run.app
             LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}
             LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
