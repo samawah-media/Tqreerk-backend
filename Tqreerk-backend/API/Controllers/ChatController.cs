@@ -203,6 +203,14 @@ public class ChatController : ControllerBase
         Response.ContentType = resp.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
         Response.Headers["Cache-Control"] = "no-cache";
         Response.Headers["X-Accel-Buffering"] = "no";
+        // Force the response compression middleware (registered in Program.cs
+        // via UseResponseCompression) to skip this response. text/event-stream
+        // isn't in its default MimeTypes so it *should* skip on its own, but
+        // setting Content-Encoding explicitly is what the middleware actually
+        // tests in ShouldCompressResponse — once it's non-empty, compression
+        // is bypassed without any chance of the BrotliStream/GzipStream wrapper
+        // batching our per-token flushes.
+        Response.Headers["Content-Encoding"] = "identity";
         // Disable response-body buffering on Kestrel side too.
         var feature = HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>();
         feature?.DisableBuffering();
