@@ -158,7 +158,7 @@ jobs:
             AiService__TranslationOutputPrefix=gs://taqreerk-uploads/taqreerk-uploads-dev/translations
             Gemini__ProjectId=${{ env.PROJECT_ID }}
             Gemini__Region=global
-            AllowedOrigins__0=*
+            AllowedOrigins__0=https://user-app-production-912038409401.me-central1.run.app
             Quota__Enabled=true
             Quota__DailyIngestPerOrg=50
             Quota__DailyTranslatePerOrg=25
