@@ -109,11 +109,6 @@ jobs:
       # Same image, WORKER_MODE=worker. Polls ai_jobs with FOR UPDATE SKIP LOCKED.
       # min-instances=0 to save cost. The API wakes it via WORKER_URL ping on
       # each new job insert — cold start is ~10s, acceptable for async ingest.
-      #
-      # TODO: set DOC_PROCESSOR_URL env var after the first doc-processor prod
-      # deploy. Fetch with:
-      #   gcloud run services describe taqreerk-doc-processor-prod \
-      #     --region <GPU_REGION> --format "value(status.url)"
       - name: Deploy Worker to Cloud Run (Production)
         uses: google-github-actions/deploy-cloudrun@v2
         with:
@@ -140,6 +135,7 @@ jobs:
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             ENVIRONMENT=production
             DOC_PROCESSOR_ENABLED=true
+            DOC_PROCESSOR_URL=https://taqreerk-doc-processor-prod-912038409401.europe-west4.run.app
             LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}
             LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
