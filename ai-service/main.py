@@ -214,12 +214,41 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
-@app.middleware("http")
-async def add_request_id(request: Request, call_next):
-    request.state.request_id = str(uuid.uuid4())
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request.state.request_id
-    return response
+class RequestIdMiddleware:
+    """Adds X-Request-ID to every response without breaking streaming.
+
+    Why: @app.middleware("http") wraps the handler in BaseHTTPMiddleware,
+    which awaits the full response body before returning — fine for JSON,
+    fatal for SSE (the chat stream would buffer to `done` before any byte
+    reached the client). This pure ASGI middleware only mutates headers
+    on http.response.start and forwards body events as they arrive, so
+    StreamingResponse generators flush per-yield as intended.
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = str(uuid.uuid4())
+        # scope["state"] backs `request.state` on Starlette ≥ 0.27, so the
+        # exception handlers above keep reading request.state.request_id.
+        scope.setdefault("state", {})["request_id"] = request_id
+        request_id_bytes = request_id.encode()
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"x-request-id", request_id_bytes))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app.add_middleware(RequestIdMiddleware)
 
 
 @app.get("/health")
