@@ -4,6 +4,7 @@ on:
   push:
     branches: ["production"]
     paths: ["ai-service/**"]
+  workflow_dispatch:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -63,10 +64,10 @@ jobs:
           flags: >-
             --allow-unauthenticated
             --port=8080
-            --memory=1Gi
-            --cpu=1
-            --min-instances=1
-            --max-instances=10
+            --memory=2Gi
+            --cpu=2
+            --min-instances=0
+            --max-instances=3
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
@@ -77,6 +78,7 @@ jobs:
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             ENVIRONMENT=production
+            WORKER_URL=https://taqreerk-ai-worker-prod-912038409401.me-central1.run.app
             LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}
             LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -104,9 +106,14 @@ jobs:
           exit 1
 
       # ── Worker service ──────────────────────────────────────────────────────
-      # Same image, WORKER_MODE=worker. min-instances=1 keeps one worker warm
-      # so jobs are picked up within poll_interval seconds, not after a cold start.
-      # max-instances=2 allows a second worker during bulk ingest spikes.
+      # Same image, WORKER_MODE=worker. Polls ai_jobs with FOR UPDATE SKIP LOCKED.
+      # min-instances=0 to save cost. The API wakes it via WORKER_URL ping on
+      # each new job insert — cold start is ~10s, acceptable for async ingest.
+      #
+      # TODO: set DOC_PROCESSOR_URL env var after the first doc-processor prod
+      # deploy. Fetch with:
+      #   gcloud run services describe taqreerk-doc-processor-prod \
+      #     --region <GPU_REGION> --format "value(status.url)"
       - name: Deploy Worker to Cloud Run (Production)
         uses: google-github-actions/deploy-cloudrun@v2
         with:
@@ -116,10 +123,10 @@ jobs:
           flags: >-
             --no-allow-unauthenticated
             --port=8080
-            --memory=1Gi
-            --cpu=1
-            --min-instances=1
-            --max-instances=2
+            --memory=2Gi
+            --cpu=2
+            --min-instances=0
+            --max-instances=3
             --timeout=900
             --no-cpu-throttling
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -132,6 +139,7 @@ jobs:
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             ENVIRONMENT=production
+            DOC_PROCESSOR_ENABLED=true
             LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}
             LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}
             LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}

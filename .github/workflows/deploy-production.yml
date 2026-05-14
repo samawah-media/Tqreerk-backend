@@ -130,11 +130,11 @@ jobs:
           flags: >-
             --allow-unauthenticated
             --port=8080
-            --memory=1Gi
+            --memory=2Gi
             --cpu=1
             --cpu-boost
-            --min-instances=1
-            --max-instances=20
+            --min-instances=0
+            --max-instances=5
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
@@ -152,12 +152,13 @@ jobs:
             FileStorage__Provider=gcs
             FileStorage__GcsBucketName=${{ secrets.CLOUD_STORAGE_BUCKET }}
             FileStorage__GcsPublicBucketName=${{ secrets.CLOUD_STORAGE_PUBLIC_BUCKET }}
-            AiService__BaseUrl=${{ secrets.AI_SERVICE_BASE_URL_PRODUCTION }}
+            AiService__BaseUrl=https://taqreerk-ai-service-prod-912038409401.me-central1.run.app/api/ai
             AiService__TimeoutSeconds=300
             AiService__WorkerPollSeconds=5
-            AiService__TranslationOutputPrefix=${{ secrets.AI_SERVICE_TRANSLATION_OUTPUT_PREFIX_PRODUCTION }}
+            AiService__TranslationOutputPrefix=gs://taqreerk-uploads/taqreerk-uploads-dev/translations
             Gemini__ProjectId=${{ env.PROJECT_ID }}
             Gemini__Region=global
+            AllowedOrigins__0=*
             Quota__Enabled=true
             Quota__DailyIngestPerOrg=50
             Quota__DailyTranslatePerOrg=25
@@ -168,7 +169,7 @@ jobs:
 
       - name: Verify deployment & migration
         run: |
-          URL="${{ steps.deploy.outputs.url }}/healthz"
+          URL="${{ steps.deploy.outputs.url }}/healthz/"
           echo "Polling $URL ..."
           for i in $(seq 1 10); do
             RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")

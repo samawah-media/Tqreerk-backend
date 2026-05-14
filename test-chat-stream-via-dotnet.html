@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Chat stream test — via .NET proxy</title>
+  <style>
+    body { font-family: system-ui; padding: 20px; max-width: 900px; }
+    input, button, textarea { padding: 8px; font-size: 14px; font-family: inherit; }
+    input, textarea { width: 100%; box-sizing: border-box; }
+    textarea { height: 60px; font-family: monospace; font-size: 11px; }
+    .row { margin-bottom: 12px; }
+    .row label { display: block; font-weight: 600; margin-bottom: 4px; }
+    #log { white-space: pre-wrap; margin-top: 16px; padding: 12px; border: 1px solid #ccc; min-height: 200px; font-family: monospace; font-size: 12px; background: #fafafa; }
+    .ts { color: #888; }
+    .tok { color: #0a0; }
+    .meta { color: #06c; }
+    .err { color: #c00; }
+    .summary { margin-top: 10px; padding: 8px; background: #fff8d6; border: 1px solid #e0c060; font-family: monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>Taqreerk chat — streaming test via .NET proxy</h2>
+  <p style="color:#555;font-size:13px;">
+    Every chunk that arrives from the network is timestamped relative to the
+    moment <code>fetch()</code> resolved. If the .NET proxy is buffering,
+    you'll see one big chunk at the end. If it's streaming, you'll see many
+    chunks spread over time.
+  </p>
+
+  <div class="row">
+    <label>.NET service URL (no trailing slash):</label>
+    <input id="base" value="https://user-app-staging-bo6ogywxvq-ww.a.run.app" />
+  </div>
+
+  <div class="row">
+    <label>Session ID:</label>
+    <input id="sid" placeholder="UUID of an existing chat session" />
+  </div>
+
+  <div class="row">
+    <label>JWT (paste from DevTools → Application → Cookies/LocalStorage, or from a fresh login response):</label>
+    <textarea id="jwt" placeholder="eyJhbGciOi..."></textarea>
+  </div>
+
+  <div class="row">
+    <label>Message:</label>
+    <input id="msg" value="ما أبرز النتائج؟" />
+  </div>
+
+  <button onclick="send()">Send</button>
+
+  <div id="summary" class="summary" style="display:none"></div>
+  <div id="log"></div>
+
+<script>
+async function send() {
+  const logEl = document.getElementById('log');
+  const summaryEl = document.getElementById('summary');
+  logEl.innerHTML = '';
+  summaryEl.style.display = 'none';
+  summaryEl.textContent = '';
+
+  const base = document.getElementById('base').value.replace(/\/+$/, '');
+  const sid  = document.getElementById('sid').value.trim();
+  const jwt  = document.getElementById('jwt').value.trim();
+  const msg  = document.getElementById('msg').value;
+
+  if (!sid)  return alert('Session ID required');
+  if (!jwt)  return alert('JWT required');
+
+  const url = `${base}/api/chat/sessions/${sid}/messages`;
+
+  const log = (cls, text) => {
+    const div = document.createElement('div');
+    div.className = cls;
+    div.textContent = text;
+    logEl.appendChild(div);
+  };
+
+  const t0 = performance.now();
+  const stamp = () => ((performance.now() - t0) / 1000).toFixed(3) + 's';
+
+  log('meta', `[${stamp()}] → POST ${url}`);
+
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + jwt,
+        'Accept': 'text/event-stream',
+      },
+      body: JSON.stringify({ message: msg }),
+    });
+  } catch (e) {
+    log('err', `[${stamp()}] fetch failed: ${e.message}`);
+    return;
+  }
+
+  log('meta', `[${stamp()}] ← headers received: status=${resp.status} content-type=${resp.headers.get('content-type')} content-encoding=${resp.headers.get('content-encoding') || '(none)'} transfer-encoding=${resp.headers.get('transfer-encoding') || '(none)'} x-accel-buffering=${resp.headers.get('x-accel-buffering') || '(none)'}`);
+
+  if (!resp.ok) {
+    log('err', `[${stamp()}] HTTP ${resp.status}: ${await resp.text()}`);
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let chunkCount = 0;
+  let firstChunkAt = null;
+  let lastChunkAt = null;
+  let totalBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const arrivedAt = performance.now();
+    if (firstChunkAt === null) firstChunkAt = arrivedAt;
+    lastChunkAt = arrivedAt;
+    chunkCount++;
+    totalBytes += value.byteLength;
+    const text = decoder.decode(value, { stream: true });
+    log('tok', `[${((arrivedAt - t0) / 1000).toFixed(3)}s] chunk #${chunkCount} (${value.byteLength} bytes): ${text.replace(/\n/g, '\\n').slice(0, 200)}${text.length > 200 ? '…' : ''}`);
+  }
+
+  const tEnd = performance.now();
+  const firstChunkRel = firstChunkAt !== null ? ((firstChunkAt - t0) / 1000).toFixed(3) : 'n/a';
+  const spanSec       = firstChunkAt !== null ? ((lastChunkAt - firstChunkAt) / 1000).toFixed(3) : 'n/a';
+
+  summaryEl.style.display = 'block';
+  summaryEl.textContent =
+    `chunks: ${chunkCount}\n` +
+    `total bytes: ${totalBytes}\n` +
+    `time to first chunk: ${firstChunkRel}s\n` +
+    `span first→last chunk: ${spanSec}s\n` +
+    `total time: ${((tEnd - t0) / 1000).toFixed(3)}s\n` +
+    `\n` +
+    `verdict: ${
+      chunkCount <= 1
+        ? 'BUFFERED — one chunk only, the body landed all at once.'
+        : (parseFloat(spanSec) < 0.2
+            ? 'BUFFERED — chunks span < 200ms, server flushed at the end.'
+            : 'STREAMED — chunks spread over time, real SSE flow.')
+    }`;
+}
+</script>
+</body>
+</html>

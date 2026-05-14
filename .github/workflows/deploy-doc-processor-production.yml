@@ -40,16 +40,12 @@ jobs:
             --substitutions=_TAG=${{ github.sha }},_LATEST_TAG=prod-latest,_REGION=${{ env.REGION }},_REPO=${{ env.REPO }},_IMAGE=${{ env.IMAGE }} \
             --project=${{ env.PROJECT_ID }}
 
-      # Production differs from staging on three knobs:
-      #   --min-instances=1   → keep one instance warm so the first chat-time
-      #                         ingest never pays a 60-90 s cold start. Costs
-      #                         ~$360/mo for an idle L4 — switch to 0 if cost
-      #                         matters more than first-request latency for
-      #                         your traffic pattern.
-      #   --max-instances=10  → headroom for a bulk ingest spike.
-      #   ENVIRONMENT=production → tags Sentry events; production-grade
-      #                         models can be swapped via the FLORENCE_MODEL_ID
-      #                         env (defaults to base-ft).
+      # Cloud Run deploy — using `gcloud run deploy` directly because the GPU
+      # flags (--gpu, --gpu-type, --no-gpu-zonal-redundancy) need to round-
+      # trip cleanly and the deploy-cloudrun action can lag on flag support.
+      # Production currently mirrors staging on infra knobs while we shake out
+      # the first deploys; switch min-instances=1 back on once cold-start
+      # latency becomes user-visible.
       - name: Deploy to Cloud Run (Production)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL_PRODUCTION }}
@@ -82,17 +78,21 @@ jobs:
             --no-gpu-zonal-redundancy \
             --cpu=4 \
             --memory=16Gi \
-            --min-instances=1 \
+            --min-instances=0 \
             --max-instances=3 \
             --concurrency=1 \
             --timeout=3600 \
             --port=8080 \
-            --no-allow-unauthenticated \
+            --allow-unauthenticated \
             --no-cpu-throttling \
             --execution-environment=gen2 \
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }} \
             --env-vars-file=/tmp/env-vars.yaml
 
+      # Health check tolerates the extended cold-start window. We poll for up
+      # to 5 minutes because a fully cold L4 instance loading 4 ML models can
+      # legitimately take 60-120 s before /health flips from "loading" to
+      # "healthy".
       - name: Verify deployment
         run: |
           SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE }} \
@@ -101,13 +101,11 @@ jobs:
             --format "value(status.url)")
           echo "Service URL: $SERVICE_URL"
 
-          TOKEN=$(gcloud auth print-identity-token --audiences="$SERVICE_URL")
           URL="$SERVICE_URL/health"
           echo "Polling $URL ..."
 
           for i in $(seq 1 30); do
-            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" \
-              -H "Authorization: Bearer $TOKEN" "$URL")
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
             BODY=$(cat /tmp/health.json)
             echo "Attempt $i → HTTP $RESPONSE: $BODY"
             if [ "$RESPONSE" = "200" ] && echo "$BODY" | grep -q '"status":"healthy"'; then
