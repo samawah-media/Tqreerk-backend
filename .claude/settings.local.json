@@ -16,7 +16,13 @@
       "WebFetch(domain:github.com)",
       "Bash(python -m py_compile \"c:\\\\Users\\\\sheha\\\\OneDrive\\\\Documents\\\\Tqreerk-backend\\\\doc-processor\\\\pipeline\\\\layout.py\")",
       "Bash(dotnet tool *)",
-      "Bash(winget install *)"
+      "Bash(winget install *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git merge *)",
+      "Bash(git cherry-pick *)"
     ]
   }
 }
