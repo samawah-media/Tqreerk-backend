@@ -71,8 +71,12 @@ jobs:
           exit 1
 
       - name: Apply EF migrations
+        env:
+          # Pass via env (not script substitution) so special chars in the
+          # password — ', $, ", backtick — don't break shell parsing.
+          DATABASE_URL_PRODUCTION: ${{ secrets.DATABASE_URL_PRODUCTION }}
         run: |
-          LOCAL_CONN=$(echo "${{ secrets.DATABASE_URL_PRODUCTION }}" \
+          LOCAL_CONN=$(printf '%s' "$DATABASE_URL_PRODUCTION" \
             | sed -e 's/Host=[^;]*/Host=127.0.0.1/' \
                   -e 's/SSL Mode=[^;]*/SSL Mode=Disable/')
           ./efbundle --connection "$LOCAL_CONN"
