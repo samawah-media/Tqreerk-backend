@@ -72,10 +72,14 @@ jobs:
           exit 1
 
       - name: Apply EF migrations
+        env:
+          # Pass via env (not script substitution) so special chars in the
+          # password — ', $, ", backtick — don't break shell parsing.
+          DATABASE_URL_STAGING: ${{ secrets.DATABASE_URL_STAGING }}
         run: |
           # Rewrite Cloud SQL host to the local proxy and disable Npgsql SSL
           # (the proxy itself encrypts the connection to Cloud SQL).
-          LOCAL_CONN=$(echo "${{ secrets.DATABASE_URL_STAGING }}" \
+          LOCAL_CONN=$(printf '%s' "$DATABASE_URL_STAGING" \
             | sed -e 's/Host=[^;]*/Host=127.0.0.1/' \
                   -e 's/SSL Mode=[^;]*/SSL Mode=Disable/')
           ./efbundle --connection "$LOCAL_CONN"
