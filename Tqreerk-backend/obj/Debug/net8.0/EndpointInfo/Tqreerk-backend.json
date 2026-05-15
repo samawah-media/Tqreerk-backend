@@ -3492,14 +3492,7 @@
         },
         "responses": {
           "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuthResponse"
-                }
-              }
-            }
+            "description": "OK"
           },
           "409": {
             "description": "Conflict",
@@ -3540,14 +3533,7 @@
         },
         "responses": {
           "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuthResponse"
-                }
-              }
-            }
+            "description": "OK"
           },
           "409": {
             "description": "Conflict",
