@@ -123,7 +123,9 @@ public record AiJobStatusDto(
 
 public record ReportAiContentDto(
     string Language,
-    string? Summary,
+    /// 3-7 bullet points produced by the summarize pipeline. Empty when the
+    /// row predates the bullet-point migration or the AI step hasn't run yet.
+    IReadOnlyList<string> Summary,
     IReadOnlyList<string> KeyFindings,
     IReadOnlyList<string> Topics,
     DateTime? GeneratedAt

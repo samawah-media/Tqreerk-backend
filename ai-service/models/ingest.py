@@ -1,6 +1,6 @@
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class IngestRequest(BaseModel):
@@ -55,9 +55,13 @@ class SummarizeResponse(BaseModel):
     """Combined summary + insights output. One Gemini call now produces all
     five fields (summary, key_findings, topics, indicators, trends), and they
     all get returned to the caller so the .NET finalizer (or any direct
-    consumer) can persist them in one round-trip."""
+    consumer) can persist them in one round-trip.
+
+    `summary` is a list of 3-7 bullet points (not a paragraph blob). The
+    frontend renders them as discrete points; the length window keeps the
+    output skimmable without losing nuance for longer reports."""
     report_id: UUID
-    summary: str
+    summary: list[str] = Field(min_length=3, max_length=7)
     key_findings: list[str]
     topics: list[str]
     indicators: list[IndicatorItem] = []

@@ -19,7 +19,9 @@ public sealed record ComparedReportDto(
     string? OrganizationNameAr,
     int? PublicationYear,
     string? SectorNameAr,
-    string? Summary,
+    /// 3-7 bullet-point summary of the report. Empty list if the AI step
+    /// hasn't run yet or the row predates the bullet-point migration.
+    IReadOnlyList<string> Summary,
     IReadOnlyList<string> KeyFindings);
 
 /// One row of the qualitative summary banner. The Python service emits

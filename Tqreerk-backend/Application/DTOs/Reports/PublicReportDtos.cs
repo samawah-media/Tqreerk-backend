@@ -76,7 +76,8 @@ public record PublicReportDetailDto(
     string? SectorNameAr,
     Guid? CountryId,
     string? CountryNameAr,
-    string? Summary,
+    /// 3-7 bullet-point summary. Empty list if AI hasn't run yet.
+    IReadOnlyList<string> Summary,
     IReadOnlyList<string> KeyFindings,
     IReadOnlyList<string> Topics,
     /// Total number of (non-deleted) comments. Cheap COUNT — included in

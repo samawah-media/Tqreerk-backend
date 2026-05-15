@@ -95,7 +95,7 @@ public class AiServiceClient : IAiServiceClient
 
         return new SummarizeResult(
             dto.report_id,
-            dto.summary ?? string.Empty,
+            (IReadOnlyList<string>?)dto.summary ?? Array.Empty<string>(),
             (IReadOnlyList<string>?)dto.key_findings ?? Array.Empty<string>(),
             (IReadOnlyList<string>?)dto.topics ?? Array.Empty<string>(),
             ExtractRawJsonArray(doc.RootElement, "indicators"),
@@ -303,7 +303,7 @@ public class AiServiceClient : IAiServiceClient
         string? completed_at);
 
     private sealed record SummarizeResponseDto(
-        Guid report_id, string? summary, List<string>? key_findings, List<string>? topics);
+        Guid report_id, List<string>? summary, List<string>? key_findings, List<string>? topics);
 
     private sealed record TranslateResponseDto(
         Guid report_id, string? target_language, string? source_language, string? translated_file_url);

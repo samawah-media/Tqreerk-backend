@@ -135,7 +135,7 @@ public class PublicReportService : IPublicReportService
             row.SectorNameAr,
             row.CountryId,
             row.CountryNameAr,
-            ai?.Summary,
+            ParseJsonStringArray(ai?.Summary),
             ParseJsonStringArray(ai?.KeyFindings),
             ParseJsonStringArray(ai?.Indicators),
             commentCount,

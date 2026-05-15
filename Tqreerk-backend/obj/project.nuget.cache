@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "H+jClWnR9hM=",
+  "dgSpecHash": "KmRF4DN/Fds=",
   "success": true,
-  "projectFilePath": "c:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
+  "projectFilePath": "C:\\Users\\sheha\\OneDrive\\Documents\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\sheha\\.nuget\\packages\\bblanchon.pdfium.linux\\130.0.6721\\bblanchon.pdfium.linux.130.0.6721.nupkg.sha512",
     "C:\\Users\\sheha\\.nuget\\packages\\bblanchon.pdfium.macos\\130.0.6721\\bblanchon.pdfium.macos.130.0.6721.nupkg.sha512",
@@ -111,7 +111,6 @@
     "C:\\Users\\sheha\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.23\\microsoft.netcore.app.ref.8.0.23.nupkg.sha512",
     "C:\\Users\\sheha\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.23\\microsoft.windowsdesktop.app.ref.8.0.23.nupkg.sha512",
     "C:\\Users\\sheha\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.23\\microsoft.aspnetcore.app.ref.8.0.23.nupkg.sha512",
-    "C:\\Users\\sheha\\.nuget\\packages\\microsoft.netcore.app.crossgen2.win-x64\\8.0.23\\microsoft.netcore.app.crossgen2.win-x64.8.0.23.nupkg.sha512",
     "C:\\Users\\sheha\\.nuget\\packages\\microsoft.netcore.app.host.win-x64\\8.0.23\\microsoft.netcore.app.host.win-x64.8.0.23.nupkg.sha512"
   ],
   "logs": []

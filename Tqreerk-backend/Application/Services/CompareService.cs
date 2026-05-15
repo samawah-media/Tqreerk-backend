@@ -261,16 +261,8 @@ public class CompareService : ICompareService
             {
                 var r = byReport[id];
                 var content = aiContent.TryGetValue(id, out var c) ? c : null;
-                IReadOnlyList<string> findings = Array.Empty<string>();
-                if (!string.IsNullOrWhiteSpace(content?.KeyFindings))
-                {
-                    try
-                    {
-                        var arr = JsonSerializer.Deserialize<List<string>>(content!.KeyFindings!);
-                        if (arr is not null) findings = arr;
-                    }
-                    catch { /* malformed JSON — treat as empty */ }
-                }
+                IReadOnlyList<string> findings = ParseJsonStringArray(content?.KeyFindings);
+                IReadOnlyList<string> summary  = ParseJsonStringArray(content?.Summary);
 
                 var rawCover = (string?)r.CoverImageUrl;
                 var coverUrl = !string.IsNullOrWhiteSpace(rawCover) && resolvedCovers.TryGetValue(rawCover!, out var url)
@@ -285,7 +277,7 @@ public class CompareService : ICompareService
                     (string?)r.OrganizationNameAr,
                     (int?)r.PublicationYear,
                     (string?)r.SectorNameAr,
-                    content?.Summary,
+                    summary,
                     findings);
             })
             .ToList();
@@ -356,5 +348,12 @@ public class CompareService : ICompareService
         if (string.IsNullOrWhiteSpace(json)) return null;
         try { return JsonSerializer.Deserialize<List<Guid>>(json!); }
         catch { return null; }
+    }
+
+    private static IReadOnlyList<string> ParseJsonStringArray(string? jsonb)
+    {
+        if (string.IsNullOrWhiteSpace(jsonb)) return Array.Empty<string>();
+        try { return JsonSerializer.Deserialize<List<string>>(jsonb!) ?? new List<string>(); }
+        catch { return Array.Empty<string>(); }
     }
 }

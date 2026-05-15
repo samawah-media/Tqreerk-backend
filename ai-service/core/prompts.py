@@ -90,7 +90,10 @@ def summarize_prompt(combined_text: str, language: str = "ar") -> str:
         f"You are analyzing a research report. The output language is {lang_name}.\n"
         "Based on the full text below, produce a JSON object with these fields:\n"
         "\n"
-        "- summary: a concise executive summary (3-5 paragraphs).\n"
+        "- summary: a list of 3 to 7 concise bullet points capturing the report's "
+        "main takeaways. Each item is a single self-contained sentence (or short "
+        "paragraph at most). Use 3 only for very short reports; use 7 only when "
+        "the material genuinely needs that breadth — do not pad.\n"
         "- key_findings: 5-10 most important findings as a list of strings.\n"
         "- topics: main topics/sectors covered as a list of strings.\n"
         "- indicators: concrete quantitative figures present in the report. Each item must include: "
@@ -99,12 +102,12 @@ def summarize_prompt(combined_text: str, language: str = "ar") -> str:
         "topic, direction (one of: increasing/decreasing/stable/volatile/mixed), time_span, "
         "magnitude (e.g. 'from 5% to 2%'), and a 1-2 sentence explanation.\n"
         "\n"
-        f"CRITICAL — output language: every string value in the JSON (summary, "
-        f"key_findings entries, topics entries, indicator names/units/time_period/"
-        f"context, and trend topic/time_span/magnitude/explanation) MUST be written "
-        f"in {lang_name}. Do not mix languages. Numeric values stay numeric; only "
-        f"the surrounding prose and labels are translated. Output JSON only — no "
-        "commentary.\n\n"
+        f"CRITICAL — output language: every string value in the JSON (summary "
+        f"entries, key_findings entries, topics entries, indicator names/units/"
+        f"time_period/context, and trend topic/time_span/magnitude/explanation) "
+        f"MUST be written in {lang_name}. Do not mix languages. Numeric values "
+        f"stay numeric; only the surrounding prose and labels are translated. "
+        f"Output JSON only — no commentary.\n\n"
         f"REPORT TEXT:\n{combined_text}"
     )
 
@@ -112,7 +115,12 @@ def summarize_prompt(combined_text: str, language: str = "ar") -> str:
 REPORT_SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary":      {"type": "string"},
+        "summary": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 3,
+            "maxItems": 7,
+        },
         "key_findings": {"type": "array", "items": {"type": "string"}},
         "topics":       {"type": "array", "items": {"type": "string"}},
         "indicators": {

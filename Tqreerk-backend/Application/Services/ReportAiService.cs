@@ -592,6 +592,7 @@ public class ReportAiService : IReportAiService
         var existing = await _db.ReportAiContents
             .FirstOrDefaultAsync(c => c.ReportId == report.Id && c.Language == lang, ct);
 
+        var summary     = JsonSerializer.Serialize(result.Summary);
         var keyFindings = JsonSerializer.Serialize(result.KeyFindings);
         var topics      = JsonSerializer.Serialize(result.Topics);
 
@@ -602,7 +603,7 @@ public class ReportAiService : IReportAiService
                 ReportId    = report.Id,
                 Language    = lang,
                 AiJobId     = jobId,
-                Summary     = result.Summary,
+                Summary     = summary,
                 KeyFindings = keyFindings,
                 Topics      = topics,
                 Indicators  = result.IndicatorsJson,
@@ -612,7 +613,7 @@ public class ReportAiService : IReportAiService
         }
         else
         {
-            existing.Summary     = result.Summary;
+            existing.Summary     = summary;
             existing.KeyFindings = keyFindings;
             existing.Topics      = topics;
             existing.Indicators  = result.IndicatorsJson;
@@ -767,9 +768,10 @@ public class ReportAiService : IReportAiService
 
     private static ReportAiContentDto ToContentDto(ReportAiContent c)
     {
+        var summary = ParseJsonStringArray(c.Summary);
         var keyFindings = ParseJsonStringArray(c.KeyFindings);
         var topics = ParseJsonStringArray(c.Indicators);
-        return new ReportAiContentDto(c.Language, c.Summary, keyFindings, topics, c.GeneratedAt);
+        return new ReportAiContentDto(c.Language, summary, keyFindings, topics, c.GeneratedAt);
     }
 
     private static IReadOnlyList<string> ParseJsonStringArray(string? jsonb)

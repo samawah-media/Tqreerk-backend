@@ -13,6 +13,7 @@ public class ReportAiContentConfiguration : IEntityTypeConfiguration<ReportAiCon
         builder.HasKey(c => c.Id);
         builder.Property(c => c.Id).HasDefaultValueSql("gen_random_uuid()");
         builder.Property(c => c.Language).IsRequired().HasMaxLength(5);
+        builder.Property(c => c.Summary).HasColumnType("jsonb");
         builder.Property(c => c.KeyFindings).HasColumnType("jsonb");
         builder.Property(c => c.Topics).HasColumnType("jsonb");
         builder.Property(c => c.Recommendations).HasColumnType("jsonb");
