@@ -268,12 +268,17 @@ public static class ServiceExtensions
             services.AddSingleton<IFileStorage, LocalFileStorage>();
         }
 
-        // Pick the email sender based on configuration:
+        // Pick the email sender based on configuration (priority: Graph > SMTP > dry-run log):
+        //   - GraphTenantId set → Microsoft Graph API (GraphEmailSender) — preferred for M365
         //   - SmtpHost set      → real SMTP delivery (SmtpEmailSender)
-        //   - SmtpHost empty    → dry-run that logs the body to the console (LogEmailSender)
-        // This way devs without SMTP credentials still see codes in their terminal.
+        //   - neither set       → dry-run that logs the body to the console (LogEmailSender)
+        var graphTenantId = config[$"{EmailSettings.Section}:GraphTenantId"];
         var smtpHost = config[$"{EmailSettings.Section}:SmtpHost"];
-        if (!string.IsNullOrWhiteSpace(smtpHost))
+        if (!string.IsNullOrWhiteSpace(graphTenantId))
+        {
+            services.AddScoped<IEmailSender, GraphEmailSender>();
+        }
+        else if (!string.IsNullOrWhiteSpace(smtpHost))
         {
             services.AddScoped<IEmailSender, SmtpEmailSender>();
         }

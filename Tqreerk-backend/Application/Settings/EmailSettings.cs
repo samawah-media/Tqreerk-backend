@@ -17,4 +17,10 @@ public class EmailSettings
     public bool SmtpUseStartTls { get; set; } = true;
     public string SmtpUsername { get; set; } = string.Empty;
     public string SmtpPassword { get; set; } = string.Empty;
+
+    // Microsoft Graph API configuration. When GraphTenantId is set, GraphEmailSender is used (takes priority over SMTP).
+    public string GraphTenantId { get; set; } = string.Empty;
+    public string GraphClientId { get; set; } = string.Empty;
+    public string GraphClientSecret { get; set; } = string.Empty;
+    public string GraphSenderEmail { get; set; } = string.Empty;
 }

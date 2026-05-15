@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using NpgsqlTypes;
@@ -12,9 +13,11 @@ using Taqreerk.Infrastructure.Data;
 namespace Taqreerk.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(TaqreerkDbContext))]
-    partial class TaqreerkDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260515181932_Feature_PendingRegistrations")]
+    partial class Feature_PendingRegistrations
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2576,7 +2579,7 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<string>("Summary")
-                        .HasColumnType("jsonb");
+                        .HasColumnType("text");
 
                     b.Property<string>("Topics")
                         .HasColumnType("jsonb");

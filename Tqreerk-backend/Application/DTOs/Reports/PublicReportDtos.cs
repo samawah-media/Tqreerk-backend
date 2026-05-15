@@ -121,4 +121,4 @@ public record PublicReportFacetsDto(
     IReadOnlyList<FacetItemDto> Languages
 );
 
-public record FacetItemDto(string Id, string Name, int Count);
+public record FacetItemDto(string Id, string NameAr, string NameEn, int Count);

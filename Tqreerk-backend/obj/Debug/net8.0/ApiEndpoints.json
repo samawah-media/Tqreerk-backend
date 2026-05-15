@@ -2243,6 +2243,55 @@
     ]
   },
   {
+    "ContainingType": "Taqreerk.API.Controllers.AiToolsController",
+    "Method": "TranslateText",
+    "RelativePath": "api/ai/tools/translate-text",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.API.Controllers.AiToolsController\u002BTranslateTextRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.API.Controllers.AiToolsController\u002BTranslateTextResponse",
+        "MediaTypes": [
+          "text/plain",
+          "application/json",
+          "text/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "text/plain",
+          "application/json",
+          "text/json"
+        ],
+        "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "text/plain",
+          "application/json",
+          "text/json"
+        ],
+        "StatusCode": 403
+      },
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 502
+      }
+    ]
+  },
+  {
     "ContainingType": "Taqreerk.API.Controllers.AuthController",
     "Method": "ForgotPassword",
     "RelativePath": "api/auth/forgot-password",
@@ -2488,10 +2537,8 @@
     ],
     "ReturnTypes": [
       {
-        "Type": "Taqreerk.Application.DTOs.Auth.AuthResponse",
-        "MediaTypes": [
-          "application/json"
-        ],
+        "Type": "System.Void",
+        "MediaTypes": [],
         "StatusCode": 200
       },
       {
@@ -2519,10 +2566,8 @@
     ],
     "ReturnTypes": [
       {
-        "Type": "Taqreerk.Application.DTOs.Auth.AuthResponse",
-        "MediaTypes": [
-          "application/json"
-        ],
+        "Type": "System.Void",
+        "MediaTypes": [],
         "StatusCode": 200
       },
       {

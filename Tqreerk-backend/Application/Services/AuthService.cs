@@ -39,124 +39,102 @@ public class AuthService : IAuthService
         _emailSettings = emailSettings.Value;
     }
 
-    public async Task<AuthResult> RegisterIndividualAsync(RegisterIndividualRequest req, CancellationToken ct = default)
+    public async Task<string> RegisterIndividualAsync(RegisterIndividualRequest req, CancellationToken ct = default)
     {
-        if (await _db.Users.AnyAsync(u => u.Email == req.Email, ct))
+        var normalized = req.Email.ToLowerInvariant();
+
+        if (await _db.Users.AnyAsync(u => u.Email == normalized, ct))
             throw new InvalidOperationException("Email already registered.");
 
-        var user = new User
+        if (!string.IsNullOrWhiteSpace(req.Phone) && await _db.Users.AnyAsync(u => u.Phone == req.Phone, ct))
+            throw new InvalidOperationException("Phone number already registered.");
+
+        // Remove any previous pending registration for this email so the user can retry.
+        var old = await _db.PendingRegistrations.Where(p => p.Email == normalized).ToListAsync(ct);
+        _db.PendingRegistrations.RemoveRange(old);
+
+        var code = GenerateNumericCode(OtpCodeLength);
+        var pending = new PendingRegistration
         {
-            FullName = req.FullName,
-            Email = req.Email.ToLowerInvariant(),
+            Email = normalized,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.Password),
+            FullName = req.FullName,
             Phone = req.Phone,
             JobTitle = req.JobTitle,
             InterestField = req.InterestField,
             CountryId = req.CountryId,
             PreferredLanguage = req.PreferredLanguage,
             UserType = "individual",
-            Status = UserStatus.Active,
-            EmailVerified = false,
+            OtpHash = HashToken(code),
+            OtpExpiresAt = DateTime.UtcNow.Add(OtpLifetime),
         };
 
-        _db.Users.Add(user);
+        _db.PendingRegistrations.Add(pending);
         await _db.SaveChangesAsync(ct);
 
-        await TrySendInitialOtpAsync(user, ct);
+        await SendOtpEmailAsync(req.FullName, normalized, code, ct);
 
-        return await IssueTokensAsync(user, null, null, ct);
+        return normalized;
     }
 
-    public async Task<AuthResult> RegisterOrganizationAsync(RegisterOrganizationRequest req, CancellationToken ct = default)
+    public async Task<string> RegisterOrganizationAsync(RegisterOrganizationRequest req, CancellationToken ct = default)
     {
-        if (await _db.Users.AnyAsync(u => u.Email == req.Email, ct))
+        var normalized = req.Email.ToLowerInvariant();
+
+        if (await _db.Users.AnyAsync(u => u.Email == normalized, ct))
             throw new InvalidOperationException("Email already registered.");
 
-        var slug = GenerateSlug(req.NameEn);
-        if (await _db.Organizations.AnyAsync(o => o.Slug == slug, ct))
-            slug = $"{slug}-{Guid.NewGuid().ToString()[..8]}";
+        if (!string.IsNullOrWhiteSpace(req.Phone) && await _db.Users.AnyAsync(u => u.Phone == req.Phone, ct))
+            throw new InvalidOperationException("Phone number already registered.");
 
-        var user = new User
+        var old = await _db.PendingRegistrations.Where(p => p.Email == normalized).ToListAsync(ct);
+        _db.PendingRegistrations.RemoveRange(old);
+
+        var code = GenerateNumericCode(OtpCodeLength);
+        var pending = new PendingRegistration
         {
-            FullName = req.NameEn,
-            Email = req.Email.ToLowerInvariant(),
+            Email = normalized,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.Password),
+            FullName = req.NameEn,
             Phone = req.Phone,
             UserType = "organization_admin",
-            Status = UserStatus.Active,
-            EmailVerified = false,
-        };
-
-        var organization = new Organization
-        {
-            NameAr = req.NameAr,
-            NameEn = req.NameEn,
-            Slug = slug,
-            Type = req.Type,
+            OrgNameAr = req.NameAr,
+            OrgNameEn = req.NameEn,
+            OrgType = req.Type,
             CountryId = req.CountryId,
-            City = req.City,
-            Phone = req.Phone,
-            WebsiteUrl = req.WebsiteUrl,
-            SectorScope = req.SectorScope,
-            Status = OrganizationStatus.PendingReview,
-            // Founder: protected from removal by other members.
-            // Set after the user gets its Id (via SaveChanges below).
+            OrgCity = req.City,
+            OrgWebsiteUrl = req.WebsiteUrl,
+            OrgSectorScope = req.SectorScope,
+            OrgCommercialRegisterNo = req.CommercialRegisterNo,
+            OrgIssuesReports = req.IssuesReports,
+            OrgAnnualReportsCount = req.AnnualReportsCount,
+            OrgWantsToPublish = req.WantsToPublish,
+            OrgInterestedInSubscription = req.InterestedInSubscription,
+            OrgContactPersonName = req.ContactPersonName,
+            OrgContactPersonTitle = req.ContactPersonTitle,
+            OrgContactEmail = req.ContactEmail,
+            OrgPoliciesAccepted = req.PoliciesAccepted,
+            OtpHash = HashToken(code),
+            OtpExpiresAt = DateTime.UtcNow.Add(OtpLifetime),
         };
 
-        var profile = new OrganizationProfile
-        {
-            CommercialRegisterNo = req.CommercialRegisterNo,
-            IssuesReports = req.IssuesReports,
-            AnnualReportsCount = req.AnnualReportsCount,
-            WantsToPublish = req.WantsToPublish,
-            InterestedInSubscription = req.InterestedInSubscription,
-            ContactPersonName = req.ContactPersonName,
-            ContactPersonTitle = req.ContactPersonTitle,
-            ContactEmail = req.ContactEmail,
-            PoliciesAccepted = req.PoliciesAccepted,
-            PoliciesAcceptedAt = req.PoliciesAccepted ? DateTime.UtcNow : null,
-        };
-
-        organization.Profile = profile;
-
-        _db.Users.Add(user);
-        _db.Organizations.Add(organization);
+        _db.PendingRegistrations.Add(pending);
         await _db.SaveChangesAsync(ct);
 
-        // Now that both rows have IDs, stamp the founder reference and create
-        // the membership row in a single follow-up save.
-        organization.CreatedByUserId = user.Id;
+        await SendOtpEmailAsync(req.NameEn, normalized, code, ct);
 
-        var adminRole = await _db.Roles.FirstOrDefaultAsync(r => r.Name == "admin", ct)
-            ?? throw new InvalidOperationException("Default roles not seeded.");
-
-        _db.OrganizationMembers.Add(new OrganizationMember
-        {
-            UserId = user.Id,
-            OrganizationId = organization.Id,
-            RoleId = adminRole.Id,
-        });
-        await _db.SaveChangesAsync(ct);
-
-        await TrySendInitialOtpAsync(user, ct);
-
-        return await IssueTokensAsync(user, null, null, ct);
+        return normalized;
     }
 
-    /// Best-effort initial OTP. We never let an email-send failure block registration —
-    /// the user can always resend from the verify screen.
-    private async Task TrySendInitialOtpAsync(User user, CancellationToken ct)
+    private async Task SendOtpEmailAsync(string fullName, string email, string code, CancellationToken ct)
     {
-        try
-        {
-            await SendEmailOtpAsync(user.Email, ct);
-        }
-        catch (Exception ex)
-        {
-            // Log only — registration must succeed regardless of email delivery.
-            // (No ILogger here; in dev we rely on LogEmailSender's own logging.)
-            System.Diagnostics.Debug.WriteLine($"Initial OTP send failed for {user.Email}: {ex.Message}");
-        }
+        var minutes = (int)OtpLifetime.TotalMinutes;
+        var body = $"<p>Hello {System.Net.WebUtility.HtmlEncode(fullName)},</p>" +
+                   $"<p>Your Taqreerk verification code is:</p>" +
+                   $"<p style=\"font-size:24px;font-weight:bold;letter-spacing:4px\">{code}</p>" +
+                   $"<p>This code expires in {minutes} minutes.</p>";
+
+        await _email.SendEmailAsync(email, "Your Taqreerk verification code", body, ct);
     }
 
     private const int MaxFailedLoginAttempts = 5;
@@ -484,6 +462,23 @@ public class AuthService : IAuthService
             throw new ArgumentException("Invalid verification code.");
 
         var normalized = email.ToLowerInvariant();
+
+        // Check if this is a pending registration (new user) or an existing user requesting re-verify.
+        var pending = await _db.PendingRegistrations
+            .FirstOrDefaultAsync(p => p.Email == normalized, ct);
+
+        if (pending is not null)
+        {
+            if (pending.OtpHash != HashToken(code))
+                throw new UnauthorizedAccessException("Invalid verification code.");
+
+            if (pending.OtpExpiresAt < DateTime.UtcNow)
+                throw new UnauthorizedAccessException("Verification code has expired.");
+
+            return await PromotePendingToUserAsync(pending, ipAddress, deviceInfo, ct);
+        }
+
+        // Existing user re-verifying (e.g. resend OTP flow).
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == normalized, ct)
             ?? throw new UnauthorizedAccessException("Invalid verification code.");
 
@@ -504,6 +499,79 @@ public class AuthService : IAuthService
         user.EmailVerified = true;
 
         await _db.SaveChangesAsync(ct);
+
+        return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
+    }
+
+    private async Task<AuthResult> PromotePendingToUserAsync(PendingRegistration pending, string? ipAddress, string? deviceInfo, CancellationToken ct)
+    {
+        var user = new User
+        {
+            Email = pending.Email,
+            PasswordHash = pending.PasswordHash,
+            FullName = pending.FullName,
+            Phone = pending.Phone,
+            UserType = pending.UserType,
+            JobTitle = pending.JobTitle,
+            InterestField = pending.InterestField,
+            CountryId = pending.CountryId,
+            PreferredLanguage = pending.PreferredLanguage,
+            Status = UserStatus.Active,
+            EmailVerified = true,
+        };
+
+        _db.Users.Add(user);
+        _db.PendingRegistrations.Remove(pending);
+        await _db.SaveChangesAsync(ct);
+
+        if (pending.UserType == "organization_admin")
+        {
+            var slug = GenerateSlug(pending.OrgNameEn ?? pending.FullName);
+            if (await _db.Organizations.AnyAsync(o => o.Slug == slug, ct))
+                slug = $"{slug}-{Guid.NewGuid().ToString()[..8]}";
+
+            var organization = new Organization
+            {
+                NameAr = pending.OrgNameAr ?? pending.FullName,
+                NameEn = pending.OrgNameEn ?? pending.FullName,
+                Slug = slug,
+                Type = pending.OrgType ?? OrganizationType.Governmental,
+                CountryId = pending.CountryId,
+                City = pending.OrgCity,
+                Phone = pending.Phone,
+                WebsiteUrl = pending.OrgWebsiteUrl,
+                SectorScope = pending.OrgSectorScope,
+                Status = OrganizationStatus.PendingReview,
+                CreatedByUserId = user.Id,
+                Profile = new OrganizationProfile
+                {
+                    CommercialRegisterNo = pending.OrgCommercialRegisterNo,
+                    IssuesReports = pending.OrgIssuesReports,
+                    AnnualReportsCount = pending.OrgAnnualReportsCount ?? 0,
+                    WantsToPublish = pending.OrgWantsToPublish,
+                    InterestedInSubscription = pending.OrgInterestedInSubscription,
+                    ContactPersonName = pending.OrgContactPersonName,
+                    ContactPersonTitle = pending.OrgContactPersonTitle,
+                    ContactEmail = pending.OrgContactEmail,
+                    PoliciesAccepted = pending.OrgPoliciesAccepted,
+                    PoliciesAcceptedAt = pending.OrgPoliciesAccepted ? DateTime.UtcNow : null,
+                },
+            };
+
+            _db.Organizations.Add(organization);
+            await _db.SaveChangesAsync(ct);
+
+            var adminRole = await _db.Roles.FirstOrDefaultAsync(r => r.Name == "admin", ct)
+                ?? throw new InvalidOperationException("Default roles not seeded.");
+
+            _db.OrganizationMembers.Add(new OrganizationMember
+            {
+                UserId = user.Id,
+                OrganizationId = organization.Id,
+                RoleId = adminRole.Id,
+            });
+            await _db.SaveChangesAsync(ct);
+        }
 
         return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
     }

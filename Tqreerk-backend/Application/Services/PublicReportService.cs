@@ -332,23 +332,23 @@ public class PublicReportService : IPublicReportService
         // Sectors: filter by everything except sector selection.
         var sectorRows = await ApplyFilters(PublishedQuery(), req, except: FacetDim.Sectors)
             .Where(r => r.SectorId != null)
-            .GroupBy(r => new { r.SectorId, r.Sector!.NameAr })
-            .Select(g => new { Id = g.Key.SectorId!.Value, Name = g.Key.NameAr, Count = g.Count() })
+            .GroupBy(r => new { r.SectorId, r.Sector!.NameAr, r.Sector!.NameEn })
+            .Select(g => new { Id = g.Key.SectorId!.Value, NameAr = g.Key.NameAr, NameEn = g.Key.NameEn, Count = g.Count() })
             .OrderByDescending(x => x.Count)
             .ToListAsync(ct);
 
         var countryRows = await ApplyFilters(PublishedQuery(), req, except: FacetDim.Countries)
             .Where(r => r.CountryId != null)
-            .GroupBy(r => new { r.CountryId, r.Country!.NameAr })
-            .Select(g => new { Id = g.Key.CountryId!.Value, Name = g.Key.NameAr, Count = g.Count() })
+            .GroupBy(r => new { r.CountryId, r.Country!.NameAr, r.Country!.NameEn })
+            .Select(g => new { Id = g.Key.CountryId!.Value, NameAr = g.Key.NameAr, NameEn = g.Key.NameEn, Count = g.Count() })
             .OrderByDescending(x => x.Count)
             .ToListAsync(ct);
 
         // Top 20 orgs to keep the sidebar list bounded. The org-search
         // input on the frontend filters this list locally.
         var orgRows = await ApplyFilters(PublishedQuery(), req, except: FacetDim.Organizations)
-            .GroupBy(r => new { r.OrganizationId, r.Organization.NameAr })
-            .Select(g => new { Id = g.Key.OrganizationId, Name = g.Key.NameAr, Count = g.Count() })
+            .GroupBy(r => new { r.OrganizationId, r.Organization.NameAr, r.Organization.NameEn })
+            .Select(g => new { Id = g.Key.OrganizationId, NameAr = g.Key.NameAr, NameEn = g.Key.NameEn, Count = g.Count() })
             .OrderByDescending(x => x.Count)
             .Take(20)
             .ToListAsync(ct);
@@ -362,10 +362,10 @@ public class PublicReportService : IPublicReportService
             .ToListAsync(ct);
 
         return new PublicReportFacetsDto(
-            Sectors:       sectorRows.Select(x => new FacetItemDto(x.Id.ToString(), x.Name, x.Count)).ToList(),
-            Countries:     countryRows.Select(x => new FacetItemDto(x.Id.ToString(), x.Name, x.Count)).ToList(),
-            Organizations: orgRows.Select(x => new FacetItemDto(x.Id.ToString(), x.Name, x.Count)).ToList(),
-            Languages:     languageRows.Select(x => new FacetItemDto(x.Lang, x.Lang, x.Count)).ToList());
+            Sectors:       sectorRows.Select(x => new FacetItemDto(x.Id.ToString(), x.NameAr, x.NameEn ?? x.NameAr, x.Count)).ToList(),
+            Countries:     countryRows.Select(x => new FacetItemDto(x.Id.ToString(), x.NameAr, x.NameEn ?? x.NameAr, x.Count)).ToList(),
+            Organizations: orgRows.Select(x => new FacetItemDto(x.Id.ToString(), x.NameAr, x.NameEn ?? x.NameAr, x.Count)).ToList(),
+            Languages:     languageRows.Select(x => new FacetItemDto(x.Lang, x.Lang, x.Lang, x.Count)).ToList());
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
