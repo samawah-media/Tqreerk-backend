@@ -78,17 +78,22 @@ public class GeminiTextTranslator : IGeminiTextTranslator
                 "Gemini:ProjectId is not configured. Set GCP_PROJECT_ID via " +
                 "Gemini__ProjectId on the Cloud Run service.");
 
-        // Mirror the Python tools.py prompt verbatim so callers get the
-        // same output style regardless of which path they hit. Returning
-        // ONLY the translated text matters — the frontend's toolbar
-        // shows the raw response in a bubble; any preface text leaks.
-        var langLabel = targetLanguage.Equals("en", StringComparison.OrdinalIgnoreCase)
-            ? "English"
-            : targetLanguage;
+        // Auto-detect Arabic vs English and translate to the other. The
+        // targetLanguage parameter is kept on the signature for API/quota
+        // plumbing but intentionally NOT used in the prompt — the PDF reader
+        // bubble flips ar ↔ en regardless of what the caller passes, so the
+        // model is told to do the detection itself. Returning ONLY the
+        // translated text matters — the frontend's toolbar shows the raw
+        // response in a bubble; any preface text leaks.
+        _ = targetLanguage;
         var prompt =
-            $"Translate the following text into {langLabel}. " +
-            "Return only the translated text, with no explanation, no quotes, " +
-            "and no commentary.\n\n" +
+            "Detect the language of the following text. " +
+            "If it is Arabic, translate it into English. " +
+            "If it is English, translate it into Arabic. " +
+            "If it mixes both, translate each segment into the opposite " +
+            "language so the result is the bidirectional inverse of the input. " +
+            "Return only the translated text — no explanation, no quotes, " +
+            "no commentary, no language labels.\n\n" +
             text;
 
         var body = new
