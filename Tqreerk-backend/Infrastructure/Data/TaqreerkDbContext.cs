@@ -89,6 +89,7 @@ public class TaqreerkDbContext : DbContext
     // Account flows
     public DbSet<EmailVerificationToken> EmailVerificationTokens => Set<EmailVerificationToken>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
+    public DbSet<PendingRegistration> PendingRegistrations => Set<PendingRegistration>();
 
     // Bulk import (admin Excel-based ingestion of third-party reports)
     public DbSet<BulkImportJob> BulkImportJobs => Set<BulkImportJob>();
