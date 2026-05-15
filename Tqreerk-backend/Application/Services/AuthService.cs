@@ -44,6 +44,9 @@ public class AuthService : IAuthService
         if (await _db.Users.AnyAsync(u => u.Email == req.Email, ct))
             throw new InvalidOperationException("Email already registered.");
 
+        if (!string.IsNullOrWhiteSpace(req.Phone) && await _db.Users.AnyAsync(u => u.Phone == req.Phone, ct))
+            throw new InvalidOperationException("Phone number already registered.");
+
         var user = new User
         {
             FullName = req.FullName,
@@ -71,6 +74,9 @@ public class AuthService : IAuthService
     {
         if (await _db.Users.AnyAsync(u => u.Email == req.Email, ct))
             throw new InvalidOperationException("Email already registered.");
+
+        if (!string.IsNullOrWhiteSpace(req.Phone) && await _db.Users.AnyAsync(u => u.Phone == req.Phone, ct))
+            throw new InvalidOperationException("Phone number already registered.");
 
         var slug = GenerateSlug(req.NameEn);
         if (await _db.Organizations.AnyAsync(o => o.Slug == slug, ct))
