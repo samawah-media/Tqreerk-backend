@@ -299,43 +299,67 @@ async def ingest_full(
     # implementation it replaces. We build (page_number, chunk_index, ...)
     # tuples up front so we can hard-cap the total before paying the
     # embedding round-trip.
+    #
+    # Document-level: flatten all pages into one list with a globally-
+    # monotonic reading_order and call the chunker once. Then re-scope
+    # chunk_index per (primary) page so the response payload still maps
+    # cleanly to the report_chunks (ReportId, PageNumber, ChunkIndex) shape.
+    # See pipeline/chunker.py for the heading-merge rule and bbox-citation
+    # contract.
     chunk_started = time.perf_counter()
     pending: list[dict] = []
+
+    flat_blocks: list[dict] = []
+    text_fallback_pages: list[tuple[int, str]] = []
+    global_order = 0
     for page in extract_response.pages:
         page_num = page.page_number
         if not page_num:
             continue
-        # Convert pydantic Block models to the {type, content, reading_order}
-        # dicts the chunker expects.
-        block_dicts = [
-            {
-                "type":          b.type,
-                "content":       b.content,
-                "reading_order": b.reading_order,
-            }
-            for b in page.blocks
-        ]
-        if block_dicts:
-            chunked = chunker.chunk_blocks_with_meta(block_dicts)
-            for idx, ch in enumerate(chunked):
-                pending.append({
+        if page.blocks:
+            for b in page.blocks:
+                flat_blocks.append({
+                    "type":          b.type,
+                    "content":       b.content,
+                    "reading_order": global_order,
                     "page_number":   page_num,
-                    "chunk_index":   idx,
-                    "content":       ch["content"],
-                    "section_title": ch["section_title"],
-                    "block_types":   ch["block_types"],
+                    "bbox":          b.bbox.model_dump() if b.bbox else None,
                 })
+                global_order += 1
         elif (page.content or "").strip():
-            # Page had no structured blocks — fall back to the recursive
-            # text splitter so we still emit chunks.
-            for idx, piece in enumerate(chunker.chunk_text(page.content)):
-                pending.append({
-                    "page_number":   page_num,
-                    "chunk_index":   idx,
-                    "content":       piece,
-                    "section_title": "",
-                    "block_types":   ["text"],
-                })
+            text_fallback_pages.append((page_num, page.content))
+
+    per_page_counters: dict[int, int] = {}
+    if flat_blocks:
+        for ch in chunker.chunk_blocks_with_meta(flat_blocks):
+            pg = int(ch.get("page_number") or 1)
+            idx = per_page_counters.get(pg, 0)
+            per_page_counters[pg] = idx + 1
+            pending.append({
+                "page_number":   pg,
+                "chunk_index":   idx,
+                "content":       ch["content"],
+                "section_title": ch["section_title"],
+                "block_types":   ch["block_types"],
+                "bboxes":        ch.get("bboxes") or [],
+            })
+
+    # Pages without structured blocks (image-only / OCR fallback) still need
+    # chunking — they just can't pack across pages, so per-page splitting is
+    # the only option.
+    for page_num, content in text_fallback_pages:
+        base_idx = per_page_counters.get(page_num, 0)
+        pieces = chunker.chunk_text(content)
+        for offset, piece in enumerate(pieces):
+            pending.append({
+                "page_number":   page_num,
+                "chunk_index":   base_idx + offset,
+                "content":       piece,
+                "section_title": "",
+                "block_types":   ["text"],
+                "bboxes":        [],
+            })
+        per_page_counters[page_num] = base_idx + len(pieces)
     chunk_latency_ms = int((time.perf_counter() - chunk_started) * 1000)
 
     # Hard cap. Above this, the response payload starts approaching memory
@@ -390,6 +414,7 @@ async def ingest_full(
             content=       p["content"],
             section_title= p["section_title"],
             block_types=   p["block_types"],
+            bboxes=        p.get("bboxes") or [],
             embedding=     chunk_vectors[i] if chunk_vectors else [],
         ))
 

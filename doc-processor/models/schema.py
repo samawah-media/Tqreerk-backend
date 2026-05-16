@@ -161,11 +161,17 @@ class ExtractDocumentResponse(BaseModel):
     `pages` preserves the same per-page shape as `ExtractResponse` so callers
     that already consume that schema (or fall back to per-page mode) can
     handle either shape uniformly.
+
+    `markdown` is the Docling export of the same parsed tree that produced
+    the regions — free byproduct of layout extraction. Empty string when
+    Docling failed to export (regions/chunks are still valid; we never let
+    an export bug fail the ingest).
     """
     pages: list[ExtractResponse]
     document_metadata: DocumentMetadata
     extractor: str = "doc-processor-v1"
     total_latency_ms: int
+    markdown: str = ""
 
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
@@ -274,12 +280,17 @@ class IngestFullRequest(BaseModel):
 
 
 class IngestChunk(BaseModel):
-    """One ingest-ready chunk: text + section + embedding."""
+    """One ingest-ready chunk: text + section + embedding + per-page citation bboxes."""
     page_number: int
     chunk_index: int
     content: str
     section_title: str = ""
     block_types: list[str] = Field(default_factory=list)
+    # Per-region citation entries: list of {"page": int, "bbox": [x0,y0,x1,y1]}.
+    # A multi-page chunk lists every contributing region; empty when blocks
+    # had no bboxes (text-fallback pages, /v1/extract responses that didn't
+    # populate bbox).
+    bboxes: list[dict] = Field(default_factory=list)
     # 768-dim vector when options.embed_chunks=True; empty list otherwise.
     embedding: list[float] = Field(default_factory=list)
 
