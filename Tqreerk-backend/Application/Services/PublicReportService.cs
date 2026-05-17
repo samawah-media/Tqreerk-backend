@@ -94,7 +94,7 @@ public class PublicReportService : IPublicReportService
         var ai = await _db.ReportAiContents
             .AsNoTracking()
             .Where(c => c.ReportId == row.Id && c.Language == row.OriginalLanguage)
-            .Select(c => new { c.Summary, c.KeyFindings, c.Indicators })
+            .Select(c => new { c.Summary, c.KeyFindings, c.Topics, c.Indicators })
             .FirstOrDefaultAsync(ct);
 
         var fileUrl = await ResolveFileUrlAsync(row.FileUrl, ct);
@@ -137,7 +137,8 @@ public class PublicReportService : IPublicReportService
             row.CountryNameAr,
             ParseJsonStringArray(ai?.Summary),
             ParseJsonStringArray(ai?.KeyFindings),
-            ParseJsonStringArray(ai?.Indicators),
+            ParseJsonStringArray(ai?.Topics),
+            ai?.Indicators,
             commentCount,
             recommendationCount,
             row.CreatedAt

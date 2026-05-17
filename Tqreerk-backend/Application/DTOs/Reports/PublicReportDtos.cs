@@ -80,6 +80,10 @@ public record PublicReportDetailDto(
     IReadOnlyList<string> Summary,
     IReadOnlyList<string> KeyFindings,
     IReadOnlyList<string> Topics,
+    /// Structured KPIs extracted by the AI pipeline. Raw jsonb array from the DB
+    /// — each element is a JSON object with name/value/unit/time_period/context.
+    /// Null when AI hasn't run yet; the frontend JSON.parses each element.
+    string? IndicatorsJson,
     /// Total number of (non-deleted) comments. Cheap COUNT — included in
     /// the detail payload so the SPA doesn't have to fan out to fetch it
     /// before rendering the comments header badge.
