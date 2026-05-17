@@ -8958,7 +8958,10 @@
             "nullable": true
           },
           "summary": {
-            "type": "string",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
             "nullable": true
           },
           "keyFindings": {
@@ -10649,7 +10652,10 @@
             "nullable": true
           },
           "summary": {
-            "type": "string",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
             "nullable": true
           },
           "keyFindings": {
@@ -11096,7 +11102,10 @@
             "nullable": true
           },
           "summary": {
-            "type": "string",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
             "nullable": true
           },
           "keyFindings": {
