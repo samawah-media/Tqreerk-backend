@@ -6,6 +6,10 @@ public class OrganizationProfile : BaseEntity
 {
     public Guid OrganizationId { get; set; }
     public string? CommercialRegisterNo { get; set; }
+    public string? CommercialRegisterName { get; set; }
+    public DateTime? CommercialRegisterExpiryDate { get; set; }
+    public string? TaxNumber { get; set; }
+    public int? EmployeeCount { get; set; }
     public string? LicenseDocumentUrl { get; set; }
     public bool IssuesReports { get; set; }
     public int AnnualReportsCount { get; set; }

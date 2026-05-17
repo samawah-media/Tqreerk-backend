@@ -10672,6 +10672,10 @@
             },
             "nullable": true
           },
+          "indicatorsJson": {
+            "type": "string",
+            "nullable": true
+          },
           "commentCount": {
             "type": "integer",
             "format": "int32"
@@ -11003,6 +11007,28 @@
           },
           "commercialRegisterNo": {
             "type": "string",
+            "nullable": true
+          },
+          "commercialRegisterName": {
+            "type": "string",
+            "nullable": true
+          },
+          "commercialRegisterExpiryDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "taxNumber": {
+            "type": "string",
+            "nullable": true
+          },
+          "licenseDocumentUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "employeeCount": {
+            "type": "integer",
+            "format": "int32",
             "nullable": true
           },
           "issuesReports": {

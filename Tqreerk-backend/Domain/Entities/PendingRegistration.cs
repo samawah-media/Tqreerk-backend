@@ -28,6 +28,11 @@ public class PendingRegistration
     public string? OrgWebsiteUrl { get; set; }
     public string? OrgSectorScope { get; set; }
     public string? OrgCommercialRegisterNo { get; set; }
+    public string? OrgCommercialRegisterName { get; set; }
+    public DateTime? OrgCommercialRegisterExpiryDate { get; set; }
+    public string? OrgTaxNumber { get; set; }
+    public string? OrgLicenseDocumentUrl { get; set; }
+    public int? OrgEmployeeCount { get; set; }
     public bool OrgIssuesReports { get; set; }
     public int? OrgAnnualReportsCount { get; set; }
     public bool OrgWantsToPublish { get; set; }

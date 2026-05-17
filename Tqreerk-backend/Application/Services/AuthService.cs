@@ -106,6 +106,11 @@ public class AuthService : IAuthService
             OrgWebsiteUrl = req.WebsiteUrl,
             OrgSectorScope = req.SectorScope,
             OrgCommercialRegisterNo = req.CommercialRegisterNo,
+            OrgCommercialRegisterName = req.CommercialRegisterName,
+            OrgCommercialRegisterExpiryDate = req.CommercialRegisterExpiryDate,
+            OrgTaxNumber = req.TaxNumber,
+            OrgLicenseDocumentUrl = req.LicenseDocumentUrl,
+            OrgEmployeeCount = req.EmployeeCount,
             OrgIssuesReports = req.IssuesReports,
             OrgAnnualReportsCount = req.AnnualReportsCount,
             OrgWantsToPublish = req.WantsToPublish,
@@ -546,6 +551,11 @@ public class AuthService : IAuthService
                 Profile = new OrganizationProfile
                 {
                     CommercialRegisterNo = pending.OrgCommercialRegisterNo,
+                    CommercialRegisterName = pending.OrgCommercialRegisterName,
+                    CommercialRegisterExpiryDate = pending.OrgCommercialRegisterExpiryDate,
+                    TaxNumber = pending.OrgTaxNumber,
+                    LicenseDocumentUrl = pending.OrgLicenseDocumentUrl,
+                    EmployeeCount = pending.OrgEmployeeCount,
                     IssuesReports = pending.OrgIssuesReports,
                     AnnualReportsCount = pending.OrgAnnualReportsCount ?? 0,
                     WantsToPublish = pending.OrgWantsToPublish,
