@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using PDFtoImage;
 using Taqreerk.Application.DTOs.Reports;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Domain.Entities;
@@ -89,23 +90,27 @@ public class ReportService : IReportService
         CoverUploadResult? coverUpload = null;
         if (coverImage is not null)
         {
-            try
-            {
-                coverUpload = await GenerateAndUploadCoverVariantsAsync(coverImage, orgId, ct);
-            }
-            catch (Exception ex)
-            {
-                // Don't fail the whole report upload because of a cover-image
-                // glitch — the PDF is the load-bearing artefact. The user can
-                // re-upload a cover later via report edit (PR 7).
-                _logger.LogWarning(ex,
-                    "Cover image upload failed for org {OrgId} (filename={Name}, type={Type}); proceeding without cover.",
-                    orgId, coverImage.OriginalFileName, coverImage.ContentType);
-            }
+            // When the caller explicitly provides a cover image, a failure here
+            // must surface — silently dropping it causes the "I uploaded a cover
+            // but it never appeared" confusion. The PDF upload has already
+            // succeeded at this point; we don't roll it back (the report can be
+            // re-uploaded or the cover added later), but we do surface the error
+            // so the admin knows something went wrong.
+            coverUpload = await GenerateAndUploadCoverVariantsAsync(coverImage, orgId, ct);
         }
         else
         {
-            _logger.LogInformation("No cover image provided for new report in org {OrgId}", orgId);
+            // No cover provided — render the first PDF page as a cover thumbnail.
+            _logger.LogInformation("No cover image provided for org {OrgId}; rendering PDF first page as cover.", orgId);
+            try
+            {
+                var pdfBytes = await ReadAllBytesAsync(reportFile.Content, ct);
+                coverUpload = await GenerateCoverFromPdfAsync(pdfBytes, orgId, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "PDF first-page cover render failed for org {OrgId}; proceeding without cover.", orgId);
+            }
         }
 
         // The report goes straight into the admin review queue. Status =
@@ -211,7 +216,7 @@ public class ReportService : IReportService
                 r.DownloadsCount,
                 r.AvgRating,
                 r.IsFeatured,
-                await TrySignAsync(r.CoverImageUrl, ct),
+                TryPublicUrl(r.CoverImageUrl),
                 r.SectorId,
                 r.SectorNameAr,
                 r.CountryId,
@@ -232,6 +237,18 @@ public class ReportService : IReportService
             // Surfacing this — silent null was masking a Cloud Run signing
             // misconfiguration (no private key in ADC creds). See GcsFileStorage.
             _logger.LogWarning(ex, "Signing read URL failed for objectKey={ObjectKey}", objectKey);
+            return null;
+        }
+    }
+
+    // Cover images live in the PUBLIC bucket — no signing needed.
+    private string? TryPublicUrl(string? objectKey)
+    {
+        if (string.IsNullOrWhiteSpace(objectKey)) return null;
+        try { return _files.GetPublicUrl(objectKey); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to build public cover URL for objectKey={ObjectKey}", objectKey);
             return null;
         }
     }
@@ -365,23 +382,12 @@ public class ReportService : IReportService
 
         if (coverImage is not null)
         {
-            try
-            {
-                var newCover = await GenerateAndUploadCoverVariantsAsync(coverImage, orgId, ct);
-                if (newCover is not null)
-                {
-                    report.CoverImageBaseKey = newCover.BaseKey;
-                    report.CoverImageUrl = newCover.MediumKey;
-                    // Old variants under the previous BaseKey become orphan
-                    // GCS objects — cheap to leave for a future sweep job.
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Resubmit: cover image upload failed for org {OrgId}; keeping previous cover.",
-                    orgId);
-            }
+            var newCover = await GenerateAndUploadCoverVariantsAsync(coverImage, orgId, ct)
+                ?? throw new InvalidOperationException("Cover image upload returned no result.");
+            report.CoverImageBaseKey = newCover.BaseKey;
+            report.CoverImageUrl = newCover.MediumKey;
+            // Old variants under the previous BaseKey become orphan
+            // GCS objects — cheap to leave for a future sweep job.
         }
 
         // Back to the queue. Bump SubmittedForReviewAt so FIFO ordering
@@ -471,13 +477,15 @@ public class ReportService : IReportService
             }
         }
 
+        // Cover images are uploaded to the PUBLIC bucket via UploadPublicAsync,
+        // so they don't need signing — just build the public URL directly.
         string? coverUrl = null;
         if (!string.IsNullOrWhiteSpace(row.CoverImageUrl))
         {
-            try { coverUrl = await _files.GetReadUrlAsync(row.CoverImageUrl, ct: ct); }
+            try { coverUrl = _files.GetPublicUrl(row.CoverImageUrl); }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Signing read URL failed for CoverImageUrl={ObjectKey}", row.CoverImageUrl);
+                _logger.LogWarning(ex, "Failed to build public cover URL for CoverImageUrl={ObjectKey}", row.CoverImageUrl);
                 coverUrl = null;
             }
         }
@@ -623,6 +631,10 @@ public class ReportService : IReportService
             "Cover variants uploaded for org {OrgId} at {BaseKey} (thumb={ThumbB}B, med={MedB}B, full={FullB}B)",
             orgId, baseKey, thumb.SizeBytes, medium.SizeBytes, full.SizeBytes);
 
+        var mediumPublicUrl = _files.GetPublicUrl(medium.ObjectKey);
+        _logger.LogInformation(
+            "Cover medium public URL: {Url}", mediumPublicUrl);
+
         return new CoverUploadResult(BaseKey: baseKey, MediumKey: medium.ObjectKey);
     }
 
@@ -635,4 +647,43 @@ public class ReportService : IReportService
     /// works on public objects too — just wastes a sign cycle).
     /// </summary>
     private sealed record CoverUploadResult(string BaseKey, string MediumKey);
+
+    private static async Task<byte[]> ReadAllBytesAsync(Stream stream, CancellationToken ct)
+    {
+        if (stream.CanSeek) stream.Position = 0;
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms, ct);
+        return ms.ToArray();
+    }
+
+    private async Task<CoverUploadResult?> GenerateCoverFromPdfAsync(byte[] pdfBytes, Guid orgId, CancellationToken ct)
+    {
+        var variants = await Task.Run(() =>
+        {
+            using var pdfStream = new MemoryStream(pdfBytes);
+            using var bitmap = Conversion.ToImage(pdfStream, page: 0);
+            return CoverImageVariants.Generate(bitmap);
+        }, ct);
+
+        var coverId = Guid.NewGuid().ToString("N");
+        var folder = $"public/covers/{coverId}";
+
+        var thumb = await _files.UploadPublicAsync(
+            new MemoryStream(variants.Thumb),
+            CoverImageVariants.ThumbName, CoverImageEncoder.ContentType, folder, ct);
+        var medium = await _files.UploadPublicAsync(
+            new MemoryStream(variants.Medium),
+            CoverImageVariants.MediumName, CoverImageEncoder.ContentType, folder, ct);
+        var full = await _files.UploadPublicAsync(
+            new MemoryStream(variants.Full),
+            CoverImageVariants.FullName, CoverImageEncoder.ContentType, folder, ct);
+
+        var baseKey = medium.ObjectKey[..medium.ObjectKey.LastIndexOf('/')];
+        var medPdfUrl = _files.GetPublicUrl(medium.ObjectKey);
+        _logger.LogInformation(
+            "PDF first-page cover for org {OrgId} at {BaseKey} — medium URL: {Url}",
+            orgId, baseKey, medPdfUrl);
+
+        return new CoverUploadResult(BaseKey: baseKey, MediumKey: medium.ObjectKey);
+    }
 }

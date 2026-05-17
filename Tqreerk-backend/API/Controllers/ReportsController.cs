@@ -128,6 +128,12 @@ public class ReportsController : ControllerBase
             var created = await _reports.CreateAsync(userId, dto, reportFile, coverFile, ct);
             return CreatedAtAction(nameof(Get), new { id = created.Id }, created);
         }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("GcsPublicBucketName"))
+        {
+            _logger.LogError(ex, "Cover upload failed: public GCS bucket not configured.");
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { title = "خدمة رفع صور الغلاف غير متاحة حالياً — يرجى التواصل مع الدعم." });
+        }
         finally
         {
             if (coverBuffer is not null) await coverBuffer.DisposeAsync();
