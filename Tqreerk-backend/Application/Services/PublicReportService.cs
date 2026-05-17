@@ -13,11 +13,19 @@ public class PublicReportService : IPublicReportService
 {
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
+    private readonly IReportAiService _ai;
+    private readonly ILogger<PublicReportService> _logger;
 
-    public PublicReportService(TaqreerkDbContext db, IFileStorage files)
+    public PublicReportService(
+        TaqreerkDbContext db,
+        IFileStorage files,
+        IReportAiService ai,
+        ILogger<PublicReportService> logger)
     {
         _db = db;
         _files = files;
+        _ai = ai;
+        _logger = logger;
     }
 
     public async Task<PagedResult<PublicReportListItemDto>> ListAsync(
@@ -96,6 +104,24 @@ public class PublicReportService : IPublicReportService
             .Where(c => c.ReportId == row.Id && c.Language == row.OriginalLanguage)
             .Select(c => new { c.Summary, c.KeyFindings, c.Topics, c.Indicators })
             .FirstOrDefaultAsync(ct);
+
+        // If no AI content exists yet, kick off the ingest+summarize pipeline
+        // in the background. The current request returns immediately with empty
+        // summary/indicators; subsequent page loads will have the data once the
+        // AI service finishes (typically 30-90 s). EnqueueIngestAsync is
+        // idempotent so concurrent page loads don't spawn duplicate jobs.
+        if (ai is null && !string.IsNullOrWhiteSpace(row.FileUrl))
+        {
+            _ = Task.Run(async () =>
+            {
+                try { await _ai.EnqueueIngestAsync(row.Id); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "[public] Background ingest trigger failed for report {ReportId}", row.Id);
+                }
+            });
+        }
 
         var fileUrl = await ResolveFileUrlAsync(row.FileUrl, ct);
         var (coverUrl, coverVariants) = await ResolveCoverAsync(row.CoverImageUrl, row.CoverImageBaseKey, ct);
