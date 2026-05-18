@@ -182,6 +182,7 @@ public static class ServiceExtensions
         services.AddScoped<IAdminOrganizationsService, AdminOrganizationsService>();
         services.AddScoped<IAdminUsersService, AdminUsersService>();
         services.AddScoped<IAdminCategoriesService, AdminCategoriesService>();
+        services.AddScoped<IAdminPartnersService, AdminPartnersService>();
         services.AddScoped<IAdminFeaturedService, AdminFeaturedService>();
         services.AddScoped<IAdminPlansService, AdminPlansService>();
         services.AddScoped<IAdminStatsService, AdminStatsService>();

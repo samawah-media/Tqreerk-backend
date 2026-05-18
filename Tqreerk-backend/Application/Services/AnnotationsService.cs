@@ -191,7 +191,7 @@ public class AnnotationsService : IAnnotationsService
             .Select(r => r.Slug)
             .FirstOrDefaultAsync(ct);
         if (slug is null)
-            throw new KeyNotFoundException("Report not found in your saved list.");
+            throw new KeyNotFoundException("Report not found.");
 
         var detail = await _publicReports.GetBySlugAsync(slug, ct);
 
@@ -227,16 +227,17 @@ public class AnnotationsService : IAnnotationsService
             Note: note);
     }
 
-    /// 404 path for every endpoint here. We intentionally surface the
-    /// same "not found" whether the report doesn't exist OR the user
-    /// hasn't saved it — leaks the least info to malicious callers.
+    /// 404 path for every endpoint here. Editor + annotations are now
+    /// open to any authenticated user on any published report — no
+    /// "must be saved first" gate. We still 404 on missing/unpublished
+    /// reports so callers can't probe for existence.
     private async Task EnsureSavedAsync(Guid userId, Guid reportId, CancellationToken ct)
     {
-        var saved = await _db.SavedReports
+        var exists = await _db.Reports
             .AsNoTracking()
-            .AnyAsync(s => s.UserId == userId && s.ReportId == reportId, ct);
-        if (!saved)
-            throw new KeyNotFoundException("Report not found in your saved list.");
+            .AnyAsync(r => r.Id == reportId && r.Status == ReportStatus.Published, ct);
+        if (!exists)
+            throw new KeyNotFoundException("Report not found.");
     }
 
     private static AnnotationDto ToDto(ReportAnnotation a) =>

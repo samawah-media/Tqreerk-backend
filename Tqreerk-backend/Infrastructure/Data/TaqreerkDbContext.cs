@@ -23,6 +23,7 @@ public class TaqreerkDbContext : DbContext
     // Reference data
     public DbSet<Country> Countries => Set<Country>();
     public DbSet<Sector> Sectors => Set<Sector>();
+    public DbSet<Partner> Partners => Set<Partner>();
 
     // Reports
     public DbSet<Report> Reports => Set<Report>();

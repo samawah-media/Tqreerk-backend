@@ -1696,6 +1696,235 @@
         }
       }
     },
+    "/api/admin/partners": {
+      "get": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminPartnerDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "NameAr": {
+                    "type": "string"
+                  },
+                  "NameEn": {
+                    "type": "string"
+                  },
+                  "WebsiteUrl": {
+                    "type": "string"
+                  },
+                  "IsActive": {
+                    "type": "boolean"
+                  },
+                  "logo": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              },
+              "encoding": {
+                "NameAr": {
+                  "style": "form"
+                },
+                "NameEn": {
+                  "style": "form"
+                },
+                "WebsiteUrl": {
+                  "style": "form"
+                },
+                "IsActive": {
+                  "style": "form"
+                },
+                "logo": {
+                  "style": "form"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPartnerDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/partners/{id}": {
+      "patch": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "NameAr": {
+                    "type": "string"
+                  },
+                  "NameEn": {
+                    "type": "string"
+                  },
+                  "WebsiteUrl": {
+                    "type": "string"
+                  },
+                  "IsActive": {
+                    "type": "boolean"
+                  },
+                  "logo": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              },
+              "encoding": {
+                "NameAr": {
+                  "style": "form"
+                },
+                "NameEn": {
+                  "style": "form"
+                },
+                "WebsiteUrl": {
+                  "style": "form"
+                },
+                "IsActive": {
+                  "style": "form"
+                },
+                "logo": {
+                  "style": "form"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPartnerDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/partners/reorder": {
+      "post": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
     "/api/admin/plans": {
       "get": {
         "tags": [
@@ -5104,6 +5333,18 @@
         }
       }
     },
+    "/api/partners": {
+      "get": {
+        "tags": [
+          "Partners"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/me/points": {
       "get": {
         "tags": [
@@ -7634,6 +7875,24 @@
         },
         "additionalProperties": false
       },
+      "ActivityRelatedReportDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "slug": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "AdminCountryDto": {
         "type": "object",
         "properties": {
@@ -7948,6 +8207,39 @@
             "format": "int32"
           },
           "pageSize": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdminPartnerDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "nameEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "logoUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "websiteUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "sortOrder": {
             "type": "integer",
             "format": "int32"
           }
@@ -9735,6 +10027,17 @@
           "occurredAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "metadata": {
+            "type": "string",
+            "nullable": true
+          },
+          "relatedReports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActivityRelatedReportDto"
+            },
+            "nullable": true
           }
         },
         "additionalProperties": false

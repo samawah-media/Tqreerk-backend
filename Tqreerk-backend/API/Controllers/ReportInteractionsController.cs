@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Taqreerk.Application.DTOs.Reports;
 using Taqreerk.Application.Interfaces;
+using Taqreerk.Domain.Enums;
 
 namespace Taqreerk.API.Controllers;
 
@@ -19,10 +20,14 @@ namespace Taqreerk.API.Controllers;
 public class ReportInteractionsController : ControllerBase
 {
     private readonly IReportInteractionsService _interactions;
+    private readonly IUsageService _usage;
 
-    public ReportInteractionsController(IReportInteractionsService interactions)
+    public ReportInteractionsController(
+        IReportInteractionsService interactions,
+        IUsageService usage)
     {
         _interactions = interactions;
+        _usage = usage;
     }
 
     /// <summary>Rate (or update my rating on) a report. 1..5 stars, optional review note.</summary>
@@ -54,7 +59,12 @@ public class ReportInteractionsController : ControllerBase
     public async Task<IActionResult> Save(Guid id, CancellationToken ct)
     {
         if (!TryGetUserId(out var userId)) return Unauthorized();
-        return Ok(await _interactions.SaveAsync(userId, id, ct));
+        var result = await _interactions.SaveAsync(userId, id, ct);
+        // Log to usage_tracking so the row shows up in the user's recent
+        // activity feed. Not gated — saves don't burn the free-tier read
+        // cap, this is purely audit/visibility.
+        await _usage.RecordUsageAsync(userId, UsageActionType.SaveReport, id, null, ct);
+        return Ok(result);
     }
 
     /// <summary>Remove this report from my saved list.</summary>
@@ -104,6 +114,16 @@ public class ReportInteractionsController : ControllerBase
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
         var ua = HttpContext.Request.Headers.UserAgent.ToString();
         await _interactions.RecordViewAsync(id, userId, ip, ua, ct);
+
+        // Also drop a row on usage_tracking for authenticated users so the
+        // recent-activity feed picks it up. Not gated — the feed is about
+        // visibility, not enforcement. Guests skip this entirely.
+        if (userId.HasValue)
+        {
+            await _usage.RecordUsageAsync(
+                userId.Value, UsageActionType.ReportFullAccess, id, null, ct);
+        }
+
         return NoContent();
     }
 

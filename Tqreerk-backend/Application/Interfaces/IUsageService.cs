@@ -22,12 +22,18 @@ public interface IUsageService
     /// returned to the caller. If `actionFn` throws, the usage row is
     /// rolled back together with whatever it did so we don't burn a count
     /// on a failed action.
+    ///
+    /// `metadata` is an opaque JSON string (stored in the `metadata` jsonb
+    /// column). Use it for context the activity feed needs but the
+    /// resourceId alone can't carry — e.g. the second report ID for an
+    /// AiCompare, or the target language for an AiTranslate.
     Task<TResult> EnsureWithinLimitAndConsumeAsync<TResult>(
         Guid userId,
         UsageActionType actionType,
         Guid? resourceId,
         Func<CancellationToken, Task<TResult>> actionFn,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        string? metadata = null);
 
     /// Same as the generic overload but for void actions.
     Task EnsureWithinLimitAndConsumeAsync(
@@ -35,6 +41,20 @@ public interface IUsageService
         UsageActionType actionType,
         Guid? resourceId,
         Func<CancellationToken, Task> actionFn,
+        CancellationToken ct = default,
+        string? metadata = null);
+
+    /// Append a usage_tracking row WITHOUT enforcing the plan limit.
+    /// For actions that should appear in the user's recent-activity feed
+    /// but must not be gated — e.g. opening a report (we still want a
+    /// record, but blocking reads at the free-tier cap is a separate
+    /// product decision). Failures are swallowed: this is best-effort
+    /// telemetry, not a critical path.
+    Task RecordUsageAsync(
+        Guid userId,
+        UsageActionType actionType,
+        Guid? resourceId,
+        string? metadata = null,
         CancellationToken ct = default);
 
     /// Read-only check for the user's current month consumption against
