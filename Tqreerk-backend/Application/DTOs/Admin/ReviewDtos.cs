@@ -4,7 +4,8 @@ namespace Taqreerk.Application.DTOs.Admin;
 /// detail separately when the reviewer opens a report.
 public record ReviewQueueItemDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug,
     /// "PendingReview" or "UnderReview" — same enum names as Report.Status.
     string Status,
@@ -56,7 +57,8 @@ public record ReviewQueueRequest(
 /// previous notes alongside the new submission.
 public record ReportForReviewDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug,
     string Status,
     string? Description,

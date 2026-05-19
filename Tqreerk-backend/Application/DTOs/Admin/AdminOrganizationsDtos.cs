@@ -96,7 +96,8 @@ public record SuspendOrganizationRequest(
 /// just without permission filtering since admin sees everything.
 public record AdminOrganizationReportItemDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Status,
     string? Slug,
     DateTime CreatedAt,

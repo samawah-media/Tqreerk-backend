@@ -105,7 +105,7 @@ public class OrganizationAnalyticsService : IOrganizationAnalyticsService
         var reportMeta = await _db.Reports
             .AsNoTracking()
             .Where(r => topIds.Contains(r.Id))
-            .Select(r => new { r.Id, r.Title, r.Slug, r.CoverImageUrl })
+            .Select(r => new { r.Id, r.TitleAr, r.TitleEn, r.Slug, r.CoverImageUrl })
             .ToListAsync(ct);
 
         var metaByReport = reportMeta.ToDictionary(r => r.Id);
@@ -117,7 +117,7 @@ public class OrganizationAnalyticsService : IOrganizationAnalyticsService
                 var meta = metaByReport[x.ReportId];
                 ratingByReport.TryGetValue(x.ReportId, out var rating);
                 return new ReportLeaderboardItemDto(
-                    meta.Id, meta.Title, meta.Slug, meta.CoverImageUrl,
+                    meta.Id, meta.TitleAr, meta.TitleEn, meta.Slug, meta.CoverImageUrl,
                     x.Views,
                     rating?.Count ?? 0,
                     rating is null ? 0m : Math.Round((decimal)rating.Avg, 2));
@@ -140,7 +140,7 @@ public class OrganizationAnalyticsService : IOrganizationAnalyticsService
         var report = await _db.Reports
             .AsNoTracking()
             .Where(r => r.Id == reportId && r.OrganizationId == orgId)
-            .Select(r => new { r.Id, r.Title })
+            .Select(r => new { r.Id, r.TitleAr, r.TitleEn })
             .FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException("Report not found.");
 
@@ -173,7 +173,7 @@ public class OrganizationAnalyticsService : IOrganizationAnalyticsService
                                  DateOnly.FromDateTime(toUtc));
 
         return new ReportAnalyticsDto(
-            report.Id, report.Title, fromUtc, toUtc,
+            report.Id, report.TitleAr, report.TitleEn, fromUtc, toUtc,
             totalViews, totalRatings, averageRating, series);
     }
 

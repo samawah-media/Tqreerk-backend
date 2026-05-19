@@ -3385,8 +3385,8 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.AnnotationsController",
-    "Method": "GetNote",
-    "RelativePath": "api/me/reports/{reportId}/note",
+    "Method": "ListNotes",
+    "RelativePath": "api/me/reports/{reportId}/notes",
     "HttpMethod": "GET",
     "IsController": true,
     "Order": 0,
@@ -3399,7 +3399,7 @@
     ],
     "ReturnTypes": [
       {
-        "Type": "Taqreerk.Application.DTOs.Annotations.PersonalNoteDto",
+        "Type": "System.Collections.Generic.IReadOnlyList\u00601[[Taqreerk.Application.DTOs.Annotations.PersonalNoteDto, Tqreerk-backend, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
         "MediaTypes": [
           "application/json"
         ],
@@ -3416,14 +3416,62 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.AnnotationsController",
-    "Method": "UpsertNote",
-    "RelativePath": "api/me/reports/{reportId}/note",
-    "HttpMethod": "PUT",
+    "Method": "CreateNote",
+    "RelativePath": "api/me/reports/{reportId}/notes",
+    "HttpMethod": "POST",
     "IsController": true,
     "Order": 0,
     "Parameters": [
       {
         "Name": "reportId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Annotations.CreatePersonalNoteRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Annotations.PersonalNoteDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 201
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AnnotationsController",
+    "Method": "UpdateNote",
+    "RelativePath": "api/me/reports/{reportId}/notes/{noteId}",
+    "HttpMethod": "PATCH",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "reportId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "noteId",
         "Type": "System.Guid",
         "IsRequired": true
       },
@@ -3447,6 +3495,40 @@
           "application/json"
         ],
         "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AnnotationsController",
+    "Method": "DeleteNote",
+    "RelativePath": "api/me/reports/{reportId}/notes/{noteId}",
+    "HttpMethod": "DELETE",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "reportId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "noteId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 204
       },
       {
         "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
@@ -3829,6 +3911,37 @@
           "application/json"
         ],
         "StatusCode": 409
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.OrganizationsController",
+    "Method": "UpdateNames",
+    "RelativePath": "api/organizations/me/names",
+    "HttpMethod": "PATCH",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Organizations.UpdateOrganizationNamesRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Organizations.OrganizationDetailDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 400
       }
     ]
   },
@@ -4655,7 +4768,12 @@
         "IsRequired": false
       },
       {
-        "Name": "Title",
+        "Name": "TitleAr",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "TitleEn",
         "Type": "System.String",
         "IsRequired": false
       },

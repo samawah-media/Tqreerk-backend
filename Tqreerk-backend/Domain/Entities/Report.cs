@@ -10,7 +10,12 @@ public class Report : SoftDeletableEntity
     public Guid UploadedByUserId { get; set; }
     public Guid? SectorId { get; set; }
     public Guid? CountryId { get; set; }
-    public string Title { get; set; } = string.Empty;
+    /// Arabic display title. Required. Also drives slug generation.
+    public string TitleAr { get; set; } = string.Empty;
+
+    /// English display title. Required. Used by the SPA when locale=en.
+    public string TitleEn { get; set; } = string.Empty;
+
     public string Slug { get; set; } = string.Empty;
     public string? Description { get; set; }
     public string? ReportType { get; set; }

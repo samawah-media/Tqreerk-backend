@@ -127,51 +127,78 @@ public class AnnotationsService : IAnnotationsService
         await _db.SaveChangesAsync(ct);
     }
 
-    public async Task<PersonalNoteDto> GetNoteAsync(
+    public async Task<IReadOnlyList<PersonalNoteDto>> ListNotesAsync(
         Guid userId, Guid reportId, CancellationToken ct = default)
     {
         await EnsureSavedAsync(userId, reportId, ct);
 
-        var row = await _db.ReportPersonalNotes
+        return await _db.ReportPersonalNotes
             .AsNoTracking()
-            .FirstOrDefaultAsync(n => n.UserId == userId && n.ReportId == reportId, ct);
-
-        // Empty-stub when no row exists. Lets the editor render an
-        // empty textarea without a separate "exists?" probe.
-        return row is null
-            ? new PersonalNoteDto(Body: "", UpdatedAt: null)
-            : new PersonalNoteDto(row.Body, row.UpdatedAt);
+            .Where(n => n.UserId == userId && n.ReportId == reportId)
+            .OrderByDescending(n => n.CreatedAt)
+            .Select(n => new PersonalNoteDto(n.Id, n.Body, n.CreatedAt, n.UpdatedAt))
+            .ToListAsync(ct);
     }
 
-    public async Task<PersonalNoteDto> UpsertNoteAsync(
-        Guid userId, Guid reportId, UpdatePersonalNoteRequest req, CancellationToken ct = default)
+    public async Task<PersonalNoteDto> CreateNoteAsync(
+        Guid userId, Guid reportId, CreatePersonalNoteRequest req, CancellationToken ct = default)
     {
         await EnsureSavedAsync(userId, reportId, ct);
 
-        var body = req.Body ?? "";
+        var body = (req.Body ?? "").Trim();
+        if (string.IsNullOrEmpty(body))
+            throw new ArgumentException("Note body is required.");
         if (body.Length > 50_000)
             throw new ArgumentException("Note is too long (max 50000 chars).");
 
-        var existing = await _db.ReportPersonalNotes
-            .FirstOrDefaultAsync(n => n.UserId == userId && n.ReportId == reportId, ct);
-
-        if (existing is null)
+        var row = new ReportPersonalNote
         {
-            existing = new ReportPersonalNote
-            {
-                UserId = userId,
-                ReportId = reportId,
-                Body = body,
-            };
-            _db.ReportPersonalNotes.Add(existing);
-        }
-        else
-        {
-            existing.Body = body;
-        }
+            UserId = userId,
+            ReportId = reportId,
+            Body = body,
+        };
 
+        _db.ReportPersonalNotes.Add(row);
         await _db.SaveChangesAsync(ct);
-        return new PersonalNoteDto(existing.Body, existing.UpdatedAt);
+
+        return new PersonalNoteDto(row.Id, row.Body, row.CreatedAt, row.UpdatedAt);
+    }
+
+    public async Task<PersonalNoteDto> UpdateNoteAsync(
+        Guid userId, Guid reportId, Guid noteId,
+        UpdatePersonalNoteRequest req, CancellationToken ct = default)
+    {
+        await EnsureSavedAsync(userId, reportId, ct);
+
+        var body = (req.Body ?? "").Trim();
+        if (string.IsNullOrEmpty(body))
+            throw new ArgumentException("Note body is required.");
+        if (body.Length > 50_000)
+            throw new ArgumentException("Note is too long (max 50000 chars).");
+
+        var row = await _db.ReportPersonalNotes
+            .FirstOrDefaultAsync(
+                n => n.Id == noteId && n.UserId == userId && n.ReportId == reportId, ct)
+            ?? throw new KeyNotFoundException("Note not found.");
+
+        row.Body = body;
+        await _db.SaveChangesAsync(ct);
+
+        return new PersonalNoteDto(row.Id, row.Body, row.CreatedAt, row.UpdatedAt);
+    }
+
+    public async Task DeleteNoteAsync(
+        Guid userId, Guid reportId, Guid noteId, CancellationToken ct = default)
+    {
+        await EnsureSavedAsync(userId, reportId, ct);
+
+        var row = await _db.ReportPersonalNotes
+            .FirstOrDefaultAsync(
+                n => n.Id == noteId && n.UserId == userId && n.ReportId == reportId, ct)
+            ?? throw new KeyNotFoundException("Note not found.");
+
+        _db.ReportPersonalNotes.Remove(row);
+        await _db.SaveChangesAsync(ct);
     }
 
     public async Task<EditorBootstrapDto> GetEditorBootstrapAsync(
@@ -218,13 +245,13 @@ public class AnnotationsService : IAnnotationsService
         };
 
         var annotations = await ListAsync(userId, reportId, ct);
-        var note = await GetNoteAsync(userId, reportId, ct);
+        var notes = await ListNotesAsync(userId, reportId, ct);
 
         return new EditorBootstrapDto(
             Report: detail,
             Plan: new EditorPlanInfo(planId, tier, planNameAr, planNameEn),
             Annotations: annotations,
-            Note: note);
+            Notes: notes);
     }
 
     /// 404 path for every endpoint here. Editor + annotations are now

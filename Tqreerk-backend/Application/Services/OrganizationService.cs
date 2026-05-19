@@ -50,6 +50,21 @@ public class OrganizationService : IOrganizationService
         return await ToDtoAsync(org, ct);
     }
 
+    public async Task<OrganizationDetailDto> UpdateNamesAsync(Guid userId, UpdateOrganizationNamesRequest req, CancellationToken ct = default)
+    {
+        var org = await LoadOrgForUserAsync(userId, ct);
+
+        var ar = (req.NameAr ?? "").Trim();
+        var en = (req.NameEn ?? "").Trim();
+        if (ar.Length == 0) throw new ArgumentException("Arabic name is required.");
+        if (en.Length == 0) throw new ArgumentException("English name is required.");
+
+        org.NameAr = ar;
+        org.NameEn = en;
+        await _db.SaveChangesAsync(ct);
+        return await ToDtoAsync(org, ct);
+    }
+
     public async Task<OrganizationDetailDto> UpdateBasicsAsync(Guid userId, UpdateOrganizationBasicsRequest req, CancellationToken ct = default)
     {
         var org = await LoadOrgForUserAsync(userId, ct);

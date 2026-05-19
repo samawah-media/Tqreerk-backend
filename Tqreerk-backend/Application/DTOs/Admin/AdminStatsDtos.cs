@@ -53,7 +53,8 @@ public record NamedCountDto(string Name, int Count);
 
 public record TopReportDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string OrganizationNameAr,
     long Metric,
     /// "views" | "downloads" | "rating" — lets the SPA show units.
@@ -64,7 +65,8 @@ public record TimeseriesPointDto(DateTime Date, int Count);
 
 public record RejectionNoteDto(
     Guid ReportId,
-    string ReportTitle,
+    string ReportTitleAr,
+    string ReportTitleEn,
     string OrganizationNameAr,
     string? Notes,
     DateTime ReviewedAt

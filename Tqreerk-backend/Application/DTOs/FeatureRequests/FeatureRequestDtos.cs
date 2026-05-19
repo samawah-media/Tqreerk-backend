@@ -10,7 +10,8 @@ namespace Taqreerk.Application.DTOs.FeatureRequests;
 public sealed record FeatureRequestDto(
     Guid Id,
     Guid ReportId,
-    string ReportTitle,
+    string ReportTitleAr,
+    string ReportTitleEn,
     string ReportSlug,
     string? ReportCoverImageUrl,
     Guid OrganizationId,

@@ -69,7 +69,8 @@ public class PublicReportService : IPublicReportService
             {
                 r.Id,
                 r.Slug,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Description,
                 r.ReportType,
                 r.OriginalLanguage,
@@ -89,8 +90,10 @@ public class PublicReportService : IPublicReportService
                 OrgNameEn = r.Organization.NameEn,
                 r.SectorId,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
+                SectorNameEn = r.Sector != null ? r.Sector.NameEn : null,
                 r.CountryId,
                 CountryNameAr = r.Country != null ? r.Country.NameAr : null,
+                CountryNameEn = r.Country != null ? r.Country.NameEn : null,
                 r.CreatedAt,
             })
             .FirstOrDefaultAsync(ct)
@@ -139,7 +142,8 @@ public class PublicReportService : IPublicReportService
         return new PublicReportDetailDto(
             row.Id,
             row.Slug,
-            row.Title,
+            row.TitleAr,
+            row.TitleEn,
             row.Description,
             row.ReportType,
             row.OriginalLanguage,
@@ -159,8 +163,10 @@ public class PublicReportService : IPublicReportService
             row.OrgNameEn,
             row.SectorId,
             row.SectorNameAr,
+            row.SectorNameEn,
             row.CountryId,
             row.CountryNameAr,
+            row.CountryNameEn,
             ParseJsonStringArray(ai?.Summary),
             ParseJsonStringArray(ai?.KeyFindings),
             ParseJsonStringArray(ai?.Topics),
@@ -413,7 +419,8 @@ public class PublicReportService : IPublicReportService
         {
             var like = $"%{req.Q.Trim()}%";
             q = q.Where(r =>
-                EF.Functions.ILike(r.Title, like)
+                EF.Functions.ILike(r.TitleAr, like)
+                || EF.Functions.ILike(r.TitleEn, like)
                 || (r.Description != null && EF.Functions.ILike(r.Description, like)));
         }
 
@@ -461,7 +468,8 @@ public class PublicReportService : IPublicReportService
             {
                 r.Id,
                 r.Slug,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Description,
                 r.ReportType,
                 r.OriginalLanguage,
@@ -479,8 +487,10 @@ public class PublicReportService : IPublicReportService
                 OrgNameEn = r.Organization.NameEn,
                 r.SectorId,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
+                SectorNameEn = r.Sector != null ? r.Sector.NameEn : null,
                 r.CountryId,
                 CountryNameAr = r.Country != null ? r.Country.NameAr : null,
+                CountryNameEn = r.Country != null ? r.Country.NameEn : null,
                 r.CreatedAt,
             })
             .ToListAsync(ct);
@@ -492,7 +502,8 @@ public class PublicReportService : IPublicReportService
             dtos.Add(new PublicReportListItemDto(
                 r.Id,
                 r.Slug,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Description,
                 r.ReportType,
                 r.OriginalLanguage,
@@ -510,8 +521,10 @@ public class PublicReportService : IPublicReportService
                 r.OrgNameEn,
                 r.SectorId,
                 r.SectorNameAr,
+                r.SectorNameEn,
                 r.CountryId,
                 r.CountryNameAr,
+                r.CountryNameEn,
                 r.CreatedAt
             ));
         }

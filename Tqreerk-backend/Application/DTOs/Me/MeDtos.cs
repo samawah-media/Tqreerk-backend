@@ -9,7 +9,8 @@ namespace Taqreerk.Application.DTOs.Me;
 /// count, view count, and the save timestamp for ordering.
 public sealed record MySavedReportDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug,
     string? CoverImageUrl,
     string? SectorNameAr,
@@ -37,7 +38,8 @@ public sealed record MyActivityItemDto(
     Guid Id,
     UsageActionType ActionType,
     Guid? ResourceId,
-    string? ReportTitle,
+    string? ReportTitleAr,
+    string? ReportTitleEn,
     string? ReportSlug,
     DateTime OccurredAt,
     string? Metadata,
@@ -49,5 +51,6 @@ public sealed record MyActivityItemDto(
 /// the reports table.
 public sealed record ActivityRelatedReportDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug);

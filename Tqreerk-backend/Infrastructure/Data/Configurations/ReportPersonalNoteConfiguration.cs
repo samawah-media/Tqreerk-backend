@@ -16,10 +16,7 @@ public class ReportPersonalNoteConfiguration : IEntityTypeConfiguration<ReportPe
 
         builder.Property(n => n.Body).IsRequired().HasMaxLength(50_000);
 
-        // Enforces the one-note-per-(user,report) invariant. Upsert path
-        // in NotesService relies on this.
         builder.HasIndex(n => new { n.UserId, n.ReportId })
-            .IsUnique()
             .HasDatabaseName("ix_report_personal_notes_user_report");
 
         builder.HasOne(n => n.User)

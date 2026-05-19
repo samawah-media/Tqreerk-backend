@@ -108,7 +108,8 @@ public class ReviewService : IReviewService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.Status,
                 r.ReportType,
@@ -129,7 +130,8 @@ public class ReviewService : IReviewService
         var items = rows
             .Select(r => new ReviewQueueItemDto(
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.Status.ToString(),
                 r.ReportType,
@@ -486,7 +488,8 @@ public class ReviewService : IReviewService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.Status,
                 r.Description,
@@ -533,7 +536,8 @@ public class ReviewService : IReviewService
 
         return new ReportForReviewDto(
             row.Id,
-            row.Title,
+            row.TitleAr,
+            row.TitleEn,
             row.Slug,
             row.Status.ToString(),
             row.Description,

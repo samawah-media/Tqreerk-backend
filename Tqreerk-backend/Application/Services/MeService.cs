@@ -35,7 +35,8 @@ public class MeService : IMeService
             .Select(s => new
             {
                 s.Report.Id,
-                s.Report.Title,
+                s.Report.TitleAr,
+                s.Report.TitleEn,
                 s.Report.Slug,
                 s.Report.CoverImageUrl,
                 SectorNameAr = s.Report.Sector != null ? s.Report.Sector.NameAr : null,
@@ -59,7 +60,7 @@ public class MeService : IMeService
             var cover = await ResolveAsync(r.CoverImageUrl, ct);
             var logo = await ResolveAsync(r.OrganizationLogoUrl, ct);
             dtos.Add(new MySavedReportDto(
-                r.Id, r.Title, r.Slug, cover,
+                r.Id, r.TitleAr, r.TitleEn, r.Slug, cover,
                 r.SectorNameAr, r.CountryNameAr,
                 r.PublicationYear, r.PageCount, r.ViewsCount,
                 r.OrganizationNameAr, logo,
@@ -122,7 +123,8 @@ public class MeService : IMeService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.CoverImageUrl,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
@@ -147,7 +149,7 @@ public class MeService : IMeService
             var cover = await ResolveAsync(r.CoverImageUrl, ct);
             var logo = await ResolveAsync(r.OrganizationLogoUrl, ct);
             dtos.Add(new MySavedReportDto(
-                r.Id, r.Title, r.Slug, cover,
+                r.Id, r.TitleAr, r.TitleEn, r.Slug, cover,
                 r.SectorNameAr, r.CountryNameAr,
                 r.PublicationYear, r.PageCount, r.ViewsCount,
                 r.OrganizationNameAr, logo,
@@ -177,7 +179,8 @@ public class MeService : IMeService
                 u.Id,
                 u.ActionType,
                 u.ResourceId,
-                ReportTitle = r != null ? r.Title : null,
+                ReportTitleAr = r != null ? r.TitleAr : null,
+                ReportTitleEn = r != null ? r.TitleEn : null,
                 ReportSlug = r != null ? r.Slug : null,
                 u.Metadata,
                 OccurredAt = u.ConsumedAt,
@@ -204,12 +207,12 @@ public class MeService : IMeService
         }
 
         var lookup = extraIds.Count == 0
-            ? new Dictionary<Guid, (string Title, string Slug)>()
+            ? new Dictionary<Guid, (string TitleAr, string TitleEn, string Slug)>()
             : await _db.Reports
                 .AsNoTracking()
                 .Where(r => extraIds.Contains(r.Id))
-                .Select(r => new { r.Id, r.Title, r.Slug })
-                .ToDictionaryAsync(r => r.Id, r => (r.Title, r.Slug), ct);
+                .Select(r => new { r.Id, r.TitleAr, r.TitleEn, r.Slug })
+                .ToDictionaryAsync(r => r.Id, r => (r.TitleAr, r.TitleEn, r.Slug), ct);
 
         return rows
             .Select(row =>
@@ -218,7 +221,7 @@ public class MeService : IMeService
                     ? extras
                         .Where(id => lookup.ContainsKey(id))
                         .Select(id => new ActivityRelatedReportDto(
-                            id, lookup[id].Title, lookup[id].Slug))
+                            id, lookup[id].TitleAr, lookup[id].TitleEn, lookup[id].Slug))
                         .ToList()
                     : new List<ActivityRelatedReportDto>();
 
@@ -226,7 +229,8 @@ public class MeService : IMeService
                     row.Id,
                     row.ActionType,
                     row.ResourceId,
-                    row.ReportTitle,
+                    row.ReportTitleAr,
+                    row.ReportTitleEn,
                     row.ReportSlug,
                     row.OccurredAt,
                     row.Metadata,

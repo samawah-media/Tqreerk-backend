@@ -13,7 +13,8 @@ public class ReportConfiguration : IEntityTypeConfiguration<Report>
         builder.HasKey(r => r.Id);
         builder.Property(r => r.Id).HasDefaultValueSql("gen_random_uuid()");
 
-        builder.Property(r => r.Title).IsRequired().HasMaxLength(500);
+        builder.Property(r => r.TitleAr).IsRequired().HasMaxLength(500);
+        builder.Property(r => r.TitleEn).IsRequired().HasMaxLength(500);
         builder.Property(r => r.Slug).IsRequired().HasMaxLength(500);
         builder.Property(r => r.OriginalLanguage).IsRequired().HasMaxLength(5).HasDefaultValue("ar");
         builder.Property(r => r.ReportType).HasMaxLength(100);

@@ -11,4 +11,5 @@ public sealed record PublicPlanDto(
     string TargetType,      // "Individual" | "Organization"
     decimal AnnualPrice,
     bool   IsHighlighted,   // true on the "most popular" tier per group
-    IReadOnlyList<string> FeaturesAr);
+    IReadOnlyList<string> FeaturesAr,
+    IReadOnlyList<string> FeaturesEn);

@@ -16,7 +16,8 @@ public record FeaturedReportDto(
     DateTime CreatedAt,
 
     // Report snapshot
-    string ReportTitle,
+    string ReportTitleAr,
+    string ReportTitleEn,
     string? ReportSlug,
     string? ReportCoverImageUrl,
     string ReportStatus,

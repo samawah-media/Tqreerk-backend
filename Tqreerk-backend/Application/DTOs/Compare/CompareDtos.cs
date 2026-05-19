@@ -13,7 +13,8 @@ public sealed record CreateComparisonRequest(
 /// page stays visually consistent.
 public sealed record ComparedReportDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug,
     string? CoverImageUrl,
     string? OrganizationNameAr,
@@ -50,4 +51,7 @@ public sealed record ComparisonListItemDto(
     Guid Id,
     DateTime CreatedAt,
     int ReportCount,
-    IReadOnlyList<string> ReportTitles);
+    IReadOnlyList<ComparisonTitleDto> ReportTitles);
+
+/// Bilingual title pair surfaced in comparison history rows.
+public sealed record ComparisonTitleDto(string TitleAr, string TitleEn);

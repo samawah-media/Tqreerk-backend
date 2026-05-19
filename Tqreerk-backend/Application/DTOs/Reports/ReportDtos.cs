@@ -5,7 +5,8 @@ namespace Taqreerk.Application.DTOs.Reports;
 /// Summary row for the org's reports list (and the public library, eventually).
 public record ReportListItemDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug,
     string Status,
     string? ReportType,
@@ -19,8 +20,10 @@ public record ReportListItemDto(
     string? CoverImageUrl,
     Guid? SectorId,
     string? SectorNameAr,
+    string? SectorNameEn,
     Guid? CountryId,
     string? CountryNameAr,
+    string? CountryNameEn,
     DateTime CreatedAt
 );
 
@@ -31,7 +34,8 @@ public record ReportDetailDto(
     Guid OrganizationId,
     string OrganizationNameAr,
     Guid UploadedByUserId,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug,
     string? Description,
     string? ReportType,
@@ -50,8 +54,10 @@ public record ReportDetailDto(
     string SourceType,
     Guid? SectorId,
     string? SectorNameAr,
+    string? SectorNameEn,
     Guid? CountryId,
     string? CountryNameAr,
+    string? CountryNameEn,
     /// Latest review decision the report received (Approved / Rejected /
     /// ReturnedForEdit). Null when nobody has reviewed it yet — the org
     /// dashboard uses this to render the review-notes banner.
@@ -64,7 +70,8 @@ public record ReportDetailDto(
 /// Multipart form for creating a report. The PDF itself is sent as a separate
 /// IFormFile in the controller; this DTO carries the metadata fields.
 public record CreateReportRequest(
-    [Required, MaxLength(500)] string Title,
+    [Required, MaxLength(500)] string TitleAr,
+    [Required, MaxLength(500)] string TitleEn,
     [MaxLength(5000)] string? Description,
     [MaxLength(100)] string? ReportType,
     [MaxLength(5)] string? OriginalLanguage,
@@ -81,7 +88,8 @@ public record CreateReportRequest(
 /// and clear with an explicitly-passed null is not supported here — pass the
 /// existing id back if you need to keep it.
 public record UpdateReportMetadataRequest(
-    [MaxLength(500)] string? Title,
+    [MaxLength(500)] string? TitleAr,
+    [MaxLength(500)] string? TitleEn,
     [MaxLength(5000)] string? Description,
     [MaxLength(100)] string? ReportType,
     [MaxLength(5)] string? OriginalLanguage,

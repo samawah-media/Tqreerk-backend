@@ -29,7 +29,8 @@ public sealed record DailyViewsPointDto(
 /// leaderboard.
 public sealed record ReportLeaderboardItemDto(
     Guid ReportId,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug,
     string? CoverImageUrl,
     long Views,
@@ -41,7 +42,8 @@ public sealed record ReportLeaderboardItemDto(
 /// the user clicks a row in the leaderboard.
 public sealed record ReportAnalyticsDto(
     Guid ReportId,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     DateTime From,
     DateTime To,
     long TotalViews,

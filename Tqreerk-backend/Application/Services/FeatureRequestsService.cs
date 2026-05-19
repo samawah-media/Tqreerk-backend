@@ -237,7 +237,8 @@ public class FeatureRequestsService : IFeatureRequestsService
             {
                 r.Id,
                 r.ReportId,
-                ReportTitle = r.Report.Title,
+                ReportTitleAr = r.Report.TitleAr,
+                ReportTitleEn = r.Report.TitleEn,
                 ReportSlug = r.Report.Slug,
                 ReportCoverImageUrl = r.Report.CoverImageUrl,
                 r.OrganizationId,
@@ -279,7 +280,8 @@ public class FeatureRequestsService : IFeatureRequestsService
         var dtos = rows.Select(r => new FeatureRequestDto(
             r.Id,
             r.ReportId,
-            r.ReportTitle,
+            r.ReportTitleAr,
+            r.ReportTitleEn,
             r.ReportSlug,
             Resolve(r.ReportCoverImageUrl),
             r.OrganizationId,

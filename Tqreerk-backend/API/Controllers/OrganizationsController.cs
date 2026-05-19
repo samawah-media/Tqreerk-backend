@@ -45,6 +45,16 @@ public class OrganizationsController : ControllerBase
         return Ok(await _orgs.GetMineAsync(userId, ct));
     }
 
+    /// <summary>Rename the caller's organization (NameAr + NameEn). Both required.</summary>
+    [HttpPatch("me/names")]
+    [ProducesResponseType(typeof(OrganizationDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> UpdateNames([FromBody] UpdateOrganizationNamesRequest req, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        return Ok(await _orgs.UpdateNamesAsync(userId, req, ct));
+    }
+
     /// <summary>Wizard step 1 — basic info (country, city, phone, CR number).</summary>
     [HttpPatch("me/basics")]
     [ProducesResponseType(typeof(OrganizationDetailDto), StatusCodes.Status200OK)]

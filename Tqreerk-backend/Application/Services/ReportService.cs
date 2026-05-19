@@ -56,8 +56,10 @@ public class ReportService : IReportService
         if (reportFile.Content.CanSeek && reportFile.Content.Length > MaxFileSizeBytes)
             throw new ArgumentException("File exceeds the 50 MB size limit.");
 
-        if (string.IsNullOrWhiteSpace(req.Title))
-            throw new ArgumentException("Title is required.");
+        if (string.IsNullOrWhiteSpace(req.TitleAr))
+            throw new ArgumentException("Arabic title is required.");
+        if (string.IsNullOrWhiteSpace(req.TitleEn))
+            throw new ArgumentException("English title is required.");
 
         if (req.PublicationDate.HasValue && req.PublicationDate.Value > DateOnly.FromDateTime(DateTime.UtcNow))
             throw new ArgumentException("Publication date cannot be in the future.");
@@ -77,7 +79,7 @@ public class ReportService : IReportService
         if (req.CountryId.HasValue && !await _db.Countries.AnyAsync(c => c.Id == req.CountryId.Value, ct))
             throw new ArgumentException("Unknown country.");
 
-        var slug = await GenerateUniqueSlugAsync(req.Title, ct);
+        var slug = await GenerateUniqueSlugAsync(req.TitleAr, ct);
         var storedReport = await _files.UploadAsync(
             reportFile.Content, reportFile.OriginalFileName, reportFile.ContentType,
             $"{ReportFolder}/{orgId}", ct);
@@ -123,7 +125,8 @@ public class ReportService : IReportService
         {
             OrganizationId = orgId,
             UploadedByUserId = currentUserId,
-            Title = req.Title.Trim(),
+            TitleAr = req.TitleAr.Trim(),
+            TitleEn = req.TitleEn.Trim(),
             Slug = slug,
             Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description!.Trim(),
             ReportType = string.IsNullOrWhiteSpace(req.ReportType) ? null : req.ReportType!.Trim(),
@@ -165,7 +168,8 @@ public class ReportService : IReportService
         if (!string.IsNullOrWhiteSpace(query))
         {
             var like = $"%{query.Trim()}%";
-            q = q.Where(r => EF.Functions.ILike(r.Title, like)
+            q = q.Where(r => EF.Functions.ILike(r.TitleAr, like)
+                          || EF.Functions.ILike(r.TitleEn, like)
                           || (r.Description != null && EF.Functions.ILike(r.Description, like)));
         }
 
@@ -180,7 +184,8 @@ public class ReportService : IReportService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.Status,
                 r.ReportType,
@@ -194,8 +199,10 @@ public class ReportService : IReportService
                 r.CoverImageUrl,
                 r.SectorId,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
+                SectorNameEn = r.Sector != null ? r.Sector.NameEn : null,
                 r.CountryId,
                 CountryNameAr = r.Country != null ? r.Country.NameAr : null,
+                CountryNameEn = r.Country != null ? r.Country.NameEn : null,
                 r.CreatedAt,
             })
             .ToListAsync(ct);
@@ -205,7 +212,8 @@ public class ReportService : IReportService
         {
             rows.Add(new ReportListItemDto(
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.Status.ToString(),
                 r.ReportType,
@@ -219,8 +227,10 @@ public class ReportService : IReportService
                 TryPublicUrl(r.CoverImageUrl),
                 r.SectorId,
                 r.SectorNameAr,
+                r.SectorNameEn,
                 r.CountryId,
                 r.CountryNameAr,
+                r.CountryNameEn,
                 r.CreatedAt
             ));
         }
@@ -305,12 +315,19 @@ public class ReportService : IReportService
         // Partial update: null leaves the field alone. Slug stays frozen
         // because permalinks rely on it — admins can rename later via a
         // dedicated tool if ever needed.
-        if (req.Title is not null)
+        if (req.TitleAr is not null)
         {
-            var trimmed = req.Title.Trim();
+            var trimmed = req.TitleAr.Trim();
             if (trimmed.Length == 0)
-                throw new ArgumentException("Title cannot be empty.");
-            report.Title = trimmed;
+                throw new ArgumentException("Arabic title cannot be empty.");
+            report.TitleAr = trimmed;
+        }
+        if (req.TitleEn is not null)
+        {
+            var trimmed = req.TitleEn.Trim();
+            if (trimmed.Length == 0)
+                throw new ArgumentException("English title cannot be empty.");
+            report.TitleEn = trimmed;
         }
         if (req.Description is not null)
             report.Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim();
@@ -435,7 +452,8 @@ public class ReportService : IReportService
                 r.OrganizationId,
                 OrgNameAr = r.Organization.NameAr,
                 r.UploadedByUserId,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.Description,
                 r.ReportType,
@@ -454,8 +472,10 @@ public class ReportService : IReportService
                 r.SourceType,
                 r.SectorId,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
+                SectorNameEn = r.Sector != null ? r.Sector.NameEn : null,
                 r.CountryId,
                 CountryNameAr = r.Country != null ? r.Country.NameAr : null,
+                CountryNameEn = r.Country != null ? r.Country.NameEn : null,
                 r.CreatedAt,
             })
             .FirstOrDefaultAsync(ct);
@@ -505,7 +525,8 @@ public class ReportService : IReportService
             row.OrganizationId,
             row.OrgNameAr,
             row.UploadedByUserId,
-            row.Title,
+            row.TitleAr,
+            row.TitleEn,
             row.Slug,
             row.Description,
             row.ReportType,
@@ -524,8 +545,10 @@ public class ReportService : IReportService
             row.SourceType.ToString(),
             row.SectorId,
             row.SectorNameAr,
+            row.SectorNameEn,
             row.CountryId,
             row.CountryNameAr,
+            row.CountryNameEn,
             latestReview?.Decision.ToString(),
             latestReview?.ReviewNotes,
             latestReview?.ReviewedAt,

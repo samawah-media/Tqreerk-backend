@@ -17,7 +17,8 @@ public record CoverImagesDto(string Thumb, string Medium, string Full);
 public record PublicReportListItemDto(
     Guid Id,
     string Slug,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string? Description,
     string? ReportType,
     string OriginalLanguage,
@@ -40,8 +41,10 @@ public record PublicReportListItemDto(
     string OrganizationNameEn,
     Guid? SectorId,
     string? SectorNameAr,
+    string? SectorNameEn,
     Guid? CountryId,
     string? CountryNameAr,
+    string? CountryNameEn,
     DateTime CreatedAt
 );
 
@@ -52,7 +55,8 @@ public record PublicReportListItemDto(
 public record PublicReportDetailDto(
     Guid Id,
     string Slug,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string? Description,
     string? ReportType,
     string OriginalLanguage,
@@ -74,8 +78,10 @@ public record PublicReportDetailDto(
     string OrganizationNameEn,
     Guid? SectorId,
     string? SectorNameAr,
+    string? SectorNameEn,
     Guid? CountryId,
     string? CountryNameAr,
+    string? CountryNameEn,
     /// 3-7 bullet-point summary. Empty list if AI hasn't run yet.
     IReadOnlyList<string> Summary,
     IReadOnlyList<string> KeyFindings,

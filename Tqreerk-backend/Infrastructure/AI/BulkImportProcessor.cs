@@ -312,7 +312,7 @@ public class BulkImportProcessor : BackgroundService
         {
             var existing = await db.Reports
                 .Where(r => r.OrganizationId == orgId
-                         && r.Title.ToLower() == normalisedTitle.ToLower())
+                         && r.TitleAr.ToLower() == normalisedTitle.ToLower())
                 .Select(r => new { r.Id, r.Status })
                 .FirstOrDefaultAsync(ct);
             if (existing is not null)
@@ -401,7 +401,11 @@ public class BulkImportProcessor : BackgroundService
         {
             OrganizationId = orgId,
             UploadedByUserId = uploaderUserId,
-            Title = item.Title,
+            // Bulk-import provides one title per Excel row. Mirror it into
+            // both languages so the report is valid; admins can refine the
+            // other-language title later from the review/edit UI.
+            TitleAr = item.Title,
+            TitleEn = item.Title,
             Slug = slug,
             ReportType = item.ReportType,
             Source = item.Source,

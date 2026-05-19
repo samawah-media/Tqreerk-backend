@@ -114,6 +114,67 @@ async def _build_session_summary(
     return await asyncio.to_thread(_call)
 
 
+async def _generate_session_title(
+    user_message: str,
+    assistant_message: str,
+) -> str:
+    """Generate a short (3-6 word) human-readable title for a chat session
+    based on its first user/assistant exchange.
+
+    Triggered after the first turn completes so subsequent sessions list
+    entries get a meaningful label instead of the default "محادثة جديدة".
+    Falls back to a truncated user message on any Gemini failure — the
+    title field is non-null and the UI must not show empty strings.
+    """
+    from langchain_core.messages import HumanMessage as LCHumanMessage
+    from langchain_google_vertexai import ChatVertexAI
+
+    # Cap inputs so a paragraph-long user question doesn't blow the prompt.
+    u = user_message.strip()[:600]
+    a = assistant_message.strip()[:600]
+
+    prompt = (
+        "Produce a short, descriptive title (3–6 words, no quotes, no "
+        "trailing period) summarising the topic of the conversation below. "
+        "Reply in the same language the user wrote in. Output ONLY the "
+        "title — no preamble, no explanation.\n\n"
+        f"USER: {u}\n"
+        f"ASSISTANT: {a}"
+    )
+
+    def _call() -> str:
+        model = ChatVertexAI(
+            model=settings.gemini_summary_model,
+            project=settings.gcp_project_id,
+            location=settings.vertex_location,
+            temperature=0.2,
+            max_output_tokens=40,
+        )
+        resp = model.invoke([LCHumanMessage(content=prompt)])
+        return (getattr(resp, "content", "") or "").strip()
+
+    try:
+        raw = await asyncio.to_thread(_call)
+    except Exception:
+        raw = ""
+
+    # Sanitise — strip wrapping quotes/whitespace/punctuation Gemini sometimes
+    # adds despite the instruction not to.
+    title = raw.strip().strip('"').strip("'").strip("«»").rstrip(".،")
+    # Keep it on a single line; trim runaway responses to ~60 chars so the
+    # sidebar layout doesn't break on a too-long entry.
+    title = title.splitlines()[0] if title else ""
+    if len(title) > 60:
+        title = title[:57].rstrip() + "…"
+
+    # Fallback: first ~40 chars of the user's question. The session must
+    # never end up titled with an empty string.
+    if not title:
+        fallback = user_message.strip().splitlines()[0] if user_message else ""
+        title = (fallback[:37].rstrip() + "…") if len(fallback) > 40 else fallback
+    return title or "محادثة جديدة"
+
+
 # ── Session CRUD ───────────────────────────────────────────────────────────
 
 @router.post("/sessions", response_model=CreateSessionResponse, status_code=201)
@@ -521,6 +582,24 @@ async def send_message(
         except Exception as exc:
             logger.warning("chat[%s] cache_hit_save_msg_failed: %s", sid_short, exc)
 
+        # Auto-title on the first turn even when we short-circuit via cache —
+        # the session was created with the default "محادثة جديدة" label and
+        # without this branch it would stay that way for any user whose
+        # opening question happens to be a cached repeat. See the same block
+        # in the main agent path below.
+        if total_msg_count == 0 and cache_hit.answer:
+            try:
+                new_title = await _generate_session_title(body.message, cache_hit.answer)
+                if new_title:
+                    await conn.execute(
+                        'UPDATE chat_sessions SET "Title" = %s WHERE "Id" = %s',
+                        [new_title, sid],
+                    )
+                    await conn.commit()
+                    logger.info("chat[%s] auto_titled(cache): %s", sid_short, new_title)
+            except Exception as exc:
+                logger.warning("chat[%s] auto_title(cache) failed: %s", sid_short, exc)
+
         cached_answer = cache_hit.answer
         cached_pages = cache_hit.source_pages
         cached_tier = cache_hit.tier
@@ -816,6 +895,26 @@ async def send_message(
                 await save_conn.commit()
         except Exception as exc:
             logger.warning("chat[%s] save_assistant_msg failed: %s", sid_short, exc)
+
+        # ── Auto-title on first turn ──────────────────────────────────────
+        # `total_msg_count` was captured BEFORE the current user message was
+        # inserted, so == 0 means "this is the first turn of the session" —
+        # the session is still wearing the default "محادثة جديدة" label and
+        # we can replace it with something descriptive. Best-effort: a
+        # failure here mustn't disrupt the just-streamed answer.
+        if total_msg_count == 0 and full_answer:
+            try:
+                new_title = await _generate_session_title(body.message, full_answer)
+                if new_title:
+                    async with conn_ctx() as title_conn:
+                        await title_conn.execute(
+                            'UPDATE chat_sessions SET "Title" = %s WHERE "Id" = %s',
+                            [new_title, sid],
+                        )
+                        await title_conn.commit()
+                    logger.info("chat[%s] auto_titled: %s", sid_short, new_title)
+            except Exception as exc:
+                logger.warning("chat[%s] auto_title failed: %s", sid_short, exc)
 
         # ── Cache the answer (best-effort) ────────────────────────────────
         # Runs after the user has already received the full streamed response,

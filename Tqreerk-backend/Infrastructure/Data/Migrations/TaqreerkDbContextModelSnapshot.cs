@@ -2527,7 +2527,12 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Property<DateTime?>("SubmittedForReviewAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("Title")
+                    b.Property<string>("TitleAr")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("TitleEn")
                         .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -2923,7 +2928,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("ReportId");
 
                     b.HasIndex("UserId", "ReportId")
-                        .IsUnique()
                         .HasDatabaseName("ix_report_personal_notes_user_report");
 
                     b.ToTable("report_personal_notes", (string)null);

@@ -63,7 +63,8 @@ public class CompareService : ICompareService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.CoverImageUrl,
                 r.Status,
@@ -155,14 +156,16 @@ public class CompareService : ICompareService
         var titles = await _db.Reports
             .AsNoTracking()
             .Where(r => allIds.Contains(r.Id))
-            .Select(r => new { r.Id, r.Title })
-            .ToDictionaryAsync(r => r.Id, r => r.Title, ct);
+            .Select(r => new { r.Id, r.TitleAr, r.TitleEn })
+            .ToDictionaryAsync(r => r.Id, r => new { r.TitleAr, r.TitleEn }, ct);
 
         return rows.Select(row =>
         {
             var ids = perRowIds[row.Id];
             var rowTitles = ids
-                .Select(id => titles.TryGetValue(id, out var t) ? t : "(تقرير محذوف)")
+                .Select(id => titles.TryGetValue(id, out var t)
+                    ? new ComparisonTitleDto(t.TitleAr, t.TitleEn)
+                    : new ComparisonTitleDto("(تقرير محذوف)", "(deleted report)"))
                 .ToList();
             return new ComparisonListItemDto(row.Id, row.CreatedAt, ids.Count, rowTitles);
         }).ToList();
@@ -184,7 +187,8 @@ public class CompareService : ICompareService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.CoverImageUrl,
                 r.Status,
@@ -271,7 +275,8 @@ public class CompareService : ICompareService
 
                 return new ComparedReportDto(
                     (Guid)r.Id,
-                    (string)r.Title,
+                    (string)r.TitleAr,
+                    (string)r.TitleEn,
                     (string)r.Slug,
                     coverUrl,
                     (string?)r.OrganizationNameAr,
