@@ -22,7 +22,12 @@
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(git merge *)",
-      "Bash(git cherry-pick *)"
+      "Bash(git cherry-pick *)",
+      "Bash(python scripts/check_chunker_sync.py)",
+      "Bash(python -m py_compile doc-processor/pipeline/ingest.py doc-processor/pipeline/chunker.py doc-processor/api/extract.py doc-processor/models/schema.py ai-service/core/chunking.py)",
+      "Bash(python -m py_compile doc-processor/pipeline/ingest.py doc-processor/pipeline/chunker.py doc-processor/pipeline/orchestrator.py doc-processor/pipeline/layout.py doc-processor/api/extract.py doc-processor/models/schema.py doc-processor/core/config.py ai-service/core/chunking.py)",
+      "Bash(python -m py_compile doc-processor/pipeline/ingest.py doc-processor/core/config.py)",
+      "Bash(python -c ' *)"
     ]
   }
 }

@@ -51,6 +51,8 @@ from core.db import conn_ctx, get_conn
 from models.chat import (
     CreateSessionRequest,
     CreateSessionResponse,
+    RenameSessionRequest,
+    RenameSessionResponse,
     SendMessageRequest,
     SessionHistoryResponse,
     SessionMessage,
@@ -192,6 +194,28 @@ async def create_session(
     )
     await conn.commit()
     return CreateSessionResponse(session_id=session_id, title=body.title)
+
+
+@router.patch("/sessions/{session_id}", response_model=RenameSessionResponse)
+async def rename_session(
+    session_id: UUID,
+    body: RenameSessionRequest,
+    conn: AsyncConnection = Depends(get_conn),
+):
+    new_title = body.title.strip()
+    if not new_title:
+        raise HTTPException(status_code=400, detail="Title must not be empty")
+    if len(new_title) > 200:
+        raise HTTPException(status_code=400, detail="Title is too long (max 200 chars)")
+
+    cur = await conn.execute(
+        'UPDATE chat_sessions SET "Title" = %s WHERE "Id" = %s',
+        [new_title, str(session_id)],
+    )
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await conn.commit()
+    return RenameSessionResponse(session_id=session_id, title=new_title)
 
 
 @router.get("/sessions/{session_id}", response_model=SessionHistoryResponse)
