@@ -19,7 +19,7 @@ namespace Taqreerk.Application.Services;
 public class BulkImportService : IBulkImportService
 {
     /// <summary>Hard cap per Excel — matches the stated requirement.</summary>
-    public const int MaxRowsPerJob = 10;
+    public const int MaxRowsPerJob = 1000;
 
     /// <summary>
     /// Column headers the parser expects (exactly, case-sensitive). The
@@ -29,6 +29,7 @@ public class BulkImportService : IBulkImportService
     public static readonly string[] ExpectedHeaders =
     {
         "title",
+        "title_en",
         "file_url",
         "sector_name_ar",
         "report_type",
@@ -91,6 +92,7 @@ public class BulkImportService : IBulkImportService
                 Stage = stage,
                 ErrorMessage = error,
                 Title = (row.Title ?? string.Empty).Trim(),
+                TitleEn = (row.TitleEn ?? string.Empty).Trim(),
                 FileUrl = (row.FileUrl ?? string.Empty).Trim(),
                 ReportType = NullIfBlank(row.ReportType),
                 Source = NullIfBlank(row.Source),
@@ -139,7 +141,7 @@ public class BulkImportService : IBulkImportService
                 Items = j.Items.OrderBy(i => i.RowIndex).Select(i => new
                 {
                     i.Id, i.RowIndex, i.Stage,
-                    i.Title, i.FileUrl, i.Source, i.Authors,
+                    i.Title, i.TitleEn, i.FileUrl, i.Source, i.Authors,
                     i.OriginalLanguage, i.PublicationYear,
                     i.SectorNameAr, i.CountryNameAr, i.ReportType,
                     i.ReportId,
@@ -154,7 +156,7 @@ public class BulkImportService : IBulkImportService
         var items = job.Items
             .Select(i => new BulkImportItemDto(
                 i.Id, i.RowIndex, i.Stage.ToString(),
-                i.Title, i.FileUrl, i.Source, i.Authors,
+                i.Title, i.TitleEn, i.FileUrl, i.Source, i.Authors,
                 i.OriginalLanguage, i.PublicationYear,
                 i.SectorNameAr, i.CountryNameAr, i.ReportType,
                 i.ReportId, i.ReportSlug,
@@ -202,16 +204,18 @@ public class BulkImportService : IBulkImportService
 
         // One example row so the admin can see the expected formats. We
         // leave it as comment-only example values, not fake data, so the
-        // admin remembers to delete it before saving.
+        // admin remembers to delete it before saving. Column order MUST
+        // mirror ExpectedHeaders above.
         sheet.Cell(2, 1).Value = "تقرير الحالة الاقتصادية 2025";
-        sheet.Cell(2, 2).Value = "https://example.com/report.pdf";
-        sheet.Cell(2, 3).Value = "اقتصاد";
-        sheet.Cell(2, 4).Value = "تقرير سنوي";
-        sheet.Cell(2, 5).Value = "السعودية";
-        sheet.Cell(2, 6).Value = 2025;
-        sheet.Cell(2, 7).Value = "أحمد محمد، فاطمة علي";
-        sheet.Cell(2, 8).Value = "ar";
-        sheet.Cell(2, 9).Value = "البنك الدولي";
+        sheet.Cell(2, 2).Value = "Economic Status Report 2025";
+        sheet.Cell(2, 3).Value = "https://example.com/report.pdf";
+        sheet.Cell(2, 4).Value = "اقتصاد";
+        sheet.Cell(2, 5).Value = "تقرير سنوي";
+        sheet.Cell(2, 6).Value = "السعودية";
+        sheet.Cell(2, 7).Value = 2025;
+        sheet.Cell(2, 8).Value = "أحمد محمد، فاطمة علي";
+        sheet.Cell(2, 9).Value = "ar";
+        sheet.Cell(2, 10).Value = "البنك الدولي";
 
         sheet.Columns().AdjustToContents();
 
@@ -296,6 +300,7 @@ public class BulkImportService : IBulkImportService
 
     private record ParsedRow(
         string? Title,
+        string? TitleEn,
         string? FileUrl,
         string? SectorNameAr,
         string? ReportType,
@@ -336,35 +341,40 @@ public class BulkImportService : IBulkImportService
             // Required headers for the parser to know which column is which.
             // Optional columns can be missing entirely — the row falls back
             // to null for those fields.
-            foreach (var required in new[] { "title", "file_url" })
+            foreach (var required in new[] { "title", "title_en", "file_url" })
             {
                 if (!headerMap.ContainsKey(required))
                     throw new InvalidOperationException(
-                        $"عمود {required} غير موجود في الملف. الأعمدة المطلوبة: title, file_url.");
+                        $"عمود {required} غير موجود في الملف. الأعمدة المطلوبة: title, title_en, file_url.");
             }
 
             var rows = new List<ParsedRow>();
             // ClosedXML's RowsUsed() includes the header — start from row 2.
-            // Cap iteration at MaxRowsPerJob + 1 so a 10000-row sheet doesn't
-            // OOM the worker; the controller-side check rejects > MaxRowsPerJob anyway.
+            // Cap iteration at MaxRowsPerJob + a small tolerance for blank
+            // tail rows so a sheet padded with phantom empties still parses
+            // cleanly; the in-loop check below rejects real data overflow.
             var lastUsed = sheet.LastRowUsed()?.RowNumber() ?? 1;
-            var dataLimit = Math.Min(lastUsed, MaxRowsPerJob + 50); // tolerance for blank rows
+            var dataLimit = Math.Min(lastUsed, MaxRowsPerJob + 50);
             for (var r = 2; r <= dataLimit; r++)
             {
                 var row = sheet.Row(r);
                 if (row.IsEmpty()) continue;
 
                 var title = ReadCell(row, headerMap, "title");
+                var titleEn = ReadCell(row, headerMap, "title_en");
                 var fileUrl = ReadCell(row, headerMap, "file_url");
 
-                // Treat a row with neither title nor file_url as a blank tail
-                // row (Excel files often have phantom empty rows below the
-                // last data row).
-                if (string.IsNullOrWhiteSpace(title) && string.IsNullOrWhiteSpace(fileUrl))
+                // Treat a row with no title (ar or en) and no file_url as a
+                // blank tail row (Excel files often have phantom empty rows
+                // below the last data row).
+                if (string.IsNullOrWhiteSpace(title)
+                    && string.IsNullOrWhiteSpace(titleEn)
+                    && string.IsNullOrWhiteSpace(fileUrl))
                     continue;
 
                 rows.Add(new ParsedRow(
                     title,
+                    titleEn,
                     fileUrl,
                     ReadCell(row, headerMap, "sector_name_ar"),
                     ReadCell(row, headerMap, "report_type"),
@@ -413,7 +423,10 @@ public class BulkImportService : IBulkImportService
     private static (BulkImportItemStage stage, string? error) ValidateRow(ParsedRow row)
     {
         if (string.IsNullOrWhiteSpace(row.Title))
-            return (BulkImportItemStage.Failed, "العنوان (title) مطلوب.");
+            return (BulkImportItemStage.Failed, "العنوان العربي (title) مطلوب.");
+
+        if (string.IsNullOrWhiteSpace(row.TitleEn))
+            return (BulkImportItemStage.Failed, "العنوان الإنجليزي (title_en) مطلوب.");
 
         if (string.IsNullOrWhiteSpace(row.FileUrl))
             return (BulkImportItemStage.Failed, "رابط الملف (file_url) مطلوب.");

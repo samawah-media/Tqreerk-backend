@@ -22,6 +22,7 @@ public class BulkImportItem : BaseEntity
     //    before the Report is created, and we can show "what was the
     //    title?" for failed rows). ──────────────────────────────────────
     public string Title { get; set; } = string.Empty;
+    public string TitleEn { get; set; } = string.Empty;
     public string FileUrl { get; set; } = string.Empty;
     public string? ReportType { get; set; }
     public string? Source { get; set; }

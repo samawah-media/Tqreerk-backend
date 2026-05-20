@@ -9218,6 +9218,10 @@
             "type": "string",
             "nullable": true
           },
+          "titleEn": {
+            "type": "string",
+            "nullable": true
+          },
           "fileUrl": {
             "type": "string",
             "nullable": true

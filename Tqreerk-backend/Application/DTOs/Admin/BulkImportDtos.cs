@@ -25,6 +25,7 @@ public record BulkImportItemDto(
     /// "Pending" | "Uploading" | "Ingesting" | "Summarizing" | "Completed" | "Failed"
     string Stage,
     string Title,
+    string TitleEn,
     string FileUrl,
     string? Source,
     string? Authors,
