@@ -21,9 +21,10 @@ namespace Taqreerk.API.Controllers;
 [RequirePlatformStaff]
 public class AdminBulkImportsController : ControllerBase
 {
-    /// <summary>Mirrors the manual-upload cap on ReportsController so a
-    /// massive Excel can't slip past the multipart size guard.</summary>
-    private const long MaxExcelBytes = 5 * 1024 * 1024;
+    /// <summary>50 MB headroom — a 1000-row bulk-import sheet with text-only
+    /// columns is typically under 5 MB, but Excel files balloon with embedded
+    /// styles/RTL formatting so we keep an order-of-magnitude buffer.</summary>
+    private const long MaxExcelBytes = 50 * 1024 * 1024;
 
     private readonly IBulkImportService _bulk;
 
@@ -32,7 +33,7 @@ public class AdminBulkImportsController : ControllerBase
         _bulk = bulk;
     }
 
-    /// <summary>Upload an Excel sheet describing up to 10 third-party
+    /// <summary>Upload an Excel sheet describing up to 1000 third-party
     /// reports. The endpoint parses + validates synchronously, then hands
     /// off to the background processor; clients poll
     /// <c>GET /api/admin/bulk-imports/{id}</c> for live progress.</summary>

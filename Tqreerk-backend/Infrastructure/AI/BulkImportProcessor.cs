@@ -401,11 +401,11 @@ public class BulkImportProcessor : BackgroundService
         {
             OrganizationId = orgId,
             UploadedByUserId = uploaderUserId,
-            // Bulk-import provides one title per Excel row. Mirror it into
-            // both languages so the report is valid; admins can refine the
-            // other-language title later from the review/edit UI.
+            // Bulk-import carries both languages per Excel row (both
+            // required at parse time); copy each into the matching column
+            // on the Report so the SPA renders the locale-correct title.
             TitleAr = item.Title,
-            TitleEn = item.Title,
+            TitleEn = item.TitleEn,
             Slug = slug,
             ReportType = item.ReportType,
             Source = item.Source,

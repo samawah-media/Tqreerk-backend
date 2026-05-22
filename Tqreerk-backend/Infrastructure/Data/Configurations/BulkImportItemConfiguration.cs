@@ -16,6 +16,7 @@ public class BulkImportItemConfiguration : IEntityTypeConfiguration<BulkImportIt
 
         builder.Property(i => i.Stage).HasConversion<string>().HasMaxLength(30);
         builder.Property(i => i.Title).IsRequired().HasMaxLength(500);
+        builder.Property(i => i.TitleEn).IsRequired().HasMaxLength(500);
         builder.Property(i => i.FileUrl).IsRequired().HasMaxLength(2000);
         builder.Property(i => i.ReportType).HasMaxLength(100);
         builder.Property(i => i.Source).HasMaxLength(255);
