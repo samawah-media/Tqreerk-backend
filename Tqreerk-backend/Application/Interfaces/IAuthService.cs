@@ -4,8 +4,8 @@ namespace Taqreerk.Application.Interfaces;
 
 public interface IAuthService
 {
-    Task<AuthResult> RegisterIndividualAsync(RegisterIndividualRequest request, CancellationToken ct = default);
-    Task<AuthResult> RegisterOrganizationAsync(RegisterOrganizationRequest request, CancellationToken ct = default);
+    Task<string> RegisterIndividualAsync(RegisterIndividualRequest request, CancellationToken ct = default);
+    Task<string> RegisterOrganizationAsync(RegisterOrganizationRequest request, CancellationToken ct = default);
     Task<AuthResult> LoginAsync(LoginRequest request, string? ipAddress, string? deviceInfo, CancellationToken ct = default);
 
     /// Returns either a full token pair OR a 2FA challenge when the user

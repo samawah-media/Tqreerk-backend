@@ -253,7 +253,8 @@ public class AdminUsersService : IAdminUsersService
             .Take(pageSize)
             .Select(r => new AdminUserReportItemDto(
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Status.ToString(),
                 r.OrganizationId,
                 r.Organization.NameAr,

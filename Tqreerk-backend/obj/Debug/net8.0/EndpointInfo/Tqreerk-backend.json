@@ -1696,6 +1696,235 @@
         }
       }
     },
+    "/api/admin/partners": {
+      "get": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminPartnerDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "NameAr": {
+                    "type": "string"
+                  },
+                  "NameEn": {
+                    "type": "string"
+                  },
+                  "WebsiteUrl": {
+                    "type": "string"
+                  },
+                  "IsActive": {
+                    "type": "boolean"
+                  },
+                  "logo": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              },
+              "encoding": {
+                "NameAr": {
+                  "style": "form"
+                },
+                "NameEn": {
+                  "style": "form"
+                },
+                "WebsiteUrl": {
+                  "style": "form"
+                },
+                "IsActive": {
+                  "style": "form"
+                },
+                "logo": {
+                  "style": "form"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPartnerDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/partners/{id}": {
+      "patch": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "NameAr": {
+                    "type": "string"
+                  },
+                  "NameEn": {
+                    "type": "string"
+                  },
+                  "WebsiteUrl": {
+                    "type": "string"
+                  },
+                  "IsActive": {
+                    "type": "boolean"
+                  },
+                  "logo": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              },
+              "encoding": {
+                "NameAr": {
+                  "style": "form"
+                },
+                "NameEn": {
+                  "style": "form"
+                },
+                "WebsiteUrl": {
+                  "style": "form"
+                },
+                "IsActive": {
+                  "style": "form"
+                },
+                "logo": {
+                  "style": "form"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPartnerDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/partners/reorder": {
+      "post": {
+        "tags": [
+          "AdminPartners"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
     "/api/admin/plans": {
       "get": {
         "tags": [
@@ -3010,6 +3239,97 @@
         }
       }
     },
+    "/api/ai/tools/translate-text": {
+      "post": {
+        "tags": [
+          "AiTools"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateTextRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateTextRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateTextRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateTextResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateTextResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateTextResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway"
+          }
+        }
+      }
+    },
     "/api/me/reports/{reportId}/editor": {
       "get": {
         "tags": [
@@ -3268,7 +3588,7 @@
         }
       }
     },
-    "/api/me/reports/{reportId}/note": {
+    "/api/me/reports/{reportId}/notes": {
       "get": {
         "tags": [
           "Annotations"
@@ -3290,7 +3610,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PersonalNoteDto"
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PersonalNoteDto"
+                  }
                 }
               }
             }
@@ -3307,13 +3630,91 @@
           }
         }
       },
-      "put": {
+      "post": {
         "tags": [
           "Annotations"
         ],
         "parameters": [
           {
             "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePersonalNoteRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePersonalNoteRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePersonalNoteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalNoteDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/reports/{reportId}/notes/{noteId}": {
+      "patch": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "noteId",
             "in": "path",
             "required": true,
             "schema": {
@@ -3373,6 +3774,46 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "Annotations"
+        ],
+        "parameters": [
+          {
+            "name": "reportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "noteId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/auth/register/individual": {
@@ -3401,14 +3842,7 @@
         },
         "responses": {
           "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuthResponse"
-                }
-              }
-            }
+            "description": "OK"
           },
           "409": {
             "description": "Conflict",
@@ -3449,14 +3883,7 @@
         },
         "responses": {
           "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuthResponse"
-                }
-              }
-            }
+            "description": "OK"
           },
           "409": {
             "description": "Conflict",
@@ -4445,6 +4872,54 @@
         }
       }
     },
+    "/api/organizations/me/names": {
+      "patch": {
+        "tags": [
+          "Organizations"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOrganizationNamesRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOrganizationNamesRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOrganizationNamesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationDetailDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/organizations/me/basics": {
       "patch": {
         "tags": [
@@ -5023,6 +5498,18 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/partners": {
+      "get": {
+        "tags": [
+          "Partners"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
           }
         }
       }
@@ -6617,7 +7104,10 @@
                     "type": "string",
                     "format": "binary"
                   },
-                  "Title": {
+                  "TitleAr": {
+                    "type": "string"
+                  },
+                  "TitleEn": {
                     "type": "string"
                   },
                   "Description": {
@@ -6653,7 +7143,10 @@
                 "CoverImage": {
                   "style": "form"
                 },
-                "Title": {
+                "TitleAr": {
+                  "style": "form"
+                },
+                "TitleEn": {
                   "style": "form"
                 },
                 "Description": {
@@ -7557,6 +8050,28 @@
         },
         "additionalProperties": false
       },
+      "ActivityRelatedReportDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "slug": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "AdminCountryDto": {
         "type": "object",
         "properties": {
@@ -7824,7 +8339,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -7871,6 +8390,39 @@
             "format": "int32"
           },
           "pageSize": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdminPartnerDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "nameEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "logoUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "websiteUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "sortOrder": {
             "type": "integer",
             "format": "int32"
           }
@@ -8442,7 +8994,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -8855,7 +9411,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -8881,7 +9441,10 @@
             "nullable": true
           },
           "summary": {
-            "type": "string",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
             "nullable": true
           },
           "keyFindings": {
@@ -8912,7 +9475,7 @@
           "reportTitles": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/ComparisonTitleDto"
             },
             "nullable": true
           }
@@ -8951,6 +9514,20 @@
         },
         "additionalProperties": false
       },
+      "ComparisonTitleDto": {
+        "type": "object",
+        "properties": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "ConfirmEmailRequest": {
         "type": "object",
         "properties": {
@@ -8977,6 +9554,24 @@
             "nullable": true
           },
           "isoCode": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoverImagesDto": {
+        "type": "object",
+        "properties": {
+          "thumb": {
+            "type": "string",
+            "nullable": true
+          },
+          "medium": {
+            "type": "string",
+            "nullable": true
+          },
+          "full": {
             "type": "string",
             "nullable": true
           }
@@ -9150,6 +9745,16 @@
         },
         "additionalProperties": false
       },
+      "CreatePersonalNoteRequest": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateRoleRequest": {
         "type": "object",
         "properties": {
@@ -9259,8 +9864,12 @@
             },
             "nullable": true
           },
-          "note": {
-            "$ref": "#/components/schemas/PersonalNoteDto"
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonalNoteDto"
+            },
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -9294,7 +9903,11 @@
             "type": "string",
             "nullable": true
           },
-          "name": {
+          "nameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "nameEn": {
             "type": "string",
             "nullable": true
           },
@@ -9326,7 +9939,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "reportTitle": {
+          "reportTitleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportTitleEn": {
             "type": "string",
             "nullable": true
           },
@@ -9448,7 +10065,11 @@
             "type": "string",
             "format": "date-time"
           },
-          "reportTitle": {
+          "reportTitleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportTitleEn": {
             "type": "string",
             "nullable": true
           },
@@ -9622,7 +10243,11 @@
             "format": "uuid",
             "nullable": true
           },
-          "reportTitle": {
+          "reportTitleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportTitleEn": {
             "type": "string",
             "nullable": true
           },
@@ -9633,6 +10258,17 @@
           "occurredAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "metadata": {
+            "type": "string",
+            "nullable": true
+          },
+          "relatedReports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActivityRelatedReportDto"
+            },
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -9665,7 +10301,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -10134,9 +10774,17 @@
       "PersonalNoteDto": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
           "body": {
             "type": "string",
             "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
           },
           "updatedAt": {
             "type": "string",
@@ -10443,6 +11091,13 @@
               "type": "string"
             },
             "nullable": true
+          },
+          "featuresEn": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -10458,7 +11113,11 @@
             "type": "string",
             "nullable": true
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -10496,6 +11155,9 @@
           "coverImageUrl": {
             "type": "string",
             "nullable": true
+          },
+          "coverImages": {
+            "$ref": "#/components/schemas/CoverImagesDto"
           },
           "viewsCount": {
             "type": "integer",
@@ -10537,6 +11199,10 @@
             "type": "string",
             "nullable": true
           },
+          "sectorNameEn": {
+            "type": "string",
+            "nullable": true
+          },
           "countryId": {
             "type": "string",
             "format": "uuid",
@@ -10546,8 +11212,15 @@
             "type": "string",
             "nullable": true
           },
-          "summary": {
+          "countryNameEn": {
             "type": "string",
+            "nullable": true
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
             "nullable": true
           },
           "keyFindings": {
@@ -10562,6 +11235,10 @@
             "items": {
               "type": "string"
             },
+            "nullable": true
+          },
+          "indicatorsJson": {
+            "type": "string",
             "nullable": true
           },
           "commentCount": {
@@ -10624,7 +11301,11 @@
             "type": "string",
             "nullable": true
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -10673,6 +11354,9 @@
             "type": "string",
             "nullable": true
           },
+          "coverImages": {
+            "$ref": "#/components/schemas/CoverImagesDto"
+          },
           "organizationId": {
             "type": "string",
             "format": "uuid"
@@ -10694,12 +11378,20 @@
             "type": "string",
             "nullable": true
           },
+          "sectorNameEn": {
+            "type": "string",
+            "nullable": true
+          },
           "countryId": {
             "type": "string",
             "format": "uuid",
             "nullable": true
           },
           "countryNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "countryNameEn": {
             "type": "string",
             "nullable": true
           },
@@ -10894,6 +11586,28 @@
             "type": "string",
             "nullable": true
           },
+          "commercialRegisterName": {
+            "type": "string",
+            "nullable": true
+          },
+          "commercialRegisterExpiryDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "taxNumber": {
+            "type": "string",
+            "nullable": true
+          },
+          "licenseDocumentUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "employeeCount": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
           "issuesReports": {
             "type": "boolean"
           },
@@ -10950,7 +11664,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "reportTitle": {
+          "reportTitleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportTitleEn": {
             "type": "string",
             "nullable": true
           },
@@ -10991,7 +11709,10 @@
             "nullable": true
           },
           "summary": {
-            "type": "string",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
             "nullable": true
           },
           "keyFindings": {
@@ -11060,7 +11781,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -11171,7 +11896,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -11250,12 +11979,20 @@
             "type": "string",
             "nullable": true
           },
+          "sectorNameEn": {
+            "type": "string",
+            "nullable": true
+          },
           "countryId": {
             "type": "string",
             "format": "uuid",
             "nullable": true
           },
           "countryNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "countryNameEn": {
             "type": "string",
             "nullable": true
           },
@@ -11286,7 +12023,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -11432,7 +12173,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -11466,7 +12211,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -11524,12 +12273,20 @@
             "type": "string",
             "nullable": true
           },
+          "sectorNameEn": {
+            "type": "string",
+            "nullable": true
+          },
           "countryId": {
             "type": "string",
             "format": "uuid",
             "nullable": true
           },
           "countryNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "countryNameEn": {
             "type": "string",
             "nullable": true
           },
@@ -11641,7 +12398,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -12107,7 +12868,11 @@
             "type": "string",
             "format": "uuid"
           },
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },
@@ -12120,6 +12885,34 @@
             "format": "int64"
           },
           "metricKind": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "TranslateTextRequest": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "nullable": true
+          },
+          "target_language": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "TranslateTextResponse": {
+        "type": "object",
+        "properties": {
+          "translated_text": {
+            "type": "string",
+            "nullable": true
+          },
+          "target_language": {
             "type": "string",
             "nullable": true
           }
@@ -12557,6 +13350,20 @@
         },
         "additionalProperties": false
       },
+      "UpdateOrganizationNamesRequest": {
+        "type": "object",
+        "properties": {
+          "nameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "nameEn": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateOrganizationReportsRequest": {
         "type": "object",
         "properties": {
@@ -12685,7 +13492,11 @@
       "UpdateReportMetadataRequest": {
         "type": "object",
         "properties": {
-          "title": {
+          "titleAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "titleEn": {
             "type": "string",
             "nullable": true
           },

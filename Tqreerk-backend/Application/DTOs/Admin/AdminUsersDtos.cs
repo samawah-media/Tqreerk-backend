@@ -83,7 +83,8 @@ public record BanUserRequest(
 /// gains a column the other doesn't need.
 public record AdminUserReportItemDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Status,
     Guid OrganizationId,
     string OrganizationNameAr,

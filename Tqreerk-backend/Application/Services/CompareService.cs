@@ -63,7 +63,8 @@ public class CompareService : ICompareService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.CoverImageUrl,
                 r.Status,
@@ -155,14 +156,16 @@ public class CompareService : ICompareService
         var titles = await _db.Reports
             .AsNoTracking()
             .Where(r => allIds.Contains(r.Id))
-            .Select(r => new { r.Id, r.Title })
-            .ToDictionaryAsync(r => r.Id, r => r.Title, ct);
+            .Select(r => new { r.Id, r.TitleAr, r.TitleEn })
+            .ToDictionaryAsync(r => r.Id, r => new { r.TitleAr, r.TitleEn }, ct);
 
         return rows.Select(row =>
         {
             var ids = perRowIds[row.Id];
             var rowTitles = ids
-                .Select(id => titles.TryGetValue(id, out var t) ? t : "(تقرير محذوف)")
+                .Select(id => titles.TryGetValue(id, out var t)
+                    ? new ComparisonTitleDto(t.TitleAr, t.TitleEn)
+                    : new ComparisonTitleDto("(تقرير محذوف)", "(deleted report)"))
                 .ToList();
             return new ComparisonListItemDto(row.Id, row.CreatedAt, ids.Count, rowTitles);
         }).ToList();
@@ -184,7 +187,8 @@ public class CompareService : ICompareService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.CoverImageUrl,
                 r.Status,
@@ -261,16 +265,8 @@ public class CompareService : ICompareService
             {
                 var r = byReport[id];
                 var content = aiContent.TryGetValue(id, out var c) ? c : null;
-                IReadOnlyList<string> findings = Array.Empty<string>();
-                if (!string.IsNullOrWhiteSpace(content?.KeyFindings))
-                {
-                    try
-                    {
-                        var arr = JsonSerializer.Deserialize<List<string>>(content!.KeyFindings!);
-                        if (arr is not null) findings = arr;
-                    }
-                    catch { /* malformed JSON — treat as empty */ }
-                }
+                IReadOnlyList<string> findings = ParseJsonStringArray(content?.KeyFindings);
+                IReadOnlyList<string> summary  = ParseJsonStringArray(content?.Summary);
 
                 var rawCover = (string?)r.CoverImageUrl;
                 var coverUrl = !string.IsNullOrWhiteSpace(rawCover) && resolvedCovers.TryGetValue(rawCover!, out var url)
@@ -279,13 +275,14 @@ public class CompareService : ICompareService
 
                 return new ComparedReportDto(
                     (Guid)r.Id,
-                    (string)r.Title,
+                    (string)r.TitleAr,
+                    (string)r.TitleEn,
                     (string)r.Slug,
                     coverUrl,
                     (string?)r.OrganizationNameAr,
                     (int?)r.PublicationYear,
                     (string?)r.SectorNameAr,
-                    content?.Summary,
+                    summary,
                     findings);
             })
             .ToList();
@@ -356,5 +353,12 @@ public class CompareService : ICompareService
         if (string.IsNullOrWhiteSpace(json)) return null;
         try { return JsonSerializer.Deserialize<List<Guid>>(json!); }
         catch { return null; }
+    }
+
+    private static IReadOnlyList<string> ParseJsonStringArray(string? jsonb)
+    {
+        if (string.IsNullOrWhiteSpace(jsonb)) return Array.Empty<string>();
+        try { return JsonSerializer.Deserialize<List<string>>(jsonb!) ?? new List<string>(); }
+        catch { return Array.Empty<string>(); }
     }
 }

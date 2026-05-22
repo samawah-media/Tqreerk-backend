@@ -6,6 +6,10 @@ public class ReportAiContent : SoftDeletableEntity
 {
     public Guid ReportId { get; set; }
     public Guid? AiJobId { get; set; }
+
+    /// <summary>jsonb — 3-7 bullet points (list of strings) capturing the report's takeaways.
+    /// Was previously a free-form text paragraph; migrated to jsonb so the API can
+    /// surface discrete points without splitting on whitespace.</summary>
     public string? Summary { get; set; }
     public string Language { get; set; } = "ar";
 

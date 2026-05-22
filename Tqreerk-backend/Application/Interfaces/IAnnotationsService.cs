@@ -22,14 +22,18 @@ public interface IAnnotationsService
     Task DeleteAsync(
         Guid userId, Guid reportId, Guid annotationId, CancellationToken ct = default);
 
-    Task<PersonalNoteDto> GetNoteAsync(
+    Task<IReadOnlyList<PersonalNoteDto>> ListNotesAsync(
         Guid userId, Guid reportId, CancellationToken ct = default);
 
-    /// Upsert the per-(user, report) notepad. Empty body is fine —
-    /// stores it as an empty string rather than deleting the row, so
-    /// `UpdatedAt` still reflects the last edit.
-    Task<PersonalNoteDto> UpsertNoteAsync(
-        Guid userId, Guid reportId, UpdatePersonalNoteRequest req, CancellationToken ct = default);
+    Task<PersonalNoteDto> CreateNoteAsync(
+        Guid userId, Guid reportId, CreatePersonalNoteRequest req, CancellationToken ct = default);
+
+    Task<PersonalNoteDto> UpdateNoteAsync(
+        Guid userId, Guid reportId, Guid noteId,
+        UpdatePersonalNoteRequest req, CancellationToken ct = default);
+
+    Task DeleteNoteAsync(
+        Guid userId, Guid reportId, Guid noteId, CancellationToken ct = default);
 
     /// One-shot bootstrap for the editor page: metadata + AI + signed
     /// URLs + caller's annotations + note + plan tier. 404 if the

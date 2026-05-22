@@ -29,13 +29,16 @@ public sealed record UpdateAnnotationRequest(
     string? Color,
     string? Note);
 
-/// Personal notepad for a (user, report) pair — exactly one row exists
-/// once the user has interacted with the editor's notes drawer. Returns
-/// `Body = ""` and `UpdatedAt = null` when no row exists yet, so the
-/// editor can render an empty textarea on first load.
+/// Free-text note on a saved report. A user can have many notes per
+/// report; the editor lists them with add/edit/delete.
 public sealed record PersonalNoteDto(
+    Guid Id,
     string Body,
+    DateTime CreatedAt,
     DateTime? UpdatedAt);
+
+public sealed record CreatePersonalNoteRequest(
+    string Body);
 
 public sealed record UpdatePersonalNoteRequest(
     string Body);

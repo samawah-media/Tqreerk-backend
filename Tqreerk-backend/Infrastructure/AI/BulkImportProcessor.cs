@@ -312,7 +312,7 @@ public class BulkImportProcessor : BackgroundService
         {
             var existing = await db.Reports
                 .Where(r => r.OrganizationId == orgId
-                         && r.Title.ToLower() == normalisedTitle.ToLower())
+                         && r.TitleAr.ToLower() == normalisedTitle.ToLower())
                 .Select(r => new { r.Id, r.Status })
                 .FirstOrDefaultAsync(ct);
             if (existing is not null)
@@ -401,7 +401,11 @@ public class BulkImportProcessor : BackgroundService
         {
             OrganizationId = orgId,
             UploadedByUserId = uploaderUserId,
-            Title = item.Title,
+            // Bulk-import provides one title per Excel row. Mirror it into
+            // both languages so the report is valid; admins can refine the
+            // other-language title later from the review/edit UI.
+            TitleAr = item.Title,
+            TitleEn = item.Title,
             Slug = slug,
             ReportType = item.ReportType,
             Source = item.Source,
@@ -837,10 +841,13 @@ public class BulkImportProcessor : BackgroundService
         {
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
 
-            var summary = doc.RootElement.TryGetProperty("summary", out var sEl) && sEl.ValueKind == JsonValueKind.String
-                ? sEl.GetString()
-                : null;
-            if (string.IsNullOrWhiteSpace(summary)) return;
+            // Summary is now a 3-7 item string array (not a paragraph). We
+            // re-serialize whatever the AI service emitted into jsonb form
+            // for the Summary column. Skip the row entirely if the array is
+            // missing or empty — there's nothing meaningful to persist.
+            var summaryItems = ExtractStringArray(doc.RootElement, "summary");
+            if (summaryItems.Count == 0) return;
+            var summary = JsonSerializer.Serialize(summaryItems);
 
             var keyFindings = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "key_findings"));
             var topics      = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "topics"));

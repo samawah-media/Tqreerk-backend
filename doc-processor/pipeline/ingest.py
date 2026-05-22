@@ -160,6 +160,72 @@ def _download(file_url: str) -> bytes:
     return resp.content
 
 
+def _markdown_target_from_pdf_url(file_url: str) -> tuple[str, str] | None:
+    """Co-locate the markdown next to the PDF: same bucket, same folder,
+    same basename, `.md` extension.
+
+    Returns `(bucket, blob_path)` for a gs:// URL, or None when the URL is
+    not gs:// (HTTPS / arbitrary) — those callers don't have an unambiguous
+    co-location target, so the upload stage is skipped.
+    """
+    if not file_url.startswith("gs://"):
+        return None
+
+    rest = file_url[len("gs://"):]
+    bucket_name, _, blob_path = rest.partition("/")
+    if not bucket_name or not blob_path or blob_path.endswith("/"):
+        return None
+
+    # Swap a trailing .pdf (case-insensitive) for .md, or append .md when the
+    # filename had no extension. We don't touch any prefix directories.
+    if blob_path.lower().endswith(".pdf"):
+        md_path = blob_path[:-4] + ".md"
+    else:
+        md_path = blob_path + ".md"
+    return bucket_name, md_path
+
+
+def _upload_markdown(
+    report_id: str,
+    file_url: str,
+    markdown_text: str,
+) -> str | None:
+    """Stage 1.5 — write the Docling markdown export beside the source PDF.
+
+    Returns the gs:// URI on success, or None when the stage is skipped
+    (disabled by settings, or source URL isn't gs://). Always uploads when
+    we have a target, including for empty markdown: the file's existence is
+    the signal that ingest got past extract. Deterministic key (same folder,
+    same basename) means retries overwrite in place.
+
+    Charset is declared explicitly — Arabic-heavy docs render as mojibake in
+    browsers / gsutil cp without `charset=utf-8`.
+    """
+    if not settings.markdown_export_enabled:
+        return None
+
+    target = _markdown_target_from_pdf_url(file_url)
+    if target is None:
+        logger.info(
+            "[ingest %s] markdown upload skipped: non-gs:// source url (%s)",
+            report_id, file_url,
+        )
+        return None
+
+    bucket_name, blob_path = target
+    payload = (markdown_text or "").encode("utf-8")
+
+    blob = _gcs().bucket(bucket_name).blob(blob_path)
+    blob.upload_from_string(payload, content_type="text/markdown; charset=utf-8")
+
+    uri = f"gs://{bucket_name}/{blob_path}"
+    logger.info(
+        "[ingest %s] uploaded markdown (%d chars, %d bytes) → %s",
+        report_id, len(markdown_text or ""), len(payload), uri,
+    )
+    return uri
+
+
 def run_ingest(
     report_id: str,
     file_url: str,
@@ -209,39 +275,89 @@ def run_ingest(
         report_id, pages_total, extractor_tag,
     )
 
+    # ── Stage 1.5: Upload markdown beside the PDF ────────────────────────────
+    # Free byproduct of the extract stage — same parsed tree, exported as
+    # Markdown. We upload BEFORE chunking/embedding so the readable artifact
+    # survives even if a later stage fails. Co-located with the PDF (same
+    # folder, same basename, .md extension) so it lists naturally next to
+    # the source in storage browsers. No-op when the source URL isn't gs://
+    # or when markdown_export_enabled is False. Retries via _retry().
+    markdown_uri: str | None = None
+    if settings.markdown_export_enabled:
+        markdown_uri = _retry(
+            lambda: _upload_markdown(
+                report_id, file_url, extract_response.markdown or "",
+            ),
+            "markdown_upload", report_id,
+        )
+
     # ── Stage 3: Chunk ────────────────────────────────────────────────────────
     # Pure in-memory — deterministic, no I/O; retry not applicable.
-    pending: list[dict] = []
+    #
+    # Document-level: flatten every page's blocks into a single list tagged
+    # with `page_number` and a globally-monotonic `reading_order`, then run
+    # the chunker once. Lets headings stick to bodies that wrap onto the next
+    # page, lets paragraphs that cross page breaks pack into one chunk, and
+    # lets section_title flow across page boundaries. See ai-service/core/
+    # chunking.py for the heading-merge rule and the bbox-citation contract.
+    flat_blocks: list[dict] = []
+    text_fallback_pages: list[tuple[int, str]] = []
+    global_order = 0
     for page in extract_response.pages:
         page_num = page.page_number
         if not page_num:
             continue
-        block_dicts = [
-            {
-                "type":          b.type,
-                "content":       b.content,
-                "reading_order": b.reading_order,
-            }
-            for b in page.blocks
-        ]
-        if block_dicts:
-            for idx, ch in enumerate(chunker.chunk_blocks_with_meta(block_dicts)):
-                pending.append({
+        if page.blocks:
+            for b in page.blocks:
+                flat_blocks.append({
+                    "type":          b.type,
+                    "content":       b.content,
+                    "reading_order": global_order,
                     "page_number":   page_num,
-                    "chunk_index":   idx,
-                    "content":       ch["content"],
-                    "section_title": ch["section_title"],
-                    "block_types":   ch["block_types"],
+                    "bbox":          b.bbox.model_dump() if b.bbox else None,
                 })
+                global_order += 1
         elif (page.content or "").strip():
-            for idx, piece in enumerate(chunker.chunk_text(page.content)):
-                pending.append({
-                    "page_number":   page_num,
-                    "chunk_index":   idx,
-                    "content":       piece,
-                    "section_title": "",
-                    "block_types":   ["text"],
-                })
+            text_fallback_pages.append((page_num, page.content))
+
+    pending: list[dict] = []
+    # Re-scope chunk_index to be sequential within each chunk's primary page
+    # so the report_chunks UNIQUE (ReportId, PageNumber, ChunkIndex) constraint
+    # and the per-page neighbour-expansion query both keep working unchanged.
+    # A chunk that spans pages still gets one (page_number, chunk_index) — its
+    # cross-page coverage is preserved in metadata.bboxes.
+    per_page_counters: dict[int, int] = {}
+    if flat_blocks:
+        for ch in chunker.chunk_blocks_with_meta(flat_blocks):
+            pg = int(ch.get("page_number") or 1)
+            idx = per_page_counters.get(pg, 0)
+            per_page_counters[pg] = idx + 1
+            pending.append({
+                "page_number":   pg,
+                "chunk_index":   idx,
+                "content":       ch["content"],
+                "section_title": ch["section_title"],
+                "block_types":   ch["block_types"],
+                "bboxes":        ch.get("bboxes") or [],
+            })
+
+    # Pages where the layout pipeline produced no structured blocks (full-page
+    # OCR fallback, image-only pages) still need chunking. Run the recursive
+    # text splitter per page — these can't pack across pages anyway since
+    # they have no structural context.
+    for page_num, content in text_fallback_pages:
+        base_idx = per_page_counters.get(page_num, 0)
+        pieces = chunker.chunk_text(content)
+        for offset, piece in enumerate(pieces):
+            pending.append({
+                "page_number":   page_num,
+                "chunk_index":   base_idx + offset,
+                "content":       piece,
+                "section_title": "",
+                "block_types":   ["text"],
+                "bboxes":        [],
+            })
+        per_page_counters[page_num] = base_idx + len(pieces)
     logger.info("[ingest %s] chunked → %d chunks", report_id, len(pending))
 
     # ── Stage 4: Embed ───────────────────────────────────────────────────────
@@ -273,6 +389,7 @@ def run_ingest(
                 metadata = {
                     "section_title": p["section_title"],
                     "block_types":   p["block_types"],
+                    "bboxes":        p.get("bboxes") or [],
                     "language":      language,
                     "extractor":     extractor_tag,
                 }
@@ -308,7 +425,7 @@ def run_ingest(
     )
 
 
-    return {
+    result = {
         "report_id":        report_id,
         "pages_processed":  pages_with_chunks,
         "chunks_inserted":  len(pending),
@@ -318,3 +435,7 @@ def run_ingest(
         "embed_dim":        settings.embed_vertex_dim,
         "total_latency_ms": total_ms,
     }
+    if markdown_uri:
+        result["markdown_uri"] = markdown_uri
+        result["markdown_chars"] = len(extract_response.markdown or "")
+    return result

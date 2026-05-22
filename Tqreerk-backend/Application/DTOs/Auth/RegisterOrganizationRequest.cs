@@ -20,6 +20,11 @@ public record RegisterOrganizationRequest(
 
     // Profile / onboarding
     [MaxLength(100)] string? CommercialRegisterNo,
+    [MaxLength(300)] string? CommercialRegisterName = null,
+    DateTime? CommercialRegisterExpiryDate = null,
+    [MaxLength(100)] string? TaxNumber = null,
+    [MaxLength(500)] string? LicenseDocumentUrl = null,
+    int? EmployeeCount = null,
     bool IssuesReports = false,
     int AnnualReportsCount = 0,
     bool WantsToPublish = false,

@@ -154,6 +154,18 @@ class Settings(BaseSettings):
     # falls back to per-page mode.
     ingest_full_max_chunks: int = 1000
 
+    # ── Markdown export upload (Stage 1.5) ──────────────────────────────────
+    # When enabled, /v1/ingest uploads the Docling markdown export to the
+    # SAME folder as the source PDF, with the basename swapped to `.md`.
+    # E.g. gs://bucket/reports/<id>/file.pdf → gs://bucket/reports/<id>/file.md
+    # — co-located, deterministic, and listed naturally next to the PDF in
+    # storage browsers. Retries overwrite in place. Empty markdown is uploaded
+    # too: the file's existence is the "got past extract" signal.
+    #
+    # Skipped (with a log line) when the source URL is not gs:// — HTTPS-only
+    # callers don't have a clear co-location target.
+    markdown_export_enabled: bool = True
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:

@@ -47,6 +47,14 @@ public record OrganizationFileDto(
     DateTime CreatedAt
 );
 
+/// Rename the caller's organization. Both fields are required because the
+/// platform always renders org names in both languages; an empty side would
+/// leave one locale showing a blank label.
+public record UpdateOrganizationNamesRequest(
+    [Required, MaxLength(300)] string NameAr,
+    [Required, MaxLength(300)] string NameEn
+);
+
 /// Step 1: basic info. All fields optional individually so users can save partial progress;
 /// completeness is judged by the server before flipping status to Active.
 public record UpdateOrganizationBasicsRequest(

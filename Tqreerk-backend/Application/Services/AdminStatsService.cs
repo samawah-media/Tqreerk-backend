@@ -119,12 +119,13 @@ public class AdminStatsService : IAdminStatsService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 OrgName = r.Organization.NameAr,
                 Metric = (long)r.ViewsCount,
             })
             .ToListAsync(ct))
-            .Select(x => new TopReportDto(x.Id, x.Title, x.OrgName, x.Metric, "views"))
+            .Select(x => new TopReportDto(x.Id, x.TitleAr, x.TitleEn, x.OrgName, x.Metric, "views"))
             .ToList();
 
         var mostDownloaded = (await _db.Reports
@@ -134,12 +135,13 @@ public class AdminStatsService : IAdminStatsService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 OrgName = r.Organization.NameAr,
                 Metric = (long)r.DownloadsCount,
             })
             .ToListAsync(ct))
-            .Select(x => new TopReportDto(x.Id, x.Title, x.OrgName, x.Metric, "downloads"))
+            .Select(x => new TopReportDto(x.Id, x.TitleAr, x.TitleEn, x.OrgName, x.Metric, "downloads"))
             .ToList();
 
         // Highest rated needs a minimum sample size — single 5-star rating
@@ -154,12 +156,13 @@ public class AdminStatsService : IAdminStatsService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 OrgName = r.Organization.NameAr,
                 Rating = r.AvgRating,
             })
             .ToListAsync(ct))
-            .Select(x => new TopReportDto(x.Id, x.Title, x.OrgName, (long)(x.Rating * 100m), "rating"))
+            .Select(x => new TopReportDto(x.Id, x.TitleAr, x.TitleEn, x.OrgName, (long)(x.Rating * 100m), "rating"))
             .ToList();
 
         // ── Timeseries (last 30 days, gap-filled) ─────────────────────
@@ -218,13 +221,14 @@ public class AdminStatsService : IAdminStatsService
             .Select(r => new
             {
                 r.ReportId,
-                ReportTitle = r.Report.Title,
+                ReportTitleAr = r.Report.TitleAr,
+                ReportTitleEn = r.Report.TitleEn,
                 OrgName = r.Report.Organization.NameAr,
                 r.ReviewNotes,
                 r.ReviewedAt,
             })
             .ToListAsync(ct))
-            .Select(x => new RejectionNoteDto(x.ReportId, x.ReportTitle, x.OrgName, x.ReviewNotes, x.ReviewedAt))
+            .Select(x => new RejectionNoteDto(x.ReportId, x.ReportTitleAr, x.ReportTitleEn, x.OrgName, x.ReviewNotes, x.ReviewedAt))
             .ToList();
 
         return new AdminStatsOverviewDto(

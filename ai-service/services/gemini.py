@@ -17,7 +17,7 @@ from typing import Any
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core import prompts
 from core.config import settings
@@ -282,8 +282,11 @@ class TrendItem(BaseModel):
 class ReportSummary(BaseModel):
     """Combined summarization + insights output. One Gemini call populates
     every report_ai_contents column (summary, key_findings, topics,
-    indicators, trends) so the C# finalizer can copy them all in one pass."""
-    summary: str
+    indicators, trends) so the C# finalizer can copy them all in one pass.
+
+    `summary` is a 3-7 item bullet list, not a paragraph — see the matching
+    SummarizeResponse model in models/ingest.py for the rationale."""
+    summary: list[str] = Field(min_length=3, max_length=7)
     key_findings: list[str]
     topics: list[str]
     indicators: list[IndicatorItem] = []

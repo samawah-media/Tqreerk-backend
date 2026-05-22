@@ -31,18 +31,20 @@ public class UsageService : IUsageService
         UsageActionType actionType,
         Guid? resourceId,
         Func<CancellationToken, Task> actionFn,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? metadata = null)
         => EnsureWithinLimitAndConsumeAsync<object?>(
             userId, actionType, resourceId,
             async ctInner => { await actionFn(ctInner); return null; },
-            ct);
+            ct, metadata);
 
     public async Task<TResult> EnsureWithinLimitAndConsumeAsync<TResult>(
         Guid userId,
         UsageActionType actionType,
         Guid? resourceId,
         Func<CancellationToken, Task<TResult>> actionFn,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? metadata = null)
     {
         var (subscription, plan) = await GetActiveSubscriptionAsync(userId, ct);
         var (limit, _) = ResolveLimit(plan, actionType);
@@ -51,7 +53,7 @@ public class UsageService : IUsageService
         if (limit < 0)
         {
             return await ExecuteAndRecordAsync(
-                userId, subscription, actionType, resourceId, actionFn, ct);
+                userId, subscription, actionType, resourceId, actionFn, ct, metadata);
         }
 
         // Hard 0: plan disallows the action entirely (e.g. free-tier AI).
@@ -114,6 +116,7 @@ public class UsageService : IUsageService
             SubscriptionId = subscription.Id,
             ActionType = actionType,
             ResourceId = resourceId,
+            Metadata = metadata,
             ConsumedAt = DateTime.UtcNow,
             BillingPeriodStart = period,
         });
@@ -121,6 +124,40 @@ public class UsageService : IUsageService
         await tx.CommitAsync(ct);
 
         return result;
+    }
+
+    public async Task RecordUsageAsync(
+        Guid userId,
+        UsageActionType actionType,
+        Guid? resourceId,
+        string? metadata = null,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var (subscription, _) = await GetActiveSubscriptionAsync(userId, ct);
+            _db.UsageTracking.Add(new UsageTracking
+            {
+                UserId = userId,
+                OrganizationId = subscription.OrganizationId,
+                SubscriptionId = subscription.Id,
+                ActionType = actionType,
+                ResourceId = resourceId,
+                Metadata = metadata,
+                ConsumedAt = DateTime.UtcNow,
+                BillingPeriodStart = CurrentBillingPeriodStart(),
+            });
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            // Best-effort telemetry — the user's primary action already
+            // succeeded by the time we get here, so swallowing the
+            // failure is safer than 500ing the response.
+            _logger.LogWarning(ex,
+                "[usage] failed to record {Action} for user={UserId}",
+                actionType, userId);
+        }
     }
 
     public async Task<UsageSummaryDto> GetMyUsageAsync(Guid userId, CancellationToken ct = default)
@@ -194,7 +231,8 @@ public class UsageService : IUsageService
         Guid userId, Subscription subscription,
         UsageActionType actionType, Guid? resourceId,
         Func<CancellationToken, Task<TResult>> actionFn,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? metadata = null)
     {
         // Unlimited tier still records — useful for analytics + the
         // history endpoint. We don't open a transaction since there's no
@@ -207,6 +245,7 @@ public class UsageService : IUsageService
             SubscriptionId = subscription.Id,
             ActionType = actionType,
             ResourceId = resourceId,
+            Metadata = metadata,
             ConsumedAt = DateTime.UtcNow,
             BillingPeriodStart = CurrentBillingPeriodStart(),
         });

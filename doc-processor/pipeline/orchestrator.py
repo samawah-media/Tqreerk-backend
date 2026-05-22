@@ -433,11 +433,13 @@ def process_document(
     options = options or ExtractOptions()
 
     layout_started = time.perf_counter()
-    pages_regions = layout.analyze_document(pdf_bytes)
+    doc_layout = layout.analyze_document(pdf_bytes)
+    pages_regions = doc_layout.regions_by_page
+    markdown_export = doc_layout.markdown
     layout_ms = int((time.perf_counter() - layout_started) * 1000)
     logger.info(
-        "orchestrator: layout done in %d ms — %d pages with regions",
-        layout_ms, len(pages_regions),
+        "orchestrator: layout done in %d ms — %d pages with regions, markdown=%d chars",
+        layout_ms, len(pages_regions), len(markdown_export),
     )
     if page_range is not None:
         lo, hi = page_range
@@ -446,7 +448,7 @@ def process_document(
         }
 
     if not pages_regions:
-        return _empty_document_response(started)
+        return _empty_document_response(started, markdown=markdown_export)
 
     # PyMuPDF document handle for lazy per-page rasterisation.
     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -541,6 +543,7 @@ def process_document(
         pages=pages,
         document_metadata=document_metadata,
         total_latency_ms=int((time.perf_counter() - started) * 1000),
+        markdown=markdown_export,
     )
 
 
@@ -604,7 +607,10 @@ def _render_page_if_needed(
         return None
 
 
-def _empty_document_response(started: float) -> ExtractDocumentResponse:
+def _empty_document_response(
+    started: float,
+    markdown: str = "",
+) -> ExtractDocumentResponse:
     return ExtractDocumentResponse(
         pages=[],
         document_metadata=DocumentMetadata(
@@ -615,4 +621,5 @@ def _empty_document_response(started: float) -> ExtractDocumentResponse:
             has_formulas=False,
         ),
         total_latency_ms=int((time.perf_counter() - started) * 1000),
+        markdown=markdown,
     )

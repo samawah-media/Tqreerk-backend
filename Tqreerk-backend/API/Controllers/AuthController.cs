@@ -24,26 +24,24 @@ public class AuthController : ControllerBase
         _env = env;
     }
 
-    /// <summary>Register a new individual user account.</summary>
+    /// <summary>Register a new individual user account. Returns the email to verify; account is created only after OTP verification.</summary>
     [HttpPost("register/individual")]
-    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> RegisterIndividual([FromBody] RegisterIndividualRequest req, CancellationToken ct)
     {
-        var result = await _auth.RegisterIndividualAsync(req, ct);
-        AppendRefreshCookie(result.RefreshToken);
-        return Ok(result.Response);
+        var email = await _auth.RegisterIndividualAsync(req, ct);
+        return Ok(new { email, message = "Verification code sent to your email." });
     }
 
-    /// <summary>Register a new organization account.</summary>
+    /// <summary>Register a new organization account. Returns the email to verify; account is created only after OTP verification.</summary>
     [HttpPost("register/organization")]
-    [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> RegisterOrganization([FromBody] RegisterOrganizationRequest req, CancellationToken ct)
     {
-        var result = await _auth.RegisterOrganizationAsync(req, ct);
-        AppendRefreshCookie(result.RefreshToken);
-        return Ok(result.Response);
+        var email = await _auth.RegisterOrganizationAsync(req, ct);
+        return Ok(new { email, message = "Verification code sent to your email." });
     }
 
     /// <summary>Authenticate with email and password. Returns either a

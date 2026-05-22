@@ -1158,6 +1158,13 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Property<int>("AnnualReportsCount")
                         .HasColumnType("integer");
 
+                    b.Property<DateTime?>("CommercialRegisterExpiryDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CommercialRegisterName")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
                     b.Property<string>("CommercialRegisterNo")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
@@ -1177,6 +1184,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int?>("EmployeeCount")
+                        .HasColumnType("integer");
+
                     b.Property<bool>("InterestedInSubscription")
                         .HasColumnType("boolean");
 
@@ -1195,6 +1205,10 @@ namespace Taqreerk.Infrastructure.Data.Migrations
 
                     b.Property<DateTime?>("PoliciesAcceptedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TaxNumber")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<bool>("WantsToPublish")
                         .HasColumnType("boolean");
@@ -1478,6 +1492,122 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("SubscriptionId");
 
                     b.ToTable("payments", (string)null);
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.PendingRegistration", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("CountryId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FullName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("InterestField")
+                        .HasColumnType("text");
+
+                    b.Property<string>("JobTitle")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("OrgAnnualReportsCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("OrgCity")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("OrgCommercialRegisterExpiryDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OrgCommercialRegisterName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OrgCommercialRegisterNo")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OrgContactEmail")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OrgContactPersonName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OrgContactPersonTitle")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("OrgEmployeeCount")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("OrgInterestedInSubscription")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("OrgIssuesReports")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("OrgLicenseDocumentUrl")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OrgNameAr")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OrgNameEn")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("OrgPoliciesAccepted")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("OrgSectorScope")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OrgTaxNumber")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("OrgType")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("OrgWantsToPublish")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("OrgWebsiteUrl")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("OtpExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OtpHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Phone")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PreferredLanguage")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("UserType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("PendingRegistrations");
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.Permission", b =>
@@ -2397,7 +2527,12 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Property<DateTime?>("SubmittedForReviewAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("Title")
+                    b.Property<string>("TitleAr")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("TitleEn")
                         .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -2475,7 +2610,7 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<string>("Summary")
-                        .HasColumnType("text");
+                        .HasColumnType("jsonb");
 
                     b.Property<string>("Topics")
                         .HasColumnType("jsonb");
@@ -2793,7 +2928,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("ReportId");
 
                     b.HasIndex("UserId", "ReportId")
-                        .IsUnique()
                         .HasDatabaseName("ix_report_personal_notes_user_report");
 
                     b.ToTable("report_personal_notes", (string)null);

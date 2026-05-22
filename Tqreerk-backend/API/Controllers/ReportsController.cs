@@ -76,12 +76,13 @@ public class ReportsController : ControllerBase
         // null in this line while the frontend swears it sent the field, the
         // model-binding key is wrong (e.g. `coverImage` vs `CoverImage`).
         _logger.LogInformation(
-            "POST /api/reports — file={FileName} ({FileSize} bytes), coverImage={CoverName} ({CoverSize} bytes), title={Title}",
+            "POST /api/reports — file={FileName} ({FileSize} bytes), coverImage={CoverName} ({CoverSize} bytes), titleAr={TitleAr}, titleEn={TitleEn}",
             form.File?.FileName ?? "(none)",
             form.File?.Length ?? 0,
             form.CoverImage?.FileName ?? "(none)",
             form.CoverImage?.Length ?? 0,
-            form.Title);
+            form.TitleAr,
+            form.TitleEn);
 
         if (form.File is null || form.File.Length == 0)
             return BadRequest(new { title = "File is required." });
@@ -95,7 +96,8 @@ public class ReportsController : ControllerBase
         }
 
         var dto = new CreateReportRequest(
-            Title: form.Title,
+            TitleAr: form.TitleAr,
+            TitleEn: form.TitleEn,
             Description: form.Description,
             ReportType: form.ReportType,
             OriginalLanguage: form.OriginalLanguage,
@@ -127,6 +129,12 @@ public class ReportsController : ControllerBase
 
             var created = await _reports.CreateAsync(userId, dto, reportFile, coverFile, ct);
             return CreatedAtAction(nameof(Get), new { id = created.Id }, created);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("GcsPublicBucketName"))
+        {
+            _logger.LogError(ex, "Cover upload failed: public GCS bucket not configured.");
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { title = "خدمة رفع صور الغلاف غير متاحة حالياً — يرجى التواصل مع الدعم." });
         }
         finally
         {
@@ -318,7 +326,8 @@ public class ReportsController : ControllerBase
         /// Optional thumbnail rendered on the report card / detail page. Image
         /// formats only (PNG/JPEG/WEBP, up to 5 MB).
         public IFormFile? CoverImage { get; set; }
-        public string Title { get; set; } = string.Empty;
+        public string TitleAr { get; set; } = string.Empty;
+        public string TitleEn { get; set; } = string.Empty;
         public string? Description { get; set; }
         public string? ReportType { get; set; }
         public string? OriginalLanguage { get; set; }

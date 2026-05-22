@@ -6,6 +6,7 @@ public interface IOrganizationService
 {
     Task<OrganizationDetailDto> GetMineAsync(Guid userId, CancellationToken ct = default);
 
+    Task<OrganizationDetailDto> UpdateNamesAsync(Guid userId, UpdateOrganizationNamesRequest req, CancellationToken ct = default);
     Task<OrganizationDetailDto> UpdateBasicsAsync(Guid userId, UpdateOrganizationBasicsRequest req, CancellationToken ct = default);
     Task<OrganizationDetailDto> UpdateScopeAsync(Guid userId, UpdateOrganizationScopeRequest req, CancellationToken ct = default);
     Task<OrganizationDetailDto> UpdateReportsAsync(Guid userId, UpdateOrganizationReportsRequest req, CancellationToken ct = default);

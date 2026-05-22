@@ -172,6 +172,12 @@ jobs:
             Quota__DailyIngestPerOrg=20
             Quota__DailyTranslatePerOrg=10
             Quota__DailyChatPerUser=200
+            EmailSettings__FromAddress=taqrerk@samawah1.sa
+            EmailSettings__FromName=Taqreerk
+            EmailSettings__GraphTenantId=2037de8e-f16b-4a64-8a97-81ba663bf0da
+            EmailSettings__GraphClientId=7ff093ca-2a8d-4930-9feb-7b107c4e9613
+            EmailSettings__GraphClientSecret=${{ secrets.GRAPH_CLIENT_SECRET }}
+            EmailSettings__GraphSenderEmail=taqrerk@samawah1.sa
 
       - name: Show staging URL
         run: echo "Staging deployed → ${{ steps.deploy.outputs.url }}"

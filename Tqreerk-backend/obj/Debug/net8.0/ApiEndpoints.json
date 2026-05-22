@@ -1132,6 +1132,175 @@
     ]
   },
   {
+    "ContainingType": "Taqreerk.API.Controllers.AdminPartnersController",
+    "Method": "List",
+    "RelativePath": "api/admin/partners",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": [
+      {
+        "Type": "System.Collections.Generic.IReadOnlyList\u00601[[Taqreerk.Application.DTOs.Admin.AdminPartnerDto, Tqreerk-backend, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AdminPartnersController",
+    "Method": "Create",
+    "RelativePath": "api/admin/partners",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "NameAr",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "NameEn",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "WebsiteUrl",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "IsActive",
+        "Type": "System.Nullable\u00601[[System.Boolean, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
+        "IsRequired": false
+      },
+      {
+        "Name": "logo",
+        "Type": "Microsoft.AspNetCore.Http.IFormFile",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Admin.AdminPartnerDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 201
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AdminPartnersController",
+    "Method": "Update",
+    "RelativePath": "api/admin/partners/{id}",
+    "HttpMethod": "PATCH",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "id",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "NameAr",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "NameEn",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "WebsiteUrl",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "IsActive",
+        "Type": "System.Nullable\u00601[[System.Boolean, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]",
+        "IsRequired": false
+      },
+      {
+        "Name": "logo",
+        "Type": "Microsoft.AspNetCore.Http.IFormFile",
+        "IsRequired": false
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Admin.AdminPartnerDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AdminPartnersController",
+    "Method": "Delete",
+    "RelativePath": "api/admin/partners/{id}",
+    "HttpMethod": "DELETE",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "id",
+        "Type": "System.Guid",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 204
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AdminPartnersController",
+    "Method": "Reorder",
+    "RelativePath": "api/admin/partners/reorder",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Admin.ReorderRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 204
+      }
+    ]
+  },
+  {
     "ContainingType": "Taqreerk.API.Controllers.AdminPlansController",
     "Method": "List",
     "RelativePath": "api/admin/plans",
@@ -2243,6 +2412,55 @@
     ]
   },
   {
+    "ContainingType": "Taqreerk.API.Controllers.AiToolsController",
+    "Method": "TranslateText",
+    "RelativePath": "api/ai/tools/translate-text",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.API.Controllers.AiToolsController\u002BTranslateTextRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.API.Controllers.AiToolsController\u002BTranslateTextResponse",
+        "MediaTypes": [
+          "text/plain",
+          "application/json",
+          "text/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "text/plain",
+          "application/json",
+          "text/json"
+        ],
+        "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "text/plain",
+          "application/json",
+          "text/json"
+        ],
+        "StatusCode": 403
+      },
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 502
+      }
+    ]
+  },
+  {
     "ContainingType": "Taqreerk.API.Controllers.AuthController",
     "Method": "ForgotPassword",
     "RelativePath": "api/auth/forgot-password",
@@ -2488,10 +2706,8 @@
     ],
     "ReturnTypes": [
       {
-        "Type": "Taqreerk.Application.DTOs.Auth.AuthResponse",
-        "MediaTypes": [
-          "application/json"
-        ],
+        "Type": "System.Void",
+        "MediaTypes": [],
         "StatusCode": 200
       },
       {
@@ -2519,10 +2735,8 @@
     ],
     "ReturnTypes": [
       {
-        "Type": "Taqreerk.Application.DTOs.Auth.AuthResponse",
-        "MediaTypes": [
-          "application/json"
-        ],
+        "Type": "System.Void",
+        "MediaTypes": [],
         "StatusCode": 200
       },
       {
@@ -3171,8 +3385,8 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.AnnotationsController",
-    "Method": "GetNote",
-    "RelativePath": "api/me/reports/{reportId}/note",
+    "Method": "ListNotes",
+    "RelativePath": "api/me/reports/{reportId}/notes",
     "HttpMethod": "GET",
     "IsController": true,
     "Order": 0,
@@ -3185,7 +3399,7 @@
     ],
     "ReturnTypes": [
       {
-        "Type": "Taqreerk.Application.DTOs.Annotations.PersonalNoteDto",
+        "Type": "System.Collections.Generic.IReadOnlyList\u00601[[Taqreerk.Application.DTOs.Annotations.PersonalNoteDto, Tqreerk-backend, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
         "MediaTypes": [
           "application/json"
         ],
@@ -3202,14 +3416,62 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.AnnotationsController",
-    "Method": "UpsertNote",
-    "RelativePath": "api/me/reports/{reportId}/note",
-    "HttpMethod": "PUT",
+    "Method": "CreateNote",
+    "RelativePath": "api/me/reports/{reportId}/notes",
+    "HttpMethod": "POST",
     "IsController": true,
     "Order": 0,
     "Parameters": [
       {
         "Name": "reportId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Annotations.CreatePersonalNoteRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Annotations.PersonalNoteDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 201
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AnnotationsController",
+    "Method": "UpdateNote",
+    "RelativePath": "api/me/reports/{reportId}/notes/{noteId}",
+    "HttpMethod": "PATCH",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "reportId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "noteId",
         "Type": "System.Guid",
         "IsRequired": true
       },
@@ -3233,6 +3495,40 @@
           "application/json"
         ],
         "StatusCode": 400
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AnnotationsController",
+    "Method": "DeleteNote",
+    "RelativePath": "api/me/reports/{reportId}/notes/{noteId}",
+    "HttpMethod": "DELETE",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "reportId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      },
+      {
+        "Name": "noteId",
+        "Type": "System.Guid",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 204
       },
       {
         "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
@@ -3620,6 +3916,37 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.OrganizationsController",
+    "Method": "UpdateNames",
+    "RelativePath": "api/organizations/me/names",
+    "HttpMethod": "PATCH",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Organizations.UpdateOrganizationNamesRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Organizations.OrganizationDetailDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 400
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.OrganizationsController",
     "Method": "GetRecentActivity",
     "RelativePath": "api/organizations/me/recent-activity",
     "HttpMethod": "GET",
@@ -3704,6 +4031,22 @@
         "MediaTypes": [
           "application/json"
         ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.PartnersController",
+    "Method": "List",
+    "RelativePath": "api/partners",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
         "StatusCode": 200
       }
     ]
@@ -4425,7 +4768,12 @@
         "IsRequired": false
       },
       {
-        "Name": "Title",
+        "Name": "TitleAr",
+        "Type": "System.String",
+        "IsRequired": false
+      },
+      {
+        "Name": "TitleEn",
         "Type": "System.String",
         "IsRequired": false
       },

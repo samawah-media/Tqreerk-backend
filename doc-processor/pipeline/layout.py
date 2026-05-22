@@ -70,6 +70,24 @@ class LayoutRegion:
     table_data: list[list[str]] | None = None  # row-major, only for kind="table"
 
 
+@dataclass
+class DocumentLayout:
+    """Both outputs of a single Docling convert() call.
+
+    One parse → two artifacts:
+      • `regions_by_page` drives chunking / OCR / captioning.
+      • `markdown` is the human-readable export that we upload alongside the
+        raw PDF (Stage 1.5 in pipeline.ingest) for manual QA and downstream
+        consumers that just want plain text.
+
+    Empty `markdown` is normal — Docling occasionally fails to export
+    (e.g. on PDFs with unusual structure). The chunks are still good, so we
+    log and keep going rather than failing the ingest.
+    """
+    regions_by_page: dict[int, list[LayoutRegion]]
+    markdown: str
+
+
 # Mapping from Docling item class names to the small fixed kind vocabulary
 # the orchestrator uses. Centralised so both entry points stay consistent.
 _KIND_MAP = {
@@ -160,27 +178,34 @@ def analyze_page(png_bytes: bytes) -> list[LayoutRegion]:
     layer (no rasterisation loss for digital PDFs).
     """
     pdf_bytes = _png_to_single_page_pdf(png_bytes)
-    by_page = analyze_document(pdf_bytes)
-    if not by_page:
+    layout = analyze_document(pdf_bytes)
+    if not layout.regions_by_page:
         return []
     # The synthetic PDF has exactly one page. Whichever index Docling gives
     # us, just return the only bucket.
-    return next(iter(by_page.values()))
+    return next(iter(layout.regions_by_page.values()))
 
 
 # ── Public API: full PDF ────────────────────────────────────────────────────
 
-def analyze_document(pdf_bytes: bytes) -> dict[int, list[LayoutRegion]]:
+def analyze_document(pdf_bytes: bytes) -> DocumentLayout:
     """Run Docling on a full PDF.
 
-    Returns `{page_no: [LayoutRegion, ...]}` with 1-based page numbers. Each
-    page's regions are ordered by Docling's global reading-order traversal
-    (so multi-column layouts and Arabic right-to-left columns flow correctly
-    within their page).
+    Returns a `DocumentLayout` carrying both:
+      • `regions_by_page`: `{page_no: [LayoutRegion, ...]}` with 1-based page
+        numbers. Each page's regions are ordered by Docling's global
+        reading-order traversal (so multi-column layouts and Arabic
+        right-to-left columns flow correctly within their page).
+      • `markdown`: the full document exported as Markdown — the same parsed
+        tree we already paid for, surfaced for storage / manual QA.
 
-    An unparseable PDF returns an empty dict — callers should treat that the
-    same as "no content extracted" rather than a hard error, so a single bad
-    document doesn't crash batch ingest.
+    An unparseable PDF returns an empty layout — callers should treat that
+    the same as "no content extracted" rather than a hard error, so a single
+    bad document doesn't crash batch ingest.
+
+    Markdown export failures are caught and downgraded to an empty string:
+    the regions are the actual retrieval payload, and a docling export bug
+    must not be allowed to fail the whole ingest.
     """
     if _converter is None:
         init()
@@ -219,9 +244,18 @@ def analyze_document(pdf_bytes: bytes) -> dict[int, list[LayoutRegion]]:
 
     if result.document is None:
         logger.warning("docling: convert() returned no document")
-        return {}
+        return DocumentLayout(regions_by_page={}, markdown="")
 
-    return _bucket_regions_by_page(result.document)
+    regions_by_page = _bucket_regions_by_page(result.document)
+
+    # Belt-and-braces: don't let an export bug fail the ingest.
+    try:
+        markdown = result.document.export_to_markdown() or ""
+    except Exception as exc:
+        logger.warning("docling: export_to_markdown() failed: %s", exc)
+        markdown = ""
+
+    return DocumentLayout(regions_by_page=regions_by_page, markdown=markdown)
 
 
 # ── Region extraction (shared) ──────────────────────────────────────────────

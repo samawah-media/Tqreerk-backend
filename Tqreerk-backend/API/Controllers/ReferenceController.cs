@@ -70,7 +70,8 @@ public class ReferenceController : ControllerBase
                     p.TargetType.ToString(),
                     p.AnnualPrice,
                     IsHighlighted: p.Id == topPlanId,
-                    FeaturesAr: BuildFeaturesAr(p)));
+                    FeaturesAr: BuildFeaturesAr(p),
+                    FeaturesEn: BuildFeaturesEn(p)));
             })
             .OrderBy(p => p.TargetType)
             .ThenBy(p => p.AnnualPrice)
@@ -129,6 +130,51 @@ public class ReferenceController : ControllerBase
         // ── Notifications ─────────────────────────────────────────────────
         if (p.HasNotifications)
             features.Add("إشعارات تقارير جديدة");
+
+        return features.AsReadOnly();
+    }
+
+    /// English mirror of BuildFeaturesAr. Order and conditions are kept
+    /// identical so featuresAr[i] and featuresEn[i] describe the same
+    /// capability — the SPA picks one based on the active locale.
+    private static IReadOnlyList<string> BuildFeaturesEn(Domain.Entities.Plan p)
+    {
+        var features = new List<string>();
+
+        if (p.IndividualReadsLimit == -1)
+            features.Add("Unlimited access to all reports");
+        else if (p.IndividualReadsLimit > 0)
+            features.Add($"Access to {p.IndividualReadsLimit} reports per month");
+
+        if (p.AdvancedSearchPrecision == "high")
+            features.Add("Specialized analytics with 95% accuracy");
+        else
+            features.Add("General, limited analytics");
+
+        if (p.HasAdvancedSearch)
+            features.Add("Analysis across 10+ sectors");
+
+        if (p.AiCompareMaxReports > 0)
+            features.Add($"Multi-report comparisons up to {p.AiCompareMaxReports} reports");
+
+        features.Add(p.SupportTier == "priority"
+            ? "24/7 priority support"
+            : "Email support");
+
+        if (p.IndividualSavedReportsLimit != 0)
+            features.Add("Save favorite reports");
+
+        if (p.AiAccessLevel is "individual_pro" or "org_basic" or "org_pro")
+            features.Add("Chat with the AI assistant");
+
+        if (p.UserLimit > 1)
+            features.Add($"Primary account + {p.UserLimit - 1} seats");
+
+        if (p.HasInteractions)
+            features.Add("Share free reports");
+
+        if (p.HasNotifications)
+            features.Add("New report notifications");
 
         return features.AsReadOnly();
     }

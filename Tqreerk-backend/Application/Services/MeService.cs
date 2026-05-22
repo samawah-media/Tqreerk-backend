@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Taqreerk.Application.DTOs.Me;
 using Taqreerk.Application.Interfaces;
@@ -34,7 +35,8 @@ public class MeService : IMeService
             .Select(s => new
             {
                 s.Report.Id,
-                s.Report.Title,
+                s.Report.TitleAr,
+                s.Report.TitleEn,
                 s.Report.Slug,
                 s.Report.CoverImageUrl,
                 SectorNameAr = s.Report.Sector != null ? s.Report.Sector.NameAr : null,
@@ -58,7 +60,7 @@ public class MeService : IMeService
             var cover = await ResolveAsync(r.CoverImageUrl, ct);
             var logo = await ResolveAsync(r.OrganizationLogoUrl, ct);
             dtos.Add(new MySavedReportDto(
-                r.Id, r.Title, r.Slug, cover,
+                r.Id, r.TitleAr, r.TitleEn, r.Slug, cover,
                 r.SectorNameAr, r.CountryNameAr,
                 r.PublicationYear, r.PageCount, r.ViewsCount,
                 r.OrganizationNameAr, logo,
@@ -121,7 +123,8 @@ public class MeService : IMeService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Slug,
                 r.CoverImageUrl,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
@@ -146,7 +149,7 @@ public class MeService : IMeService
             var cover = await ResolveAsync(r.CoverImageUrl, ct);
             var logo = await ResolveAsync(r.OrganizationLogoUrl, ct);
             dtos.Add(new MySavedReportDto(
-                r.Id, r.Title, r.Slug, cover,
+                r.Id, r.TitleAr, r.TitleEn, r.Slug, cover,
                 r.SectorNameAr, r.CountryNameAr,
                 r.PublicationYear, r.PageCount, r.ViewsCount,
                 r.OrganizationNameAr, logo,
@@ -164,22 +167,99 @@ public class MeService : IMeService
         // Left-join with reports so rows whose ResourceId no longer
         // resolves (deleted/unpublished report) still render — the
         // frontend falls back to the action type alone.
-        var query =
+        var rows = await (
             from u in _db.UsageTracking.AsNoTracking()
             where u.UserId == userId
             orderby u.ConsumedAt descending
             join r in _db.Reports.AsNoTracking()
                 on u.ResourceId equals (Guid?)r.Id into rj
             from r in rj.DefaultIfEmpty()
-            select new MyActivityItemDto(
+            select new
+            {
                 u.Id,
                 u.ActionType,
                 u.ResourceId,
-                r != null ? r.Title : null,
-                r != null ? r.Slug : null,
-                u.ConsumedAt);
+                ReportTitleAr = r != null ? r.TitleAr : null,
+                ReportTitleEn = r != null ? r.TitleEn : null,
+                ReportSlug = r != null ? r.Slug : null,
+                u.Metadata,
+                OccurredAt = u.ConsumedAt,
+            })
+            .Take(take)
+            .ToListAsync(ct);
 
-        return await query.Take(take).ToListAsync(ct);
+        // Resolve the *additional* report IDs referenced from metadata
+        // (e.g. AiCompare's secondary report set) in a single round trip,
+        // then attach the resolved title/slug to each row. Rows with no
+        // extra IDs just carry an empty list.
+        var extraIds = new HashSet<Guid>();
+        var perRowExtras = new Dictionary<Guid, List<Guid>>();
+        foreach (var row in rows)
+        {
+            if (string.IsNullOrWhiteSpace(row.Metadata)) continue;
+            var ids = TryParseReportIds(row.Metadata);
+            if (ids is null || ids.Count == 0) continue;
+            // Exclude the primary ResourceId — it's already in ReportTitle.
+            var extras = ids.Where(id => id != row.ResourceId).ToList();
+            if (extras.Count == 0) continue;
+            perRowExtras[row.Id] = extras;
+            foreach (var id in extras) extraIds.Add(id);
+        }
+
+        var lookup = extraIds.Count == 0
+            ? new Dictionary<Guid, (string TitleAr, string TitleEn, string Slug)>()
+            : await _db.Reports
+                .AsNoTracking()
+                .Where(r => extraIds.Contains(r.Id))
+                .Select(r => new { r.Id, r.TitleAr, r.TitleEn, r.Slug })
+                .ToDictionaryAsync(r => r.Id, r => (r.TitleAr, r.TitleEn, r.Slug), ct);
+
+        return rows
+            .Select(row =>
+            {
+                var related = perRowExtras.TryGetValue(row.Id, out var extras)
+                    ? extras
+                        .Where(id => lookup.ContainsKey(id))
+                        .Select(id => new ActivityRelatedReportDto(
+                            id, lookup[id].TitleAr, lookup[id].TitleEn, lookup[id].Slug))
+                        .ToList()
+                    : new List<ActivityRelatedReportDto>();
+
+                return new MyActivityItemDto(
+                    row.Id,
+                    row.ActionType,
+                    row.ResourceId,
+                    row.ReportTitleAr,
+                    row.ReportTitleEn,
+                    row.ReportSlug,
+                    row.OccurredAt,
+                    row.Metadata,
+                    related);
+            })
+            .ToList();
+    }
+
+    /// Pull `reportIds` out of a usage_tracking.metadata JSON blob.
+    /// Returns null when the blob isn't valid JSON or has no list there.
+    private static IReadOnlyList<Guid>? TryParseReportIds(string metadata)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(metadata);
+            if (!doc.RootElement.TryGetProperty("reportIds", out var arr)) return null;
+            if (arr.ValueKind != JsonValueKind.Array) return null;
+            var ids = new List<Guid>(arr.GetArrayLength());
+            foreach (var el in arr.EnumerateArray())
+            {
+                if (el.ValueKind == JsonValueKind.String && Guid.TryParse(el.GetString(), out var g))
+                    ids.Add(g);
+            }
+            return ids;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     public async Task<PlanFeaturesDto> GetPlanFeaturesAsync(Guid userId, CancellationToken ct = default)

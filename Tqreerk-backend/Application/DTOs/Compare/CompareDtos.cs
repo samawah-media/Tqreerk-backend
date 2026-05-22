@@ -13,13 +13,16 @@ public sealed record CreateComparisonRequest(
 /// page stays visually consistent.
 public sealed record ComparedReportDto(
     Guid Id,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string Slug,
     string? CoverImageUrl,
     string? OrganizationNameAr,
     int? PublicationYear,
     string? SectorNameAr,
-    string? Summary,
+    /// 3-7 bullet-point summary of the report. Empty list if the AI step
+    /// hasn't run yet or the row predates the bullet-point migration.
+    IReadOnlyList<string> Summary,
     IReadOnlyList<string> KeyFindings);
 
 /// One row of the qualitative summary banner. The Python service emits
@@ -48,4 +51,7 @@ public sealed record ComparisonListItemDto(
     Guid Id,
     DateTime CreatedAt,
     int ReportCount,
-    IReadOnlyList<string> ReportTitles);
+    IReadOnlyList<ComparisonTitleDto> ReportTitles);
+
+/// Bilingual title pair surfaced in comparison history rows.
+public sealed record ComparisonTitleDto(string TitleAr, string TitleEn);

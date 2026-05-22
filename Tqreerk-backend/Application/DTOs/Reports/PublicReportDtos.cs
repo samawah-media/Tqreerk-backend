@@ -17,7 +17,8 @@ public record CoverImagesDto(string Thumb, string Medium, string Full);
 public record PublicReportListItemDto(
     Guid Id,
     string Slug,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string? Description,
     string? ReportType,
     string OriginalLanguage,
@@ -40,8 +41,10 @@ public record PublicReportListItemDto(
     string OrganizationNameEn,
     Guid? SectorId,
     string? SectorNameAr,
+    string? SectorNameEn,
     Guid? CountryId,
     string? CountryNameAr,
+    string? CountryNameEn,
     DateTime CreatedAt
 );
 
@@ -52,7 +55,8 @@ public record PublicReportListItemDto(
 public record PublicReportDetailDto(
     Guid Id,
     string Slug,
-    string Title,
+    string TitleAr,
+    string TitleEn,
     string? Description,
     string? ReportType,
     string OriginalLanguage,
@@ -74,11 +78,18 @@ public record PublicReportDetailDto(
     string OrganizationNameEn,
     Guid? SectorId,
     string? SectorNameAr,
+    string? SectorNameEn,
     Guid? CountryId,
     string? CountryNameAr,
-    string? Summary,
+    string? CountryNameEn,
+    /// 3-7 bullet-point summary. Empty list if AI hasn't run yet.
+    IReadOnlyList<string> Summary,
     IReadOnlyList<string> KeyFindings,
     IReadOnlyList<string> Topics,
+    /// Structured KPIs extracted by the AI pipeline. Raw jsonb array from the DB
+    /// — each element is a JSON object with name/value/unit/time_period/context.
+    /// Null when AI hasn't run yet; the frontend JSON.parses each element.
+    string? IndicatorsJson,
     /// Total number of (non-deleted) comments. Cheap COUNT — included in
     /// the detail payload so the SPA doesn't have to fan out to fetch it
     /// before rendering the comments header badge.
@@ -120,4 +131,4 @@ public record PublicReportFacetsDto(
     IReadOnlyList<FacetItemDto> Languages
 );
 
-public record FacetItemDto(string Id, string Name, int Count);
+public record FacetItemDto(string Id, string NameAr, string NameEn, int Count);

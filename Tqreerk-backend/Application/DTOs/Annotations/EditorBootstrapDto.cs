@@ -16,7 +16,7 @@ public sealed record EditorBootstrapDto(
     PublicReportDetailDto Report,
     EditorPlanInfo Plan,
     IReadOnlyList<AnnotationDto> Annotations,
-    PersonalNoteDto Note);
+    IReadOnlyList<PersonalNoteDto> Notes);
 
 /// Tier identification for the UI's premium-gated tabs. The plan id
 /// is the source of truth (matched against Domain.Common.PlanIds);

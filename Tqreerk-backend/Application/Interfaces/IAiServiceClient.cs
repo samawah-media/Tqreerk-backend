@@ -88,7 +88,9 @@ public record AiJobStatusSnapshot(
 
 public record SummarizeResult(
     Guid ReportId,
-    string Summary,
+    /// 3-7 bullet points capturing the report's main takeaways. Pydantic
+    /// enforces the length window on the Python side; the C# layer trusts it.
+    IReadOnlyList<string> Summary,
     IReadOnlyList<string> KeyFindings,
     IReadOnlyList<string> Topics,
     /// Raw JSON arrays — Indicators / Trends arrive as arrays of objects from

@@ -248,7 +248,8 @@ public class AdminOrganizationsService : IAdminOrganizationsService
             .Take(pageSize)
             .Select(r => new AdminOrganizationReportItemDto(
                 r.Id,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Status.ToString(),
                 r.Slug,
                 r.CreatedAt,

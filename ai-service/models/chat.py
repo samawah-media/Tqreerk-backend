@@ -17,6 +17,15 @@ class CreateSessionResponse(BaseModel):
     title: str
 
 
+class RenameSessionRequest(BaseModel):
+    title: str
+
+
+class RenameSessionResponse(BaseModel):
+    session_id: UUID
+    title: str
+
+
 class SessionMessage(BaseModel):
     role: str   # "user" | "assistant"
     content: str

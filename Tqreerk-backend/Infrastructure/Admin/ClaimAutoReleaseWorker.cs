@@ -81,7 +81,6 @@ public class ClaimAutoReleaseWorker : BackgroundService
             .Select(r => new
             {
                 r.Id,
-                r.Title,
                 ReviewerId = r.ClaimedByReviewerId!.Value,
                 ClaimedAt = r.ClaimedAt!.Value,
             })

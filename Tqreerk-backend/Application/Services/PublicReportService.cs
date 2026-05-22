@@ -13,11 +13,19 @@ public class PublicReportService : IPublicReportService
 {
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
+    private readonly IReportAiService _ai;
+    private readonly ILogger<PublicReportService> _logger;
 
-    public PublicReportService(TaqreerkDbContext db, IFileStorage files)
+    public PublicReportService(
+        TaqreerkDbContext db,
+        IFileStorage files,
+        IReportAiService ai,
+        ILogger<PublicReportService> logger)
     {
         _db = db;
         _files = files;
+        _ai = ai;
+        _logger = logger;
     }
 
     public async Task<PagedResult<PublicReportListItemDto>> ListAsync(
@@ -61,7 +69,8 @@ public class PublicReportService : IPublicReportService
             {
                 r.Id,
                 r.Slug,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Description,
                 r.ReportType,
                 r.OriginalLanguage,
@@ -81,8 +90,10 @@ public class PublicReportService : IPublicReportService
                 OrgNameEn = r.Organization.NameEn,
                 r.SectorId,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
+                SectorNameEn = r.Sector != null ? r.Sector.NameEn : null,
                 r.CountryId,
                 CountryNameAr = r.Country != null ? r.Country.NameAr : null,
+                CountryNameEn = r.Country != null ? r.Country.NameEn : null,
                 r.CreatedAt,
             })
             .FirstOrDefaultAsync(ct)
@@ -94,8 +105,26 @@ public class PublicReportService : IPublicReportService
         var ai = await _db.ReportAiContents
             .AsNoTracking()
             .Where(c => c.ReportId == row.Id && c.Language == row.OriginalLanguage)
-            .Select(c => new { c.Summary, c.KeyFindings, c.Indicators })
+            .Select(c => new { c.Summary, c.KeyFindings, c.Topics, c.Indicators })
             .FirstOrDefaultAsync(ct);
+
+        // If no AI content exists yet, kick off the ingest+summarize pipeline
+        // in the background. The current request returns immediately with empty
+        // summary/indicators; subsequent page loads will have the data once the
+        // AI service finishes (typically 30-90 s). EnqueueIngestAsync is
+        // idempotent so concurrent page loads don't spawn duplicate jobs.
+        if (ai is null && !string.IsNullOrWhiteSpace(row.FileUrl))
+        {
+            _ = Task.Run(async () =>
+            {
+                try { await _ai.EnqueueIngestAsync(row.Id); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "[public] Background ingest trigger failed for report {ReportId}", row.Id);
+                }
+            });
+        }
 
         var fileUrl = await ResolveFileUrlAsync(row.FileUrl, ct);
         var (coverUrl, coverVariants) = await ResolveCoverAsync(row.CoverImageUrl, row.CoverImageBaseKey, ct);
@@ -113,7 +142,8 @@ public class PublicReportService : IPublicReportService
         return new PublicReportDetailDto(
             row.Id,
             row.Slug,
-            row.Title,
+            row.TitleAr,
+            row.TitleEn,
             row.Description,
             row.ReportType,
             row.OriginalLanguage,
@@ -133,11 +163,14 @@ public class PublicReportService : IPublicReportService
             row.OrgNameEn,
             row.SectorId,
             row.SectorNameAr,
+            row.SectorNameEn,
             row.CountryId,
             row.CountryNameAr,
-            ai?.Summary,
+            row.CountryNameEn,
+            ParseJsonStringArray(ai?.Summary),
             ParseJsonStringArray(ai?.KeyFindings),
-            ParseJsonStringArray(ai?.Indicators),
+            ParseJsonStringArray(ai?.Topics),
+            ai?.Indicators,
             commentCount,
             recommendationCount,
             row.CreatedAt
@@ -332,23 +365,23 @@ public class PublicReportService : IPublicReportService
         // Sectors: filter by everything except sector selection.
         var sectorRows = await ApplyFilters(PublishedQuery(), req, except: FacetDim.Sectors)
             .Where(r => r.SectorId != null)
-            .GroupBy(r => new { r.SectorId, r.Sector!.NameAr })
-            .Select(g => new { Id = g.Key.SectorId!.Value, Name = g.Key.NameAr, Count = g.Count() })
+            .GroupBy(r => new { r.SectorId, r.Sector!.NameAr, r.Sector!.NameEn })
+            .Select(g => new { Id = g.Key.SectorId!.Value, NameAr = g.Key.NameAr, NameEn = g.Key.NameEn, Count = g.Count() })
             .OrderByDescending(x => x.Count)
             .ToListAsync(ct);
 
         var countryRows = await ApplyFilters(PublishedQuery(), req, except: FacetDim.Countries)
             .Where(r => r.CountryId != null)
-            .GroupBy(r => new { r.CountryId, r.Country!.NameAr })
-            .Select(g => new { Id = g.Key.CountryId!.Value, Name = g.Key.NameAr, Count = g.Count() })
+            .GroupBy(r => new { r.CountryId, r.Country!.NameAr, r.Country!.NameEn })
+            .Select(g => new { Id = g.Key.CountryId!.Value, NameAr = g.Key.NameAr, NameEn = g.Key.NameEn, Count = g.Count() })
             .OrderByDescending(x => x.Count)
             .ToListAsync(ct);
 
         // Top 20 orgs to keep the sidebar list bounded. The org-search
         // input on the frontend filters this list locally.
         var orgRows = await ApplyFilters(PublishedQuery(), req, except: FacetDim.Organizations)
-            .GroupBy(r => new { r.OrganizationId, r.Organization.NameAr })
-            .Select(g => new { Id = g.Key.OrganizationId, Name = g.Key.NameAr, Count = g.Count() })
+            .GroupBy(r => new { r.OrganizationId, r.Organization.NameAr, r.Organization.NameEn })
+            .Select(g => new { Id = g.Key.OrganizationId, NameAr = g.Key.NameAr, NameEn = g.Key.NameEn, Count = g.Count() })
             .OrderByDescending(x => x.Count)
             .Take(20)
             .ToListAsync(ct);
@@ -362,10 +395,10 @@ public class PublicReportService : IPublicReportService
             .ToListAsync(ct);
 
         return new PublicReportFacetsDto(
-            Sectors:       sectorRows.Select(x => new FacetItemDto(x.Id.ToString(), x.Name, x.Count)).ToList(),
-            Countries:     countryRows.Select(x => new FacetItemDto(x.Id.ToString(), x.Name, x.Count)).ToList(),
-            Organizations: orgRows.Select(x => new FacetItemDto(x.Id.ToString(), x.Name, x.Count)).ToList(),
-            Languages:     languageRows.Select(x => new FacetItemDto(x.Lang, x.Lang, x.Count)).ToList());
+            Sectors:       sectorRows.Select(x => new FacetItemDto(x.Id.ToString(), x.NameAr, x.NameEn ?? x.NameAr, x.Count)).ToList(),
+            Countries:     countryRows.Select(x => new FacetItemDto(x.Id.ToString(), x.NameAr, x.NameEn ?? x.NameAr, x.Count)).ToList(),
+            Organizations: orgRows.Select(x => new FacetItemDto(x.Id.ToString(), x.NameAr, x.NameEn ?? x.NameAr, x.Count)).ToList(),
+            Languages:     languageRows.Select(x => new FacetItemDto(x.Lang, x.Lang, x.Lang, x.Count)).ToList());
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
@@ -386,7 +419,8 @@ public class PublicReportService : IPublicReportService
         {
             var like = $"%{req.Q.Trim()}%";
             q = q.Where(r =>
-                EF.Functions.ILike(r.Title, like)
+                EF.Functions.ILike(r.TitleAr, like)
+                || EF.Functions.ILike(r.TitleEn, like)
                 || (r.Description != null && EF.Functions.ILike(r.Description, like)));
         }
 
@@ -434,7 +468,8 @@ public class PublicReportService : IPublicReportService
             {
                 r.Id,
                 r.Slug,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Description,
                 r.ReportType,
                 r.OriginalLanguage,
@@ -452,8 +487,10 @@ public class PublicReportService : IPublicReportService
                 OrgNameEn = r.Organization.NameEn,
                 r.SectorId,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
+                SectorNameEn = r.Sector != null ? r.Sector.NameEn : null,
                 r.CountryId,
                 CountryNameAr = r.Country != null ? r.Country.NameAr : null,
+                CountryNameEn = r.Country != null ? r.Country.NameEn : null,
                 r.CreatedAt,
             })
             .ToListAsync(ct);
@@ -465,7 +502,8 @@ public class PublicReportService : IPublicReportService
             dtos.Add(new PublicReportListItemDto(
                 r.Id,
                 r.Slug,
-                r.Title,
+                r.TitleAr,
+                r.TitleEn,
                 r.Description,
                 r.ReportType,
                 r.OriginalLanguage,
@@ -483,8 +521,10 @@ public class PublicReportService : IPublicReportService
                 r.OrgNameEn,
                 r.SectorId,
                 r.SectorNameAr,
+                r.SectorNameEn,
                 r.CountryId,
                 r.CountryNameAr,
+                r.CountryNameEn,
                 r.CreatedAt
             ));
         }
