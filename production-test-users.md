@@ -113,6 +113,39 @@ SET    "CreatedByUserId" = '50000000-0000-0000-0000-000000000003'
 WHERE  "Id" = '60000000-0000-0000-0000-000000000001'
    AND "CreatedByUserId" IS NULL;
 
+-- ── 5. Free-plan subscriptions ───────────────────────────────────────────
+-- Manual SQL inserts bypass the registration flow, so the
+-- Feature5_UsageTracking backfill migration never ran for these users.
+-- Without an Active subscription row, /api/me/plan-features throws
+-- InvalidOperationException → HTTP 409. Same values the migration uses:
+-- EndDate 100 years out (free plan has no real billing cycle).
+-- NOT EXISTS guard makes this idempotent.
+INSERT INTO subscriptions
+    ("Id", "UserId", "OrganizationId", "PlanId",
+     "Status", "PaymentStatus", "StartDate", "EndDate",
+     "CreatedAt")
+SELECT
+    gen_random_uuid(),
+    u."Id",
+    NULL,
+    '70000000-0000-0000-0000-000000000001',  -- IndividualFree
+    'Active',
+    'Paid',
+    NOW(),
+    NOW() + interval '100 years',
+    NOW()
+FROM users u
+WHERE u."Id" IN (
+    '50000000-0000-0000-0000-000000000001',  -- user@taqreerk.test
+    '50000000-0000-0000-0000-000000000002',  -- admin@taqreerk.test
+    '50000000-0000-0000-0000-000000000003'   -- org@taqreerk.test
+)
+AND NOT EXISTS (
+    SELECT 1 FROM subscriptions s
+    WHERE s."UserId" = u."Id"
+      AND s."Status" = 'Active'
+);
+
 COMMIT;
 ```
 
@@ -120,13 +153,16 @@ COMMIT;
 
 ```sql
 SELECT u."Email", u."UserType", u."IsPlatformStaff", u."Status",
-       array_agg(DISTINCT r."Name") FILTER (WHERE r."Name" IS NOT NULL)        AS platform_roles,
-       array_agg(DISTINCT o."NameEn") FILTER (WHERE o."NameEn" IS NOT NULL)    AS organizations
+       array_agg(DISTINCT r."Name")  FILTER (WHERE r."Name"  IS NOT NULL) AS platform_roles,
+       array_agg(DISTINCT o."NameEn") FILTER (WHERE o."NameEn" IS NOT NULL) AS organizations,
+       array_agg(DISTINCT p."NameEn") FILTER (WHERE p."NameEn" IS NOT NULL) AS active_plans
 FROM users u
 LEFT JOIN user_roles           ur ON ur."UserId"        = u."Id"
 LEFT JOIN roles                r  ON r."Id"             = ur."RoleId"
 LEFT JOIN organization_members om ON om."UserId"        = u."Id" AND om."IsActive" = TRUE
 LEFT JOIN organizations        o  ON o."Id"             = om."OrganizationId"
+LEFT JOIN subscriptions        s  ON s."UserId"         = u."Id" AND s."Status" = 'Active'
+LEFT JOIN plans                p  ON p."Id"             = s."PlanId"
 WHERE u."Email" IN (
     'admin@taqreerk.local',
     'user@taqreerk.test',
@@ -139,10 +175,10 @@ ORDER BY u."Email";
 
 Expected rows:
 
-- `admin@taqreerk.local` — `staff`, IsPlatformStaff=`t`, platform_roles=`{SuperAdmin}`
-- `admin@taqreerk.test`  — `staff`, IsPlatformStaff=`t`, platform_roles=`{Admin}`
-- `org@taqreerk.test`    — `organization_admin`, IsPlatformStaff=`f`, organizations=`{Test Entity}`
-- `user@taqreerk.test`   — `individual`, IsPlatformStaff=`f`, no roles, no orgs
+- `admin@taqreerk.local` — `staff`, IsPlatformStaff=`t`, platform_roles=`{SuperAdmin}`, active_plans=`{Free}`
+- `admin@taqreerk.test`  — `staff`, IsPlatformStaff=`t`, platform_roles=`{Admin}`, active_plans=`{Free}`
+- `org@taqreerk.test`    — `organization_admin`, IsPlatformStaff=`f`, organizations=`{Test Entity}`, active_plans=`{Free}`
+- `user@taqreerk.test`   — `individual`, IsPlatformStaff=`f`, no roles, no orgs, active_plans=`{Free}`
 
 ## Notes
 
