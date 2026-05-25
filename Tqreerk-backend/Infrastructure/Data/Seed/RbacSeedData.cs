@@ -26,6 +26,7 @@ public static class RbacSeedData
         public static readonly Guid Settings       = Guid.Parse("10000000-0000-0000-0000-00000000000b");
         public static readonly Guid Categories     = Guid.Parse("10000000-0000-0000-0000-00000000000c");
         public static readonly Guid Featured       = Guid.Parse("10000000-0000-0000-0000-00000000000d");
+        public static readonly Guid Partners       = Guid.Parse("10000000-0000-0000-0000-00000000000e");
     }
 
     public static class RoleIds
@@ -69,6 +70,7 @@ public static class RbacSeedData
         new(PageIds.Settings,      "settings",      "Settings",      "الإعدادات",      11),
         new(PageIds.Categories,    "categories",    "Categories",    "التصنيفات",      12),
         new(PageIds.Featured,      "featured",      "Featured",      "المحتوى البارز", 13),
+        new(PageIds.Partners,      "partners",      "Partners",      "الشركاء",         14),
     ];
 
     private static readonly PermissionSpec[] DefaultPermissions =
