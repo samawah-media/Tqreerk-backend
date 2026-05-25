@@ -197,6 +197,7 @@ public class ReportService : IReportService
                 r.AvgRating,
                 r.IsFeatured,
                 r.CoverImageUrl,
+                r.CoverImageBaseKey,
                 r.SectorId,
                 SectorNameAr = r.Sector != null ? r.Sector.NameAr : null,
                 SectorNameEn = r.Sector != null ? r.Sector.NameEn : null,
@@ -224,7 +225,7 @@ public class ReportService : IReportService
                 r.DownloadsCount,
                 r.AvgRating,
                 r.IsFeatured,
-                TryPublicUrl(r.CoverImageUrl),
+                TryPublicUrl(r.CoverImageUrl, r.CoverImageBaseKey),
                 r.SectorId,
                 r.SectorNameAr,
                 r.SectorNameEn,
@@ -252,9 +253,24 @@ public class ReportService : IReportService
     }
 
     // Cover images live in the PUBLIC bucket — no signing needed.
-    private string? TryPublicUrl(string? objectKey)
+    private string? TryPublicUrl(string? objectKey, string? coverImageBaseKey = null)
     {
+        if (!string.IsNullOrWhiteSpace(coverImageBaseKey))
+        {
+            try { return _files.GetPublicUrl($"{coverImageBaseKey}/{CoverImageVariants.MediumName}"); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Failed to build public cover URL for baseKey={BaseKey}", coverImageBaseKey);
+            }
+        }
+
         if (string.IsNullOrWhiteSpace(objectKey)) return null;
+
+        if (objectKey.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || objectKey.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return objectKey;
+
         try { return _files.GetPublicUrl(objectKey); }
         catch (Exception ex)
         {

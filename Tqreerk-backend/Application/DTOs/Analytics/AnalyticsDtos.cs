@@ -1,3 +1,5 @@
+using Taqreerk.Application.DTOs.Reports;
+
 namespace Taqreerk.Application.DTOs.Analytics;
 
 /// Top-level org analytics payload for the date range the caller passed.
@@ -33,6 +35,7 @@ public sealed record ReportLeaderboardItemDto(
     string TitleEn,
     string Slug,
     string? CoverImageUrl,
+    CoverImagesDto? CoverImages,
     long Views,
     int Ratings,
     decimal AverageRating);
