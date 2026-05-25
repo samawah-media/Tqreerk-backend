@@ -1,8 +1,11 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 using Taqreerk.Application.DTOs.Analytics;
+using Taqreerk.Application.DTOs.Reports;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
+using Taqreerk.Infrastructure.Storage;
 
 namespace Taqreerk.Application.Services;
 
@@ -13,8 +16,18 @@ public class OrganizationAnalyticsService : IOrganizationAnalyticsService
     private const int LeaderboardSize = 25;
 
     private readonly TaqreerkDbContext _db;
+    private readonly IFileStorage _files;
+    private readonly ILogger<OrganizationAnalyticsService> _logger;
 
-    public OrganizationAnalyticsService(TaqreerkDbContext db) => _db = db;
+    public OrganizationAnalyticsService(
+        TaqreerkDbContext db,
+        IFileStorage files,
+        ILogger<OrganizationAnalyticsService> logger)
+    {
+        _db = db;
+        _files = files;
+        _logger = logger;
+    }
 
     public async Task<OrganizationAnalyticsDto> GetOrganizationAnalyticsAsync(
         Guid currentUserId, DateTime from, DateTime to, CancellationToken ct = default)
@@ -105,24 +118,25 @@ public class OrganizationAnalyticsService : IOrganizationAnalyticsService
         var reportMeta = await _db.Reports
             .AsNoTracking()
             .Where(r => topIds.Contains(r.Id))
-            .Select(r => new { r.Id, r.TitleAr, r.TitleEn, r.Slug, r.CoverImageUrl })
+            .Select(r => new { r.Id, r.TitleAr, r.TitleEn, r.Slug, r.CoverImageUrl, r.CoverImageBaseKey })
             .ToListAsync(ct);
 
         var metaByReport = reportMeta.ToDictionary(r => r.Id);
 
-        var topReports = leaderboardCounts
-            .Where(x => metaByReport.ContainsKey(x.ReportId))
-            .Select(x =>
-            {
-                var meta = metaByReport[x.ReportId];
-                ratingByReport.TryGetValue(x.ReportId, out var rating);
-                return new ReportLeaderboardItemDto(
-                    meta.Id, meta.TitleAr, meta.TitleEn, meta.Slug, meta.CoverImageUrl,
-                    x.Views,
-                    rating?.Count ?? 0,
-                    rating is null ? 0m : Math.Round((decimal)rating.Avg, 2));
-            })
-            .ToList();
+        var topReports = new List<ReportLeaderboardItemDto>(leaderboardCounts.Count);
+        foreach (var x in leaderboardCounts)
+        {
+            if (!metaByReport.TryGetValue(x.ReportId, out var meta))
+                continue;
+
+            ratingByReport.TryGetValue(x.ReportId, out var rating);
+            var (coverUrl, coverVariants) = ResolveCover(meta.CoverImageUrl, meta.CoverImageBaseKey);
+            topReports.Add(new ReportLeaderboardItemDto(
+                meta.Id, meta.TitleAr, meta.TitleEn, meta.Slug, coverUrl, coverVariants,
+                x.Views,
+                rating?.Count ?? 0,
+                rating is null ? 0m : Math.Round((decimal)rating.Avg, 2)));
+        }
 
         return new OrganizationAnalyticsDto(
             fromUtc, toUtc,
@@ -175,6 +189,54 @@ public class OrganizationAnalyticsService : IOrganizationAnalyticsService
         return new ReportAnalyticsDto(
             report.Id, report.TitleAr, report.TitleEn, fromUtc, toUtc,
             totalViews, totalRatings, averageRating, series);
+    }
+
+    /// Resolve cover object keys to browser-loadable URLs. Covers live in the
+    /// public GCS bucket — same rules as <see cref="ReportService.TryPublicUrl"/>.
+    private (string? CoverImageUrl, CoverImagesDto? CoverImages) ResolveCover(
+        string? coverImageUrl, string? coverImageBaseKey)
+    {
+        var baseKey = coverImageBaseKey;
+        // Some rows only persisted the medium-variant key — derive the base
+        // prefix so we can still emit the full srcset trio.
+        if (string.IsNullOrWhiteSpace(baseKey)
+            && !string.IsNullOrWhiteSpace(coverImageUrl)
+            && coverImageUrl.EndsWith($"/{CoverImageVariants.MediumName}", StringComparison.Ordinal))
+        {
+            baseKey = coverImageUrl[..coverImageUrl.LastIndexOf('/')];
+        }
+
+        if (!string.IsNullOrWhiteSpace(baseKey))
+        {
+            try
+            {
+                var thumb = _files.GetPublicUrl($"{baseKey}/{CoverImageVariants.ThumbName}");
+                var medium = _files.GetPublicUrl($"{baseKey}/{CoverImageVariants.MediumName}");
+                var full = _files.GetPublicUrl($"{baseKey}/{CoverImageVariants.FullName}");
+                return (medium, new CoverImagesDto(thumb, medium, full));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Failed to build public cover variant URLs for baseKey={BaseKey}", baseKey);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(coverImageUrl))
+            return (null, null);
+
+        // Already a full URL (older API rows or manual backfills).
+        if (coverImageUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || coverImageUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return (coverImageUrl, null);
+
+        try { return (_files.GetPublicUrl(coverImageUrl), null); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Failed to build public cover URL for objectKey={ObjectKey}", coverImageUrl);
+            return (null, null);
+        }
     }
 
     private async Task<Guid> GetCallerOrgIdAsync(Guid userId, CancellationToken ct)
