@@ -637,7 +637,7 @@ def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSu
             contents=prompt_text,
             config=types.GenerateContentConfig(
                 temperature=0.2,
-                max_output_tokens=65536,   # Flash default is 8192; large reports need up to 64K
+                max_output_tokens=65535,   # Flash default is 8192; range is [1,65536) so max is 65535
                 response_mime_type="application/json",
                 response_schema=ReportSummary,   # SDK auto-generates schema + returns response.parsed
             ),
