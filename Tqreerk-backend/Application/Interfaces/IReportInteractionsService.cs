@@ -18,6 +18,8 @@ public interface IReportInteractionsService
     Task<ReportInteractionStateDto> UnrateAsync(
         Guid userId, Guid reportId, CancellationToken ct = default);
 
+    Task<bool> IsSavedAsync(Guid userId, Guid reportId, CancellationToken ct = default);
+
     /// Save the report to the user's "saved reports" list. Idempotent.
     Task<ReportInteractionStateDto> SaveAsync(
         Guid userId, Guid reportId, CancellationToken ct = default);
@@ -45,5 +47,10 @@ public interface IReportInteractionsService
     /// there's a token. Throws KeyNotFound when the report is missing or
     /// not published.
     Task<MyReportInteractionDto> GetMyStateAsync(
+        Guid userId, Guid reportId, CancellationToken ct = default);
+
+    /// Mint a short-lived signed URL for the report PDF. Caller must pass
+    /// through the usage gate before invoking this.
+    Task<ReportFullAccessDto> GetFullAccessAsync(
         Guid userId, Guid reportId, CancellationToken ct = default);
 }

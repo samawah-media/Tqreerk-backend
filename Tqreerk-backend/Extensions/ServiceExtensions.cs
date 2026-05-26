@@ -205,6 +205,7 @@ public static class ServiceExtensions
         // annotations / personal notes (Phase 1 features 1.1, 1.2a, 1.2b).
         // The [EnforceUsageLimit] action filter resolves IUsageService
         // per-request, so this MUST be Scoped — not Singleton.
+        services.AddScoped<ISubscriptionProvisioningService, SubscriptionProvisioningService>();
         services.AddScoped<IUsageService, UsageService>();
         services.AddScoped<IPointsService, PointsService>();
         services.AddScoped<IMeService, MeService>();

@@ -99,6 +99,9 @@ public record UpdateReportMetadataRequest(
     Guid? CountryId
 );
 
+/// Short-lived signed PDF URL returned by GET /api/reports/{id}/full-access.
+public record ReportFullAccessDto(string FileUrl);
+
 public record PagedResult<T>(
     IReadOnlyList<T> Items,
     int Total,

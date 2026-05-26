@@ -31,17 +31,20 @@ public class OrganizationService : IOrganizationService
     private readonly IFileStorage _files;
     private readonly IEmailSender _email;
     private readonly EmailSettings _emailSettings;
+    private readonly IUsageService _usage;
 
     public OrganizationService(
         TaqreerkDbContext db,
         IFileStorage files,
         IEmailSender email,
-        IOptions<EmailSettings> emailSettings)
+        IOptions<EmailSettings> emailSettings,
+        IUsageService usage)
     {
         _db = db;
         _files = files;
         _email = email;
         _emailSettings = emailSettings.Value;
+        _usage = usage;
     }
 
     public async Task<OrganizationDetailDto> GetMineAsync(Guid userId, CancellationToken ct = default)
@@ -488,6 +491,8 @@ public class OrganizationService : IOrganizationService
         var normalized = email.Trim().ToLowerInvariant();
         var orgId = await GetOrgIdForUserAsync(currentUserId, ct);
 
+        await _usage.EnsureOrgCanAddMemberAsync(orgId, ct);
+
         // Already a member? Block the invite — they're already in.
         var alreadyMember = await _db.OrganizationMembers
             .Include(m => m.User)
@@ -629,6 +634,8 @@ public class OrganizationService : IOrganizationService
 
         if (existingMembership is null)
         {
+            await _usage.EnsureOrgCanAcceptMemberAsync(invitation.OrganizationId, ct);
+
             var memberRole = await _db.Roles.FirstOrDefaultAsync(r => r.Name == "admin", ct)
                 ?? throw new InvalidOperationException("Default roles not seeded.");
 

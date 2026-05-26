@@ -3,8 +3,8 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.EntityFrameworkCore;
 using Taqreerk.Application.Interfaces;
+using Taqreerk.Application.Services;
 using Taqreerk.Domain.Entities;
-using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.API.Filters;
@@ -67,22 +67,8 @@ public sealed class RequiresPlanFeatureAttribute : Attribute, IAsyncActionFilter
         // Resolve the active subscription's plan. Same shape UsageService
         // uses, but we only need a couple of columns here. Using
         // AsNoTracking because we never write through this load.
-        var plan = await db.Subscriptions
-            .AsNoTracking()
-            .Where(s => s.UserId == userId && s.Status == SubscriptionStatus.Active)
-            .OrderByDescending(s => s.CreatedAt)
-            .Select(s => s.Plan)
-            .FirstOrDefaultAsync(context.HttpContext.RequestAborted);
-
-        if (plan is null)
-        {
-            // Same posture as UsageService: no active subscription is a
-            // misconfiguration (registration should auto-link to free).
-            // We surface it as a 500-style InvalidOperation so the dev
-            // sees the broken backfill, not a misleading 403.
-            throw new InvalidOperationException(
-                $"User {userId} has no active subscription; cannot evaluate plan feature '{_featureName}'.");
-        }
+        var (_, plan) = await SubscriptionResolver.GetActiveForUserAsync(
+            db, userId, context.HttpContext.RequestAborted);
 
         var enabled = (bool)(prop.GetValue(plan) ?? false);
         if (!enabled)

@@ -32,15 +32,18 @@ public class ReportService : IReportService
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
     private readonly ILogger<ReportService> _logger;
+    private readonly IUsageService _usage;
 
     public ReportService(
         TaqreerkDbContext db,
         IFileStorage files,
-        ILogger<ReportService> logger)
+        ILogger<ReportService> logger,
+        IUsageService usage)
     {
         _db = db;
         _files = files;
         _logger = logger;
+        _usage = usage;
     }
 
     public async Task<ReportDetailDto> CreateAsync(
@@ -73,6 +76,8 @@ public class ReportService : IReportService
         }
 
         var orgId = await GetCallerOrgIdAsync(currentUserId, ct);
+
+        await _usage.EnsureOrgCanUploadReportAsync(orgId, ct);
 
         if (req.SectorId.HasValue && !await _db.Sectors.AnyAsync(s => s.Id == req.SectorId.Value, ct))
             throw new ArgumentException("Unknown sector.");

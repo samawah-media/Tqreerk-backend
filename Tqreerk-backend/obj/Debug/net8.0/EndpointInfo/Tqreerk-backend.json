@@ -4843,6 +4843,28 @@
         }
       }
     },
+    "/api/me/subscription": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MySubscriptionDto"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
     "/api/organizations/me": {
       "get": {
         "tags": [
@@ -6737,6 +6759,56 @@
           },
           "401": {
             "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reports/{id}/full-access": {
+      "get": {
+        "tags": [
+          "ReportInteractions"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportFullAccessDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
             "content": {
               "application/json": {
                 "schema": {
@@ -10358,6 +10430,62 @@
         },
         "additionalProperties": false
       },
+      "MySubscriptionDto": {
+        "type": "object",
+        "properties": {
+          "subscriptionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "planId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "planNameAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "planNameEn": {
+            "type": "string",
+            "nullable": true
+          },
+          "targetType": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "nullable": true
+          },
+          "paymentStatus": {
+            "type": "string",
+            "nullable": true
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "awaitingPayment": {
+            "type": "boolean"
+          },
+          "isOrganizationSubscription": {
+            "type": "boolean"
+          },
+          "organizationId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "startDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endDate": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
       "NamedCountDto": {
         "type": "object",
         "properties": {
@@ -11554,6 +11682,10 @@
             "type": "string",
             "nullable": true
           },
+          "planId": {
+            "type": "string",
+            "format": "uuid"
+          },
           "nameAr": {
             "type": "string",
             "nullable": true
@@ -12136,6 +12268,16 @@
             "items": {
               "$ref": "#/components/schemas/ReviewHistoryItemDto"
             },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReportFullAccessDto": {
+        "type": "object",
+        "properties": {
+          "fileUrl": {
+            "type": "string",
             "nullable": true
           }
         },
@@ -13897,6 +14039,11 @@
           },
           "code": {
             "type": "string",
+            "nullable": true
+          },
+          "organizationPlanId": {
+            "type": "string",
+            "format": "uuid",
             "nullable": true
           }
         },

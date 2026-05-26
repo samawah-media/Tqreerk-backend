@@ -29,4 +29,9 @@ public interface IMeService
     /// caches).
     Task<PlanFeaturesDto> GetPlanFeaturesAsync(
         Guid userId, CancellationToken ct = default);
+
+    /// Active subscription, or the org's pending-payment row for founders.
+    /// Null when the caller has no subscription history.
+    Task<MySubscriptionDto?> GetSubscriptionAsync(
+        Guid userId, CancellationToken ct = default);
 }

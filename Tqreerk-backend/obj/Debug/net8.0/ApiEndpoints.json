@@ -3564,6 +3564,29 @@
     ]
   },
   {
+    "ContainingType": "Taqreerk.API.Controllers.MeController",
+    "Method": "Subscription",
+    "RelativePath": "api/me/subscription",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Me.MySubscriptionDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 204
+      }
+    ]
+  },
+  {
     "ContainingType": "Taqreerk.API.Controllers.OrganizationsController",
     "Method": "GetMine",
     "RelativePath": "api/organizations/me",
@@ -5270,6 +5293,44 @@
     "ReturnTypes": [
       {
         "Type": "Taqreerk.Application.DTOs.FeatureRequests.FeatureRequestDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 403
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 404
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.ReportInteractionsController",
+    "Method": "FullAccess",
+    "RelativePath": "api/reports/{id}/full-access",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "id",
+        "Type": "System.Guid",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Reports.ReportFullAccessDto",
         "MediaTypes": [
           "application/json"
         ],

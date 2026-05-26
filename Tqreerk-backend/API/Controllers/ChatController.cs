@@ -4,7 +4,10 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using Taqreerk.Application.Interfaces;
+using Taqreerk.Application.Services;
 using Taqreerk.Application.Settings;
+using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.API.Controllers;
 
@@ -32,13 +35,16 @@ namespace Taqreerk.API.Controllers;
 public class ChatController : ControllerBase
 {
     private readonly HttpClient _http;
+    private readonly TaqreerkDbContext _db;
     private readonly ILogger<ChatController> _logger;
 
     public ChatController(
         IHttpClientFactory factory,
         IOptions<AiServiceSettings> settings,
+        TaqreerkDbContext db,
         ILogger<ChatController> logger)
     {
+        _db = db;
         _logger = logger;
 
         // We deliberately use a raw HttpClient (not the typed AiServiceClient)
@@ -66,6 +72,7 @@ public class ChatController : ControllerBase
     public async Task<IActionResult> ListSessions(Guid reportId, CancellationToken ct)
     {
         if (!TryGetUserId(out var userId)) return Unauthorized();
+        await EnsureAiChatAllowedAsync(userId, ct);
 
         using var resp = await _http.GetAsync(
             $"chat/reports/{reportId}/sessions?user_id={userId}",
@@ -91,6 +98,7 @@ public class ChatController : ControllerBase
     {
         if (!TryGetUserId(out var userId)) return Unauthorized();
         if (req?.ReportId == Guid.Empty) return BadRequest(new { error = "reportId is required" });
+        await EnsureAiChatAllowedAsync(userId, ct);
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -117,6 +125,7 @@ public class ChatController : ControllerBase
     public async Task<IActionResult> GetSession(Guid sessionId, CancellationToken ct)
     {
         if (!TryGetUserId(out var userId)) return Unauthorized();
+        await EnsureAiChatAllowedAsync(userId, ct);
 
         using var resp = await _http.GetAsync(
             $"chat/sessions/{sessionId}",
@@ -151,11 +160,12 @@ public class ChatController : ControllerBase
         [FromBody] SendMessageRequest req,
         CancellationToken ct)
     {
-        if (!TryGetUserId(out _))
+        if (!TryGetUserId(out var userId))
         {
             Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }
+        await EnsureAiChatAllowedAsync(userId, ct);
 
         // Build the upstream request manually so we can opt into
         // HttpCompletionOption.ResponseHeadersRead — without it HttpClient
@@ -249,6 +259,15 @@ public class ChatController : ControllerBase
         finally
         {
             resp.Dispose();
+        }
+    }
+
+    private async Task EnsureAiChatAllowedAsync(Guid userId, CancellationToken ct)
+    {
+        var (_, plan) = await SubscriptionResolver.GetActiveForUserAsync(_db, userId, ct);
+        if (!PlanCapabilities.IncludesAiChat(plan))
+        {
+            throw new PlanFeatureNotAvailableException("AiChat", plan.NameAr);
         }
     }
 

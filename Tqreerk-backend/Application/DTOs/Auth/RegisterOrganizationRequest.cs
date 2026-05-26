@@ -8,6 +8,9 @@ public record RegisterOrganizationRequest(
     [Required, EmailAddress, MaxLength(255)] string Email,
     [Required, MinLength(8)] string Password,
 
+    /// Plan selected on the institution signup plans screen (must be an active Organization plan).
+    [Required] Guid PlanId,
+
     // Organization info
     [Required, MaxLength(300)] string NameAr,
     [Required, MaxLength(300)] string NameEn,

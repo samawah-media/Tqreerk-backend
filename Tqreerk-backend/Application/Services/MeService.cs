@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Taqreerk.Application.DTOs.Me;
 using Taqreerk.Application.Interfaces;
+using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
 
@@ -262,23 +263,26 @@ public class MeService : IMeService
         }
     }
 
+    public async Task<MySubscriptionDto?> GetSubscriptionAsync(
+        Guid userId, CancellationToken ct = default)
+    {
+        var ctx = await ResolveSubscriptionContextAsync(userId, ct);
+        if (ctx is null) return null;
+
+        var (sub, plan, awaitingPayment) = ctx.Value;
+        return ToSubscriptionDto(sub, plan, awaitingPayment);
+    }
+
     public async Task<PlanFeaturesDto> GetPlanFeaturesAsync(Guid userId, CancellationToken ct = default)
     {
-        // Resolve the caller's active subscription + plan in one go.
-        // If the row is missing, that's a misconfiguration (registration
-        // should auto-link to the free plan) — surface it loudly so the
-        // dev sees the broken backfill instead of returning a misleading
-        // empty plan.
-        var plan = await _db.Subscriptions
-            .AsNoTracking()
-            .Where(s => s.UserId == userId && s.Status == SubscriptionStatus.Active)
-            .OrderByDescending(s => s.CreatedAt)
-            .Select(s => s.Plan)
-            .FirstOrDefaultAsync(ct);
-
-        if (plan is null)
+        var ctx = await ResolveSubscriptionContextAsync(userId, ct);
+        if (ctx is null)
+        {
             throw new InvalidOperationException(
-                $"User {userId} has no active subscription. Registration should auto-link to the free plan; check the backfill ran.");
+                $"User {userId} has no subscription. Registration should auto-link to a plan.");
+        }
+
+        var plan = ctx.Value.Plan;
 
         // This-month usage. Same window UsageService uses to enforce
         // the cap — first day of the current UTC month → start of next.
@@ -341,5 +345,67 @@ public class MeService : IMeService
                 periodStartUtc,
                 resetsAt,
                 consumedByAction));
+    }
+
+    /// Prefer an active subscription; otherwise surface the latest org
+    /// (or user) row so founders awaiting payment still see their plan.
+    private async Task<(Subscription Subscription, Plan Plan, bool AwaitingPayment)?>
+        ResolveSubscriptionContextAsync(Guid userId, CancellationToken ct)
+    {
+        var active = await SubscriptionResolver.TryGetActiveForUserAsync(_db, userId, ct);
+        if (active is not null)
+            return (active.Value.Subscription, active.Value.Plan, false);
+
+        var orgId = await _db.OrganizationMembers
+            .AsNoTracking()
+            .Where(m => m.UserId == userId && m.IsActive)
+            .Select(m => (Guid?)m.OrganizationId)
+            .FirstOrDefaultAsync(ct);
+
+        Subscription? sub;
+        if (orgId is not null)
+        {
+            sub = await _db.Subscriptions
+                .AsNoTracking()
+                .Include(s => s.Plan)
+                .Where(s => s.OrganizationId == orgId)
+                .OrderByDescending(s => s.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+        }
+        else
+        {
+            sub = await _db.Subscriptions
+                .AsNoTracking()
+                .Include(s => s.Plan)
+                .Where(s => s.UserId == userId)
+                .OrderByDescending(s => s.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        if (sub?.Plan is null) return null;
+
+        var awaiting = sub.Status != SubscriptionStatus.Active
+            && sub.PaymentStatus == PaymentStatus.Pending;
+        return (sub, sub.Plan, awaiting);
+    }
+
+    private static MySubscriptionDto ToSubscriptionDto(
+        Subscription sub, Plan plan, bool awaitingPayment)
+    {
+        var isActive = sub.Status == SubscriptionStatus.Active;
+        return new MySubscriptionDto(
+            SubscriptionId: sub.Id,
+            PlanId: plan.Id,
+            PlanNameAr: plan.NameAr,
+            PlanNameEn: plan.NameEn,
+            TargetType: plan.TargetType.ToString(),
+            Status: sub.Status.ToString(),
+            PaymentStatus: sub.PaymentStatus.ToString(),
+            IsActive: isActive,
+            AwaitingPayment: awaitingPayment || (!isActive && sub.PaymentStatus == PaymentStatus.Pending),
+            IsOrganizationSubscription: sub.OrganizationId.HasValue,
+            OrganizationId: sub.OrganizationId,
+            StartDate: sub.StartDate,
+            EndDate: sub.EndDate);
     }
 }
