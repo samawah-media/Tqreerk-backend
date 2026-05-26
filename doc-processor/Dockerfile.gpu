@@ -6,9 +6,10 @@
 #   • RapidOCR     — Arabic + English text recognition (ONNX, CPU, ~80 ms/crop)
 #   • pix2tex      — formula image → LaTeX
 #
-# OCR runs on CPU (ONNX runtime) — saves ~2 GB VRAM vs Surya (PyTorch) with
-# no latency regression: RapidOCR ~20-80 ms/crop vs Surya ~80-300 ms on GPU.
-# Docling + bge-m3 + reranker occupy ~11 GB of the L4's 24 GB.
+# OCR runs on GPU via EasyOCR (PyTorch CRAFT + CRNN). RapidOCR was tried but
+# its Arabic ONNX models don't exist on HuggingFace. EasyOCR ships Arabic+English
+# out of the box and is GPU-accelerated.
+# Docling + bge-m3 + reranker + EasyOCR occupy ~13 GB of the L4's 24 GB.
 #
 # Cold start: ~30-60 s (CUDA init + weight transfer to VRAM).
 # min-instances=0 → idle cost is zero.
@@ -52,6 +53,7 @@ ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     TRANSFORMERS_OFFLINE=0 \
     HF_HOME=/app/.hf-cache \
+    EASYOCR_MODULE_PATH=/app/easyocr_models \
     TORCH_DEVICE=cuda \
     PATH="/opt/venv/bin:$PATH"
 
@@ -73,22 +75,15 @@ WORKDIR /app
 # files are present when the container first starts.
 #
 # Florence-2: snapshot_download fetches the whole repo into HF_HOME.
-# RapidOCR models:
-#   ch_PP-OCRv4_det_infer.onnx     — universal DB text detector
-#                                    source: SWHL/RapidOCR subfolder PP-OCRv4
-#   arabic_PP-OCRv3_rec_infer.onnx — Arabic CRNN recognition model
-#                                    source: Ooredoo-Group/rapidocr-models
-#   arabic_dict.txt                — Arabic character set (keys file)
-#                                    source: PaddleOCR upstream GitHub
-# RapidOCR runs on CPU at inference time — no GPU needed, no TORCH_DEVICE trick.
+# EasyOCR: instantiating Reader(['ar','en'], gpu=False) with download_enabled=True
+#   triggers the one-time download of CRAFT detector + Arabic/English CRNN
+#   recognizer weights into EASYOCR_MODULE_PATH (/app/easyocr_models).
+#   gpu=False here (build layer has no GPU) — at runtime ocr.py uses gpu=True.
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download(repo_id='microsoft/Florence-2-base-ft')"
 
-RUN mkdir -p /app/ocr_models \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='Multilingual_PP-OCRv3_det_infer.onnx', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded Multilingual_PP-OCRv3_det_infer.onnx')" \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_PP-OCRv3_rec_infer.onnx', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded arabic_PP-OCRv3_rec_infer.onnx')" \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_dict.txt', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded arabic_dict.txt')" \
-    && echo "RapidOCR Arabic+multilingual models ready"
+RUN mkdir -p /app/easyocr_models \
+    && python -c "import os; os.environ['EASYOCR_MODULE_PATH']='/app/easyocr_models'; import easyocr; easyocr.Reader(['ar','en'], gpu=False, download_enabled=True, verbose=True); print('EasyOCR Arabic+English models ready')"
 
 COPY . .
 

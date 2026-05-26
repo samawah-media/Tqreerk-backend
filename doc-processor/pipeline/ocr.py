@@ -1,39 +1,37 @@
-"""RapidOCR wrapper — Arabic + English text recognition.
+"""EasyOCR wrapper — Arabic + English text recognition.
 
-Why RapidOCR over Surya (switched 2026-05-26)
-=============================================
-Surya uses a transformer encoder-decoder (autoregressive) architecture.
-Its decoder is forced to emit some token — it can't express "there's no
-text here." On non-text image crops (decorative photos, template pages) it
-hallucinated repetitions of high-frequency Arabic words, flooding every chunk
-with garbage text that corrupted summaries and search results.
+Why EasyOCR (switched 2026-05-27 from RapidOCR)
+================================================
+RapidOCR had no working Arabic ONNX models on HuggingFace. The SWHL/RapidOCR
+repository contains only CJK+English models (21 files); the recommended
+PP-OCRv3/multilingual/ subfolder does not exist and the build was failing
+with 404 errors. Third-party alternatives (monkt/paddleocr-onnx) ship a Latin
+character dictionary — the CRNN maps Arabic feature vectors to Latin codepoints
+and produces garbled output like "心 NHRC mg6m".
 
-RapidOCR uses a two-stage pipeline:
-  1. DB text detector  → bounding boxes around text lines (or None)
-  2. CRNN recognizer   → text + confidence per box ← only runs if boxes found
+EasyOCR uses a two-stage pipeline:
+  1. CRAFT text detector → bounding boxes around text lines (or empty list)
+  2. CRNN recognizer     → text + confidence per box ← only runs if boxes found
 
-If the detector returns nothing, the recognizer never executes and the result
-is definitively empty — no forced token emission, no hallucination.
-A configurable confidence threshold further filters borderline detections on
-degraded scan regions.
+If the detector returns nothing, the recognizer never executes — no forced
+token emission, no hallucination on blank / decorative image crops.
 
 Architecture notes:
-  • ONNX runtime — no PyTorch dependency for OCR; saves ~2 GB VRAM on the L4
-    so Docling + bge-m3 + reranker have more headroom.
-  • Arabic recognition model (arabic_PP-OCRv3_rec_infer.onnx) pre-downloaded
-    at image build time into /app/ocr_models/ — cold start only loads from
-    disk, not the network.
-  • CPU inference is fast enough: RapidOCR on CPU is ~20-80ms per crop vs
-    Surya's ~80-300ms on GPU. OCR is applied only to regions where Docling
-    produced no text, so the total per-document overhead stays low.
+  • PyTorch-native, runs on GPU — leverages the L4's VRAM that was previously
+    wasted (RapidOCR ran on CPU). Detection is substantially faster on GPU.
+  • Arabic + English models pre-downloaded at image build time into
+    /app/easyocr_models/ — cold start loads from disk only, not the network.
+  • CER ~0.58 on Arabic benchmarks (vs. a broken alternative that produced
+    garbled Latin characters).
 
-Public API is unchanged from the Surya version:
+Public API is unchanged from the RapidOCR version:
   init(), is_ready(), ocr_image(), ocr_crop()
 """
 from __future__ import annotations
 
 import io
 import logging
+import os
 import threading
 import time
 
@@ -47,53 +45,45 @@ logger = logging.getLogger(__name__)
 
 # ── Module state ────────────────────────────────────────────────────────────
 
-_engine = None          # rapidocr_onnxruntime.RapidOCR instance
+_reader = None          # easyocr.Reader instance
 _init_lock = threading.Lock()
 
 
 def init() -> None:
-    """Load the RapidOCR detection + recognition models.
+    """Load the EasyOCR Arabic + English models.
 
-    The engine is a thin ONNX-runtime wrapper — no GPU needed, no PyTorch
-    import. Weights are pre-baked into the image at build time (Dockerfile.gpu);
-    this call only loads them from disk into RAM.
+    Downloads are disabled at runtime (download_enabled=False) — weights must
+    be pre-baked into the image at build time (Dockerfile.gpu). This call only
+    loads them from disk into VRAM.
     """
-    global _engine
-    if _engine is not None:
+    global _reader
+    if _reader is not None:
         return
 
     with _init_lock:
-        if _engine is not None:
+        if _reader is not None:
             return
 
-        from rapidocr_onnxruntime import RapidOCR
+        # Tell EasyOCR where to find its model cache.
+        os.environ.setdefault("EASYOCR_MODULE_PATH", "/app/easyocr_models")
 
-        # Build constructor kwargs from settings. When a path is empty the
-        # argument is omitted and RapidOCR uses its bundled English/CJK
-        # defaults — still no hallucination, just lower Arabic accuracy.
-        kwargs: dict = {}
-        if settings.ocr_det_model_path:
-            kwargs["det_model_dir"] = settings.ocr_det_model_path
-        if settings.ocr_rec_model_path:
-            kwargs["rec_model_dir"] = settings.ocr_rec_model_path
+        import easyocr  # noqa: PLC0415 — deferred so the module loads fast
 
-        params: dict = {}
-        if settings.ocr_rec_keys_path:
-            params["Rec"] = {"keys_path": settings.ocr_rec_keys_path}
-        if params:
-            kwargs["params"] = params
-
+        use_gpu = settings.device == "cuda"
         logger.info(
-            "rapidocr: initialising (det=%s rec=%s)",
-            settings.ocr_det_model_path or "<bundled>",
-            settings.ocr_rec_model_path or "<bundled>",
+            "easyocr: initialising Arabic+English reader (gpu=%s)", use_gpu
         )
-        _engine = RapidOCR(**kwargs)
-        logger.info("rapidocr: ready")
+        _reader = easyocr.Reader(
+            ["ar", "en"],
+            gpu=use_gpu,
+            download_enabled=False,
+            verbose=False,
+        )
+        logger.info("easyocr: ready")
 
 
 def is_ready() -> bool:
-    return _engine is not None
+    return _reader is not None
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -104,9 +94,9 @@ def ocr_image(img: bytes | np.ndarray | Image.Image) -> str:
     Accepts bytes (any PIL-supported format), a numpy array (H, W, C), or a
     PIL Image. Returns "" if no text was detected — never raises on empty input.
 
-    Key difference from Surya: when the detector finds no text regions it
-    returns None before recognition runs, so the result is always genuinely
-    empty on non-text crops.
+    Results are sorted top-to-bottom (primary) and right-to-left (secondary)
+    so Arabic RTL text is read in the natural order before left-to-right labels.
+    Lines below the minimum confidence threshold are dropped.
     """
     started = time.perf_counter()
     if not is_ready():
@@ -115,36 +105,45 @@ def ocr_image(img: bytes | np.ndarray | Image.Image) -> str:
     arr = _coerce_to_numpy(img)
     if arr is None:
         logger.warning(
-            "rapidocr: input rejected — could not coerce %s to numpy",
+            "easyocr: input rejected — could not coerce %s to numpy",
             type(img).__name__,
         )
         return ""
 
     h, w = arr.shape[:2]
     if h == 0 or w == 0:
-        logger.warning("rapidocr: input rejected — zero-size image (w=%d h=%d)", w, h)
+        logger.warning("easyocr: input rejected — zero-size image (w=%d h=%d)", w, h)
         return ""
 
     try:
-        result, _elapse = _engine(arr)
+        # detail=1 → [[bbox, text, confidence], ...]
+        result = _reader.readtext(arr, detail=1)
     except Exception as exc:
-        logger.warning("rapidocr: inference failed: %s", exc)
+        logger.warning("easyocr: inference failed: %s", exc)
         return ""
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
 
     if not result:
-        # Detection found no text regions — this is the correct answer for
-        # decorative images, photos, and template-only pages.
         logger.debug(
-            "rapidocr: no text detected (image=%dx%d, %d ms)", w, h, elapsed_ms,
+            "easyocr: no text detected (image=%dx%d, %d ms)", w, h, elapsed_ms,
         )
         return ""
 
-    # Each result item: [bbox_points, text, confidence]
+    # Sort detections: top-to-bottom first, then right-to-left (RTL Arabic).
+    # Each bbox is [[x0,y0],[x1,y0],[x1,y1],[x0,y1]]; centroid_y is the
+    # average of the top-left and bottom-left y coords.
+    def _sort_key(item):
+        bbox = item[0]  # 4×2 points
+        centroid_y = (bbox[0][1] + bbox[3][1]) / 2.0
+        centroid_x = (bbox[0][0] + bbox[1][0]) / 2.0
+        return (centroid_y, -centroid_x)   # y asc, x desc (RTL)
+
+    result_sorted = sorted(result, key=_sort_key)
+
     min_conf = settings.ocr_min_confidence
     lines = []
-    for item in result:
+    for item in result_sorted:
         if len(item) < 3:
             continue
         text_str = (item[1] or "").strip()
@@ -156,14 +155,14 @@ def ocr_image(img: bytes | np.ndarray | Image.Image) -> str:
     if text:
         preview = text.replace("\n", " ⏎ ")[:80]
         logger.info(
-            "rapidocr: ok — %d/%d line(s) kept (conf≥%.2f), %d chars, %d ms — "
+            "easyocr: ok — %d/%d line(s) kept (conf≥%.2f), %d chars, %d ms — "
             "preview: %s%s",
             len(lines), len(result), min_conf, len(text), elapsed_ms,
             preview, "…" if len(text) > 80 else "",
         )
     else:
         logger.debug(
-            "rapidocr: %d line(s) detected but all below conf threshold %.2f "
+            "easyocr: %d line(s) detected but all below conf threshold %.2f "
             "(image=%dx%d, %d ms)",
             len(result), min_conf, w, h, elapsed_ms,
         )
@@ -178,7 +177,7 @@ def ocr_crop(
     regions where Docling didn't return any (scanned PDFs, image-only pages).
     """
     if page_img is None or page_img.size == 0:
-        logger.warning("rapidocr: ocr_crop got empty page_img — skipping")
+        logger.warning("easyocr: ocr_crop got empty page_img — skipping")
         return ""
 
     x0_raw, y0_raw, x1_raw, y1_raw = (int(round(v)) for v in bbox)
@@ -187,7 +186,7 @@ def ocr_crop(
     y0, y1 = max(0, y0_raw), min(h, y1_raw)
     if x1 <= x0 or y1 <= y0:
         logger.warning(
-            "rapidocr: bbox clamped to empty — raw=(%d,%d,%d,%d) page=%dx%d "
+            "easyocr: bbox clamped to empty — raw=(%d,%d,%d,%d) page=%dx%d "
             "clamped=(%d,%d,%d,%d). If this fires on a real text region, "
             "_resolve_bbox upstream is producing bad geometry.",
             x0_raw, y0_raw, x1_raw, y1_raw, w, h, x0, y0, x1, y1,
@@ -196,7 +195,7 @@ def ocr_crop(
 
     crop = page_img[y0:y1, x0:x1]
     logger.debug(
-        "rapidocr: ocr_crop bbox=(%d,%d,%d,%d) page=%dx%d → crop=%dx%d",
+        "easyocr: ocr_crop bbox=(%d,%d,%d,%d) page=%dx%d → crop=%dx%d",
         x0, y0, x1, y1, w, h, crop.shape[1], crop.shape[0],
     )
     return ocr_image(crop)
@@ -207,8 +206,8 @@ def ocr_crop(
 def _coerce_to_numpy(img: bytes | np.ndarray | Image.Image) -> np.ndarray | None:
     """Normalise the various accepted input forms into a uint8 RGB numpy array.
 
-    RapidOCR accepts numpy arrays directly (H, W, 3) — no PIL intermediary
-    needed, which avoids one copy for the common numpy caller path.
+    EasyOCR accepts numpy arrays directly (H, W, 3). Passing numpy avoids
+    one copy for the common caller path.
     """
     if isinstance(img, np.ndarray):
         if img.size == 0 or img.ndim not in (2, 3):
@@ -221,7 +220,7 @@ def _coerce_to_numpy(img: bytes | np.ndarray | Image.Image) -> np.ndarray | None
             pil = Image.open(io.BytesIO(img)).convert("RGB")
             return np.array(pil)
         except Exception as exc:
-            logger.warning("rapidocr: failed to decode image bytes: %s", exc)
+            logger.warning("easyocr: failed to decode image bytes: %s", exc)
             return None
-    logger.warning("rapidocr: unsupported input type %s", type(img).__name__)
+    logger.warning("easyocr: unsupported input type %s", type(img).__name__)
     return None
