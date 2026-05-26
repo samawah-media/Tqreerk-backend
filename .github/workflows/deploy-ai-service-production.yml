@@ -146,3 +146,4 @@ jobs:
             LANGFUSE_TRACE_SAMPLE_RATE=0.5
             EVAL_SAMPLE_RATE=0.2
             QUOTA_ENABLED=false
+            GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
