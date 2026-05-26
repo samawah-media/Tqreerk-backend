@@ -209,6 +209,11 @@ class Settings(BaseSettings):
     worker_url: str                = ""   # worker Cloud Run URL — used to wake scaled-to-zero instances
     worker_poll_interval_seconds: float = 3.0
     worker_stale_job_minutes: int  = 30   # mark Processing > N min as Failed
+    # How many jobs to claim and run concurrently per worker instance.
+    # Each job is a Gemini network call (I/O-bound); asyncio.gather runs them
+    # in parallel threads via asyncio.to_thread, so the only limit is Gemini
+    # RPM quota (Gemini 2.5 Flash = 1000 RPM >> 5 concurrent jobs).
+    worker_concurrency: int        = 5
 
     # ── doc-processor (GPU pipeline) ─────────────────────────────────────────
     # Optional alternative extractor for ingest. When enabled, ingest calls
