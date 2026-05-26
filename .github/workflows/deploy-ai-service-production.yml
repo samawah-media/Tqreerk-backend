@@ -89,6 +89,7 @@ jobs:
             LANGFUSE_TRACE_SAMPLE_RATE=0.5
             EVAL_SAMPLE_RATE=0.2
             QUOTA_ENABLED=false
+            DOC_PROCESSOR_MAX_CONCURRENCY=10
 
       - name: Verify deployment
         run: |
@@ -147,3 +148,4 @@ jobs:
             EVAL_SAMPLE_RATE=0.2
             QUOTA_ENABLED=false
             GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
+            DOC_PROCESSOR_MAX_CONCURRENCY=10
