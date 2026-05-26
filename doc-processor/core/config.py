@@ -73,8 +73,8 @@ class Settings(BaseSettings):
     # Empty string → RapidOCR falls back to its bundled English/CJK models
     # (no hallucination either way; just lower Arabic accuracy).
     ocr_det_model_path: str = "/app/ocr_models/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx"
-    ocr_rec_model_path: str = "/app/ocr_models/arabic_PP-OCRv3_rec_infer.onnx"
-    ocr_rec_keys_path:  str = "/app/ocr_models/arabic_dict.txt"
+    ocr_rec_model_path: str = "/app/ocr_models/languages/arabic/rec.onnx"
+    ocr_rec_keys_path:  str = "/app/ocr_models/languages/arabic/dict.txt"
 
     # Drop recognition results whose confidence falls below this threshold.
     # RapidOCR's detection model already prevents hallucination on non-text
