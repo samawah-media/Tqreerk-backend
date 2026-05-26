@@ -40,15 +40,14 @@ accelerate==1.4.0
 einops==0.8.0
 timm==1.0.11
 
-# RapidOCR — Arabic + English OCR fallback for low-quality / scanned regions.
-# Swapped from Surya 2026-05-26: Surya's autoregressive decoder hallucinated
-# on non-text crops (decorative photos, template pages). RapidOCR's DB
-# detection model returns None when no text is found so recognition never
-# runs — structurally impossible to hallucinate. Pure ONNX runtime (no PyTorch
-# dependency for OCR); saves ~2 GB VRAM on the L4 for Docling/embeddings.
-# Arabic models (arabic_PP-OCRv3_rec_infer.onnx + arabic_dict.txt) are
-# pre-downloaded at image build time into /app/ocr_models/.
-rapidocr-onnxruntime==1.4.2
+# EasyOCR — Arabic + English OCR fallback for low-quality / scanned regions.
+# Swapped from RapidOCR 2026-05-27: RapidOCR has no working Arabic ONNX models
+# available on HuggingFace (SWHL/RapidOCR contains only CJK+English; the
+# claimed multilingual/ subfolder does not exist). EasyOCR is GPU-accelerated
+# (PyTorch CRAFT detector + CRNN recognizer), ships Arabic+English models out
+# of the box, and achieves CER ~0.58 on Arabic benchmarks.
+# Models pre-downloaded at image build time into /app/easyocr_models/.
+easyocr
 
 # sentence-transformers — multilingual text embedding (replaces Vertex AI text-embedding-004).
 # `intfloat/multilingual-e5-base` is 768-dim (matches DB schema), ~1GB VRAM,

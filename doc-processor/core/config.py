@@ -68,25 +68,13 @@ class Settings(BaseSettings):
     # chat / summary share. Override per-deploy via GEMINI_VISION_MODEL.
     gemini_vision_model: str = "gemini-2.5-flash-lite"
 
-    # ── RapidOCR model paths ─────────────────────────────────────────────────
-    # ONNX model files pre-downloaded at image build time (Dockerfile.gpu).
-    # Empty string → RapidOCR falls back to its bundled English/CJK models
-    # (no hallucination either way; just lower Arabic accuracy).
-    # Multilingual detector + Arabic recognizer — all from SWHL/RapidOCR PP-OCRv3/multilingual/
-    # The multilingual detector handles Arabic, Latin, and mixed-script pages.
-    # arabic_dict.txt includes both Arabic Unicode glyphs AND Latin digits/letters
-    # so mixed Arabic+English documents are handled by a single rec model.
-    ocr_det_model_path: str = "/app/ocr_models/PP-OCRv3/multilingual/Multilingual_PP-OCRv3_det_infer.onnx"
-    ocr_rec_model_path: str = "/app/ocr_models/PP-OCRv3/multilingual/arabic_PP-OCRv3_rec_infer.onnx"
-    ocr_rec_keys_path:  str = "/app/ocr_models/PP-OCRv3/multilingual/arabic_dict.txt"
-
     # Drop recognition results whose confidence falls below this threshold.
     # RapidOCR's detection model already prevents hallucination on non-text
     # crops; this threshold removes borderline reads on degraded scan regions.
     ocr_min_confidence: float = 0.5
 
-    # Kept for backwards compatibility — no longer used (RapidOCR selects
-    # the language via its recognition model, not a runtime parameter).
+    # Kept for backwards compatibility — not used at runtime (EasyOCR language
+    # selection is baked into the Reader(['ar','en']) constructor call).
     ocr_languages: str = "ar,en"
 
     # Multilingual sentence-transformer for /v1/embed.
