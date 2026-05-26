@@ -87,12 +87,15 @@ _client_lock = threading.Lock()
 def _build_client() -> genai.Client:
     """Construct a fresh genai client. Caller holds _client_lock."""
     global _mode
-    # 120 s per-request timeout so a stalled Vertex connection raises instead
-    # of hanging indefinitely. _call_with_retry then replaces the client and
-    # retries. Without this, embed_content / generate_content can block a
-    # thread pool worker forever on TCP half-open connections.
+    # 300 s per-request timeout. Raised from 120 s because summarize_report
+    # sends the full report text as one prompt — on large reports (100+ pages)
+    # Vertex AI can take 2-3 min before the first token arrives, causing the
+    # 120 s ceiling to fire and waste a retry slot. Embedding and chat calls
+    # are always fast (<10 s) so they are unaffected by the higher ceiling.
+    # _call_with_retry still rebuilds the client and retries on any timeout,
+    # so this is not an "indefinite hang" — it's a 5-min hard cap per attempt.
     # NOTE: google-genai http_options timeout is in MILLISECONDS.
-    http_opts = {"timeout": 120_000}
+    http_opts = {"timeout": 300_000}
     if settings.gemini_api_key:
         _mode = "api_key"
         logger.info(
