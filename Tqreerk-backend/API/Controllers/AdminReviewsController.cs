@@ -159,6 +159,20 @@ public class AdminReviewsController : ControllerBase
         return Accepted(await _ai.GetStatusAsAdminAsync(id, ct));
     }
 
+    /// <summary>Soft-delete a report. Requires <c>reports:delete</c>. The
+    /// report disappears from public search and the review queue; GCS files
+    /// are kept for a grace-period recovery job.</summary>
+    [HttpDelete("{id:guid}")]
+    [RequirePermission("reports:delete")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        await _reviews.DeleteAsync(userId, id, ct);
+        return NoContent();
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
