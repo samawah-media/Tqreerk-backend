@@ -90,9 +90,9 @@ def summarize_prompt(combined_text: str, language: str = "ar") -> str:
         f"You are analyzing a research report. The output language is {lang_name}.\n"
         "Based on the full text below, produce a JSON object with these fields:\n"
         "\n"
-        "- summary: a list of 3 to 7 concise bullet points capturing the report's "
+        "- summary: a list of 5 to 7 concise bullet points capturing the report's "
         "main takeaways. Each item is a single self-contained sentence (or short "
-        "paragraph at most). Use 3 only for very short reports; use 7 only when "
+        "paragraph at most). Always produce at least 5 items; use 7 only when "
         "the material genuinely needs that breadth — do not pad.\n"
         "- key_findings: 5-10 most important findings as a list of strings.\n"
         "- topics: main topics/sectors covered as a list of strings.\n"
@@ -119,7 +119,7 @@ REPORT_SUMMARY_SCHEMA = {
         "summary": {
             "type": "array",
             "items": {"type": "string"},
-            "minItems": 3,
+            "minItems": 5,
             "maxItems": 7,
         },
         "key_findings": {"type": "array", "items": {"type": "string"}},

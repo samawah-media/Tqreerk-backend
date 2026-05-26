@@ -287,9 +287,9 @@ class ReportSummary(BaseModel):
     every report_ai_contents column (summary, key_findings, topics,
     indicators, trends) so the C# finalizer can copy them all in one pass.
 
-    `summary` is a 3-7 item bullet list, not a paragraph — see the matching
+    `summary` is a 5-7 item bullet list, not a paragraph — see the matching
     SummarizeResponse model in models/ingest.py for the rationale."""
-    summary: list[str] = Field(min_length=3, max_length=7)
+    summary: list[str] = Field(min_length=5, max_length=7)
     key_findings: list[str]
     topics: list[str]
     # No maxItems on these — Gemini rejects schemas with maxItems on nested
@@ -630,6 +630,17 @@ def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSu
     automatically retry with `gemini_summary_model_fallback` (Flash-Lite,
     different Vertex quota pool) before surfacing the error.
     """
+    def _extract_json_object(text: str) -> str | None:
+        """Best-effort JSON extraction when extra prose wraps an object."""
+        if not text:
+            return None
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        candidate = text[start:end + 1].strip()
+        return candidate if candidate.startswith("{") and candidate.endswith("}") else None
+
     combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
     prompt_text = prompts.summarize_prompt(combined, language=language)
     response = _call_with_model_fallback(
