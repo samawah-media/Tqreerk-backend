@@ -88,7 +88,15 @@ async def _pending_job_watcher() -> None:
                       AND "JobType" = 'Ingestion'
                       AND "InputData"->>'step' = 'ingest'
                       AND "CreatedAt" < now() - interval '2 minutes'
+                    ORDER BY "CreatedAt"
+                    LIMIT %s
                     """,
+                    # Cap re-triggers to doc_processor_max_concurrency so we
+                    # never fire more HTTP calls than the GPU fleet can absorb.
+                    # Without this cap, a 5000-row bulk import causes the
+                    # watcher to fire 5000 asyncio tasks every 60 s, flooding
+                    # the doc-processor queue and spiking API-service RAM.
+                    [settings.doc_processor_max_concurrency],
                 )
                 gpu_rows = await gpu_cur.fetchall()
 
@@ -109,8 +117,8 @@ async def _pending_job_watcher() -> None:
 
             if gpu_rows:
                 logger.info(
-                    "[watcher] %d stuck GPU ingest job(s) — re-triggering",
-                    len(gpu_rows),
+                    "[watcher] %d stuck GPU ingest job(s) — re-triggering (cap=%d)",
+                    len(gpu_rows), settings.doc_processor_max_concurrency,
                 )
                 for job_id, report_id, file_url in gpu_rows:
                     if file_url:

@@ -41,8 +41,8 @@ public class BulkImportProcessor : BackgroundService
 
     /// <summary>Hard cap per fetch so a misconfigured URL pointing at a 5 GB
     /// file doesn't OOM the worker. Mirrors the manual-upload cap in
-    /// ReportsController.</summary>
-    private const long MaxFetchBytes = 50 * 1024 * 1024;
+    /// ReportsController (200 MB).</summary>
+    private const long MaxFetchBytes = 200L * 1024 * 1024;
 
     /// Named client key registered in ServiceExtensions; we resolve via
     /// the factory each time we fetch so HttpMessageHandler lifetime
@@ -358,7 +358,7 @@ public class BulkImportProcessor : BackgroundService
                 total += read;
                 if (total > MaxFetchBytes)
                     throw new InvalidOperationException(
-                        $"حجم الملف يتجاوز الحد المسموح به (50 MB).");
+                        $"حجم الملف يتجاوز الحد المسموح به ({MaxFetchBytes / 1024 / 1024} MB).");
                 ms.Write(buffer, 0, read);
             }
             pdfBytes = ms.ToArray();
@@ -421,15 +421,44 @@ public class BulkImportProcessor : BackgroundService
             SubmittedForReviewAt = DateTime.UtcNow,
         };
 
-        // Resolve sector / country by Arabic name (case-insensitive). Unknown
-        // names are silently skipped — better than failing the whole row over
-        // a typo, and the admin can always edit the Report afterwards.
+        // Resolve sector by Arabic name. If not found, auto-create it so bulk
+        // imports never silently drop the sector assignment — the admin can
+        // update NameEn / Slug afterwards via the Categories admin page.
         if (!string.IsNullOrWhiteSpace(item.SectorNameAr))
         {
-            report.SectorId = await db.Sectors
+            var sectorId = await db.Sectors
                 .Where(s => s.NameAr == item.SectorNameAr)
                 .Select(s => (Guid?)s.Id)
                 .FirstOrDefaultAsync(ct);
+
+            if (sectorId is null)
+            {
+                // Build a URL-safe slug: keep ASCII letters/digits, replace
+                // everything else (including Arabic) with hyphens, then append
+                // a short random suffix to guarantee uniqueness.
+                var slugBase = new string(item.SectorNameAr
+                    .ToLowerInvariant()
+                    .Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')
+                    .ToArray())
+                    .Trim('-');
+                if (string.IsNullOrEmpty(slugBase)) slugBase = "sector";
+                var slug = $"{slugBase}-{Guid.NewGuid().ToString("N")[..8]}";
+
+                var newSector = new Sector
+                {
+                    Id       = Guid.NewGuid(),
+                    NameAr   = item.SectorNameAr,
+                    NameEn   = item.SectorNameAr, // placeholder — admin can localise later
+                    Slug     = slug,
+                    IsActive = true,
+                    SortOrder = 0,
+                };
+                db.Sectors.Add(newSector);
+                await db.SaveChangesAsync(ct);
+                sectorId = newSector.Id;
+            }
+
+            report.SectorId = sectorId;
         }
         if (!string.IsNullOrWhiteSpace(item.CountryNameAr))
         {
