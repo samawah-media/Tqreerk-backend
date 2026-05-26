@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Abdalrahman Seria/Desktop/proSol/**)",
+      "Bash(npx vite *)",
+      "mcp__claude_ai_Figma__get_metadata"
+    ]
+  }
+}

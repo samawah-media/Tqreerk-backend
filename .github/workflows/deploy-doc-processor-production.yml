@@ -1,0 +1,121 @@
+name: Deploy Doc Processor — Production
+
+on:
+  push:
+    branches: ["production"]
+    paths:
+      - "doc-processor/**"
+      - ".github/workflows/deploy-doc-processor-production.yml"
+  # Manual trigger so we can redeploy without a code change.
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  # GPU region — see the staging workflow for why this is a separate secret
+  # from the CPU services' region.
+  REGION: ${{ secrets.GCP_GPU_REGION }}
+  REPO: ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+  SERVICE: taqreerk-doc-processor-prod
+  IMAGE: taqreerk-doc-processor
+
+jobs:
+  build-and-deploy:
+    name: Build, Push & Deploy Doc Processor to Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build & push image via Cloud Build
+        run: |
+          gcloud builds submit ./doc-processor \
+            --config=./doc-processor/cloudbuild.yaml \
+            --substitutions=_TAG=${{ github.sha }},_LATEST_TAG=prod-latest,_REGION=${{ env.REGION }},_REPO=${{ env.REPO }},_IMAGE=${{ env.IMAGE }} \
+            --project=${{ env.PROJECT_ID }}
+
+      # Cloud Run deploy — using `gcloud run deploy` directly because the GPU
+      # flags (--gpu, --gpu-type, --no-gpu-zonal-redundancy) need to round-
+      # trip cleanly and the deploy-cloudrun action can lag on flag support.
+      # Production currently mirrors staging on infra knobs while we shake out
+      # the first deploys; switch min-instances=1 back on once cold-start
+      # latency becomes user-visible.
+      - name: Deploy to Cloud Run (Production)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PRODUCTION }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          INTERNAL_API_TOKEN: ${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
+          GCP_PROJECT_ID_VAL: ${{ secrets.GCP_PROJECT_ID }}
+          GPU_REGION: ${{ env.REGION }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, yaml
+          env_vars = {
+              "ENVIRONMENT": "production",
+              "SENTRY_DSN": os.environ["SENTRY_DSN"],
+              "INTERNAL_API_TOKEN": os.environ["INTERNAL_API_TOKEN"],
+              "GCP_PROJECT_ID": os.environ["GCP_PROJECT_ID_VAL"],
+              "DATABASE_URL": os.environ["DATABASE_URL"],
+              "VERTEX_LOCATION": os.environ["GPU_REGION"],
+          }
+          with open("/tmp/env-vars.yaml", "w") as f:
+              yaml.dump(env_vars, f, default_flow_style=False, allow_unicode=True)
+          PYEOF
+
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }} \
+            --gpu=1 \
+            --gpu-type=nvidia-l4 \
+            --no-gpu-zonal-redundancy \
+            --cpu=4 \
+            --memory=16Gi \
+            --min-instances=0 \
+            --max-instances=3 \
+            --concurrency=1 \
+            --timeout=3600 \
+            --port=8080 \
+            --allow-unauthenticated \
+            --no-cpu-throttling \
+            --execution-environment=gen2 \
+            --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }} \
+            --env-vars-file=/tmp/env-vars.yaml
+
+      # Health check tolerates the extended cold-start window. We poll for up
+      # to 5 minutes because a fully cold L4 instance loading 4 ML models can
+      # legitimately take 60-120 s before /health flips from "loading" to
+      # "healthy".
+      - name: Verify deployment
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --format "value(status.url)")
+          echo "Service URL: $SERVICE_URL"
+
+          URL="$SERVICE_URL/health"
+          echo "Polling $URL ..."
+
+          for i in $(seq 1 30); do
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
+            BODY=$(cat /tmp/health.json)
+            echo "Attempt $i → HTTP $RESPONSE: $BODY"
+            if [ "$RESPONSE" = "200" ] && echo "$BODY" | grep -q '"status":"healthy"'; then
+              echo "✅ Doc-processor healthy at $SERVICE_URL"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "❌ Doc-processor health check failed after 5 minutes."
+          echo "Last body: $(cat /tmp/health.json)"
+          exit 1

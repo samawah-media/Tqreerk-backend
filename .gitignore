@@ -17,3 +17,6 @@ Desktop.ini
 project.lock.json
 project.fragment.lock.json
 artifacts/
+
+# Local file uploads (Feature 3 LocalFileStorage)
+Tqreerk-backend/uploads/

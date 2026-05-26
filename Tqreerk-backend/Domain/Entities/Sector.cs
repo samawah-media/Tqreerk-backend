@@ -10,6 +10,11 @@ public class Sector : BaseEntity
     public string? Description { get; set; }
     public bool IsActive { get; set; } = true;
 
+    /// Manual ordering driven by the admin Categories page (drag-and-drop).
+    /// Lower value = earlier in lists. Defaults to 0; rebalanced server-side
+    /// on /reorder so the values stay dense.
+    public int SortOrder { get; set; }
+
     public ICollection<Report> Reports { get; set; } = [];
     public ICollection<UserInterest> UserInterests { get; set; } = [];
 }

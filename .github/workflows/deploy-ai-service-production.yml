@@ -1,0 +1,151 @@
+name: Deploy AI Service — Production
+
+on:
+  push:
+    branches: ["production"]
+    paths:
+      - "ai-service/**"
+      - ".github/workflows/deploy-ai-service-production.yml"
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ secrets.GCP_REGION }}
+  REPO: ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+  SERVICE: taqreerk-ai-service-prod
+  IMAGE: taqreerk-ai-service
+
+jobs:
+  build-and-deploy:
+    name: Build, Push & Deploy AI Service to Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # Pull the previous prod-latest image so Docker has cached layers to
+      # reuse — see deploy-ai-service-staging.yml for the rationale. Saves
+      # ~3-5 min of pip downloads per deploy on warm-cache builds.
+      - name: Pull cached image
+        run: |
+          docker pull ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
+            || echo "no previous image at prod-latest — first cold build"
+
+      - name: Build Docker image
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          docker build \
+            --cache-from=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest \
+            ./ai-service
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest
+
+      - name: Deploy to Cloud Run (Production)
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
+          flags: >-
+            --allow-unauthenticated
+            --port=8080
+            --memory=2Gi
+            --cpu=2
+            --min-instances=0
+            --max-instances=3
+            --timeout=300
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
+            --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
+          env_vars: |
+            DATABASE_URL=${{ secrets.DATABASE_URL_PRODUCTION }}
+            GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
+            GCS_BUCKET=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+            ENVIRONMENT=production
+            WORKER_URL=https://taqreerk-ai-worker-prod-912038409401.me-central1.run.app
+            DOC_PROCESSOR_ENABLED=true
+            DOC_PROCESSOR_URL=https://taqreerk-doc-processor-prod-912038409401.europe-west4.run.app
+            LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}
+            LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}
+            LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
+            LANGFUSE_TRACE_SAMPLE_RATE=0.5
+            EVAL_SAMPLE_RATE=0.2
+            QUOTA_ENABLED=false
+            DOC_PROCESSOR_MAX_CONCURRENCY=3
+
+      - name: Verify deployment
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} \
+            --format "value(status.url)")
+          URL="$SERVICE_URL/health"
+          echo "Polling $URL ..."
+          for i in $(seq 1 20); do
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
+            echo "Attempt $i → HTTP $RESPONSE: $(cat /tmp/health.json)"
+            if [ "$RESPONSE" = "200" ]; then
+              echo "✅ AI service healthy at $SERVICE_URL"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "❌ AI service health check failed after 20 attempts."
+          exit 1
+
+      # ── Worker service ──────────────────────────────────────────────────────
+      # Same image, WORKER_MODE=worker. Polls ai_jobs with FOR UPDATE SKIP LOCKED.
+      # min-instances=0 to save cost. The API wakes it via WORKER_URL ping on
+      # each new job insert — cold start is ~10s, acceptable for async ingest.
+      - name: Deploy Worker to Cloud Run (Production)
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: taqreerk-ai-worker-prod
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
+          flags: >-
+            --no-allow-unauthenticated
+            --port=8080
+            --memory=2Gi
+            --cpu=2
+            --min-instances=0
+            --max-instances=3
+            --timeout=900
+            --no-cpu-throttling
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
+            --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
+          env_vars: |
+            WORKER_MODE=worker
+            DATABASE_URL=${{ secrets.DATABASE_URL_PRODUCTION }}
+            GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
+            GCS_BUCKET=${{ secrets.CLOUD_STORAGE_BUCKET }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+            SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+            ENVIRONMENT=production
+            DOC_PROCESSOR_ENABLED=true
+            DOC_PROCESSOR_URL=https://taqreerk-doc-processor-prod-912038409401.europe-west4.run.app
+            LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}
+            LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}
+            LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
+            LANGFUSE_TRACE_SAMPLE_RATE=0.5
+            EVAL_SAMPLE_RATE=0.2
+            QUOTA_ENABLED=false
+            GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
+            DOC_PROCESSOR_MAX_CONCURRENCY=3

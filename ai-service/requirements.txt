@@ -1,0 +1,58 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+# Bumped 0.8.0 → 1.24.0 because langchain-google-vertexai==2.0.28 pulls in
+# google-cloud-aiplatform 1.97.0 which requires google-genai>=1.0.0,<2.0.0.
+# 1.x kept the APIs we use intact (client.models.generate_content[/_stream],
+# client.models.embed_content, types.GenerateContentConfig /
+# EmbedContentConfig, types.Part.from_bytes, response.usage_metadata).
+google-genai==1.24.0
+google-cloud-translate==3.18.0
+google-cloud-storage==2.18.2
+google-cloud-discoveryengine==0.13.0
+pymupdf==1.24.14
+pillow==11.0.0
+python-multipart==0.0.18
+pydantic-settings==2.6.1
+httpx==0.28.1   # min required by google-genai 1.24.0
+sentry-sdk[fastapi]==2.18.0
+# Floor pin (was ==0.3.2): the langchain 0.3.18+ releases require
+# langchain-text-splitters>=0.3.6, and a hard 0.3.2 pin blocks pip from
+# picking a coherent langchain set with langchain-core>=0.3.67.
+langchain-text-splitters>=0.3.8,<0.4
+
+# ── Observability + RAG eval ─────────────────────────────────────────────────
+# Langfuse: per-request traces (chat/ingest), generation events, async scoring.
+# Self-hosted via docker-compose; env vars LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY.
+langfuse==2.60.5
+# Ragas: reference-free RAG quality metrics (faithfulness, answer_relevancy,
+# context_precision/recall, noise_sensitivity). Configured to use Gemini Flash
+# as judge LLM and bge-m3 (via doc-processor) for embeddings, so eval is
+# self-consistent with the production retrieval stack.
+ragas==0.2.6
+datasets==3.1.0
+
+# ── Agent framework (LangGraph) ──────────────────────────────────────────────
+# StateGraph + ToolNode for the production chat agent. We use Vertex AI's
+# Gemini through langchain-google-vertexai (NOT langchain-google-genai)
+# because runtime auth is service-account ADC — same path as every other
+# Google call in the system. The `langchain-core` it pulls in is already a
+# transitive dep of ragas.
+langgraph==0.2.55
+# Bumped 2.0.13 → 2.0.28 to fix the `streamGenerateContent` 404 on the
+# Vertex `global` endpoint. Stays within the 2.0.x line, no major-version
+# risk; pulls in fixes for global-endpoint URL construction and gRPC
+# streaming back-pressure that the older release lacked.
+langchain-google-vertexai==2.0.28
+
+# ── Explicit langchain-ecosystem floor ──────────────────────────────────────
+# langchain-google-vertexai==2.0.28 requires langchain-core>=0.3.67. Without
+# these floor pins, pip's resolver backtracks all the way to
+# langchain-community 0.0.1 (which requires langchain-core<0.1) trying to
+# satisfy an unbounded transitive constraint from ragas — and fails.
+# Pinning the umbrella packages to the 0.3.x line keeps the resolver on a
+# single self-consistent set.
+langchain-core>=0.3.67,<0.4
+langchain>=0.3.0,<0.4
+langchain-community>=0.3.0,<0.4

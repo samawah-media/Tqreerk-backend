@@ -18,8 +18,20 @@ public class User : SoftDeletableEntity
     public UserStatus Status { get; set; } = UserStatus.PendingVerification;
     public string PreferredLanguage { get; set; } = "ar";
 
+    /// True for Taqreerk team members (SuperAdmin / Admin / ContentReviewer).
+    /// Used as a fast gate on /api/admin/* — set when seeded or when the
+    /// SuperAdmin promotes a user via the staff-management UI (PR A2/Feature 1).
+    public bool IsPlatformStaff { get; set; }
+
+    // Brute-force protection: incremented on bad-password login; cleared on success.
+    // When the count reaches the threshold, LockoutEndsAt is set forward; the next
+    // login attempt before that timestamp is rejected without checking the password.
+    public int FailedLoginAttempts { get; set; }
+    public DateTime? LockoutEndsAt { get; set; }
+
     public Country? Country { get; set; }
     public ICollection<RefreshToken> RefreshTokens { get; set; } = [];
+    public ICollection<UserRole> UserRoles { get; set; } = [];
     public ICollection<OrganizationMember> OrganizationMemberships { get; set; } = [];
     public ICollection<Report> UploadedReports { get; set; } = [];
     public ICollection<ReportRating> Ratings { get; set; } = [];
@@ -32,4 +44,5 @@ public class User : SoftDeletableEntity
     public ICollection<ReportView> ReportViews { get; set; } = [];
     public ICollection<Subscription> Subscriptions { get; set; } = [];
     public ICollection<AiJob> AiJobs { get; set; } = [];
+    public ICollection<ChatSession> ChatSessions { get; set; } = [];
 }

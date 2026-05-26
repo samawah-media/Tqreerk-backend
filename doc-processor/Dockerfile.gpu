@@ -1,0 +1,97 @@
+# GPU-enabled document processing service.
+#
+# Stack:
+#   • Docling      — layout, reading order, tables (TableFormer)
+#   • Gemini Vision— figure captioning (Vertex AI, no local model)
+#   • RapidOCR     — Arabic + English text recognition (ONNX, CPU, ~80 ms/crop)
+#   • pix2tex      — formula image → LaTeX
+#
+# OCR runs on CPU (ONNX runtime) — saves ~2 GB VRAM vs Surya (PyTorch) with
+# no latency regression: RapidOCR ~20-80 ms/crop vs Surya ~80-300 ms on GPU.
+# Docling + bge-m3 + reranker occupy ~11 GB of the L4's 24 GB.
+#
+# Cold start: ~30-60 s (CUDA init + weight transfer to VRAM).
+# min-instances=0 → idle cost is zero.
+
+# ── Stage 1: build ────────────────────────────────────────────────────────────
+# Install build tools and pip-install everything into a venv. The venv is what
+# we copy across to the runtime stage, so its layout is self-contained and
+# doesn't depend on Debian's site-packages vs dist-packages quirks.
+FROM nvidia/cuda:12.1.0-base-ubuntu22.04 AS builder
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-venv python3-pip \
+        build-essential git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build everything inside /opt/venv so the runtime stage gets a single,
+# self-contained tree to copy. No PYTHONPATH gymnastics needed.
+RUN python3.11 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --upgrade pip setuptools wheel
+
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+# Minimal CUDA base — PyTorch bundles its own cuDNN, so we don't need the
+# OS-level cudnn8-runtime layer (saves ~1.5 GB vs the previous base image).
+# Only OpenCV runtime libs and Python are needed here.
+FROM nvidia/cuda:12.1.0-base-ubuntu22.04 AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    TRANSFORMERS_OFFLINE=0 \
+    HF_HOME=/app/.hf-cache \
+    TORCH_DEVICE=cuda \
+    PATH="/opt/venv/bin:$PATH"
+
+# python3.11 (no pip, no venv tooling) + OpenCV runtime libs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the venv from the builder. Because PATH starts with /opt/venv/bin, every
+# `python` / `pip` call resolves to the venv and finds the installed packages
+# automatically — no PYTHONPATH overrides needed.
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+
+# Pre-download model weights so cold start only pays for VRAM transfer, not
+# network I/O. All downloads happen here in the runtime stage so the cached
+# files are present when the container first starts.
+#
+# Florence-2: snapshot_download fetches the whole repo into HF_HOME.
+# RapidOCR models:
+#   ch_PP-OCRv4_det_infer.onnx     — universal DB text detector
+#                                    source: SWHL/RapidOCR subfolder PP-OCRv4
+#   arabic_PP-OCRv3_rec_infer.onnx — Arabic CRNN recognition model
+#                                    source: Ooredoo-Group/rapidocr-models
+#   arabic_dict.txt                — Arabic character set (keys file)
+#                                    source: PaddleOCR upstream GitHub
+# RapidOCR runs on CPU at inference time — no GPU needed, no TORCH_DEVICE trick.
+RUN python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download(repo_id='microsoft/Florence-2-base-ft')"
+
+RUN mkdir -p /app/ocr_models \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='Multilingual_PP-OCRv3_det_infer.onnx', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded Multilingual_PP-OCRv3_det_infer.onnx')" \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_PP-OCRv3_rec_infer.onnx', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded arabic_PP-OCRv3_rec_infer.onnx')" \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_dict.txt', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded arabic_dict.txt')" \
+    && echo "RapidOCR Arabic+multilingual models ready"
+
+COPY . .
+
+EXPOSE 8080
+
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --timeout-keep-alive 120"]

@@ -2,7 +2,32 @@
   "permissions": {
     "allow": [
       "Bash(dotnet build *)",
-      "Bash(dotnet ef *)"
+      "Bash(dotnet ef *)",
+      "WebSearch",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\sheha\\\\OneDrive\\\\Documents\\\\Tqreerk-backend\\\\Tqreerk-backend\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(xargs grep *)",
+      "Bash(python -c \"import docx; print\\(docx.__version__\\)\")",
+      "Bash(python3 -c \"import docx; print\\(docx.__version__\\)\")",
+      "Bash(python docs/generate_rag_doc.py)",
+      "Bash(xargs wc *)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(python -m py_compile \"c:\\\\Users\\\\sheha\\\\OneDrive\\\\Documents\\\\Tqreerk-backend\\\\doc-processor\\\\pipeline\\\\layout.py\")",
+      "Bash(dotnet tool *)",
+      "Bash(winget install *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git merge *)",
+      "Bash(git cherry-pick *)",
+      "Bash(python scripts/check_chunker_sync.py)",
+      "Bash(python -m py_compile doc-processor/pipeline/ingest.py doc-processor/pipeline/chunker.py doc-processor/api/extract.py doc-processor/models/schema.py ai-service/core/chunking.py)",
+      "Bash(python -m py_compile doc-processor/pipeline/ingest.py doc-processor/pipeline/chunker.py doc-processor/pipeline/orchestrator.py doc-processor/pipeline/layout.py doc-processor/api/extract.py doc-processor/models/schema.py doc-processor/core/config.py ai-service/core/chunking.py)",
+      "Bash(python -m py_compile doc-processor/pipeline/ingest.py doc-processor/core/config.py)",
+      "Bash(python -c ' *)"
     ]
   }
 }

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Chat stream test</title>
+  <style>
+    body { font-family: system-ui; padding: 20px; max-width: 800px; }
+    input, button { padding: 8px; font-size: 14px; }
+    input { width: 60%; }
+    #out { white-space: pre-wrap; margin-top: 20px; padding: 12px; border: 1px solid #ccc; min-height: 200px; }
+    #sources { color: #888; font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h2>Taqreerk chat — streaming test</h2>
+
+  <label>Service URL:</label><br>
+  <input id="base" value="https://taqreerk-ai-service-staging-912038409401.me-central1.run.app" /><br><br>
+
+  <label>Session ID:</label><br>
+  <input id="sid" placeholder="UUID of an existing chat session" /><br><br>
+
+  <label>Message:</label><br>
+  <input id="msg" value="ما أبرز النتائج؟" /><br><br>
+
+  <button onclick="send()">Send</button>
+
+  <div id="out"></div>
+  <div id="sources"></div>
+
+<script>
+async function send() {
+  const out = document.getElementById('out');
+  const sources = document.getElementById('sources');
+  out.textContent = '';
+  sources.textContent = '';
+
+  const url = document.getElementById('base').value.replace(/\/+$/, '')
+            + '/api/ai/chat/sessions/' + document.getElementById('sid').value + '/messages';
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: document.getElementById('msg').value }),
+  });
+
+  if (!resp.ok) { out.textContent = 'HTTP ' + resp.status + ' — ' + await resp.text(); return; }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let nl;
+    while ((nl = buf.indexOf('\n\n')) !== -1) {
+      const evt = buf.slice(0, nl); buf = buf.slice(nl + 2);
+      if (!evt.startsWith('data: ')) continue;
+      const data = JSON.parse(evt.slice(6));
+      if (data.type === 'sources')  sources.textContent = 'Sources: pages ' + data.pages.join(', ');
+      if (data.type === 'token')    out.textContent += data.text;
+      if (data.type === 'error')    out.textContent += '\n\n[ERROR] ' + data.message;
+    }
+  }
+}
+</script>
+</body>
+</html>

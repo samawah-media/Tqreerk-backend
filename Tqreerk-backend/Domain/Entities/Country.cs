@@ -8,6 +8,10 @@ public class Country : BaseEntity
     public string NameEn { get; set; } = string.Empty;
     public string IsoCode { get; set; } = string.Empty;
 
+    /// Manual ordering driven by the admin Categories page (drag-and-drop).
+    /// Lower value = earlier in lists.
+    public int SortOrder { get; set; }
+
     public ICollection<User> Users { get; set; } = [];
     public ICollection<Organization> Organizations { get; set; } = [];
     public ICollection<Report> Reports { get; set; } = [];

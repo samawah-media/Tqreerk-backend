@@ -18,13 +18,16 @@ public class TaqreerkDbContext : DbContext
     public DbSet<OrganizationProfile> OrganizationProfiles => Set<OrganizationProfile>();
     public DbSet<OrganizationMember> OrganizationMembers => Set<OrganizationMember>();
     public DbSet<OrganizationFile> OrganizationFiles => Set<OrganizationFile>();
+    public DbSet<OrganizationInvitation> OrganizationInvitations => Set<OrganizationInvitation>();
 
     // Reference data
     public DbSet<Country> Countries => Set<Country>();
     public DbSet<Sector> Sectors => Set<Sector>();
+    public DbSet<Partner> Partners => Set<Partner>();
 
     // Reports
     public DbSet<Report> Reports => Set<Report>();
+    public DbSet<ReportReview> ReportReviews => Set<ReportReview>();
     public DbSet<ReportTranslation> ReportTranslations => Set<ReportTranslation>();
     public DbSet<ReportKeyword> ReportKeywords => Set<ReportKeyword>();
     public DbSet<ReportAiContent> ReportAiContents => Set<ReportAiContent>();
@@ -34,13 +37,27 @@ public class TaqreerkDbContext : DbContext
     public DbSet<ReportView> ReportViews => Set<ReportView>();
     public DbSet<SavedReport> SavedReports => Set<SavedReport>();
     public DbSet<Infographic> Infographics => Set<Infographic>();
+    public DbSet<FeaturedReport> FeaturedReports => Set<FeaturedReport>();
+    public DbSet<ReportFeatureRequest> ReportFeatureRequests => Set<ReportFeatureRequest>();
+    public DbSet<ReportComment> ReportComments => Set<ReportComment>();
+    public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
 
     // AI
     public DbSet<AiJob> AiJobs => Set<AiJob>();
+    public DbSet<ReportChunk> ReportChunks => Set<ReportChunk>();
+    public DbSet<ChatSession> ChatSessions => Set<ChatSession>();
+    public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
 
     // User interaction
     public DbSet<UserInterest> UserInterests => Set<UserInterest>();
     public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<ReportAnnotation> ReportAnnotations => Set<ReportAnnotation>();
+    public DbSet<ReportPersonalNote> ReportPersonalNotes => Set<ReportPersonalNote>();
+
+    // Freemium gate + points ledger (Feature 5 / 5b)
+    public DbSet<UsageTracking> UsageTracking => Set<UsageTracking>();
+    public DbSet<UserPoints> UserPoints => Set<UserPoints>();
+    public DbSet<PointTransaction> PointTransactions => Set<PointTransaction>();
 
     // Billing
     public DbSet<Plan> Plans => Set<Plan>();
@@ -48,8 +65,36 @@ public class TaqreerkDbContext : DbContext
     public DbSet<Payment> Payments => Set<Payment>();
     public DbSet<Invoice> Invoices => Set<Invoice>();
 
+    // Usage & points
+    //public DbSet<UsageTracking> UsageTracking => Set<UsageTracking>();
+    //public DbSet<UserPoints> UserPoints => Set<UserPoints>();
+    //public DbSet<PointTransaction> PointTransactions => Set<PointTransaction>();
+
+    //// Annotations
+    //public DbSet<ReportAnnotation> ReportAnnotations => Set<ReportAnnotation>();
+    //public DbSet<ReportPersonalNote> ReportPersonalNotes => Set<ReportPersonalNote>();
+
     // Audit
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<AdminActionLog> AdminActionLogs => Set<AdminActionLog>();
+
+    // Admin 2FA
+    public DbSet<Admin2faSecret> Admin2faSecrets => Set<Admin2faSecret>();
+
+    // RBAC
+    public DbSet<Page> Pages => Set<Page>();
+    public DbSet<Permission> Permissions => Set<Permission>();
+    public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
+    public DbSet<UserRole> UserRoles => Set<UserRole>();
+
+    // Account flows
+    public DbSet<EmailVerificationToken> EmailVerificationTokens => Set<EmailVerificationToken>();
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
+    public DbSet<PendingRegistration> PendingRegistrations => Set<PendingRegistration>();
+
+    // Bulk import (admin Excel-based ingestion of third-party reports)
+    public DbSet<BulkImportJob> BulkImportJobs => Set<BulkImportJob>();
+    public DbSet<BulkImportItem> BulkImportItems => Set<BulkImportItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -63,6 +108,7 @@ public class TaqreerkDbContext : DbContext
         modelBuilder.Entity<ReportTranslation>().HasQueryFilter(e => e.DeletedAt == null);
         modelBuilder.Entity<ReportAiContent>().HasQueryFilter(e => e.DeletedAt == null);
         modelBuilder.Entity<Infographic>().HasQueryFilter(e => e.DeletedAt == null);
+        modelBuilder.Entity<ReportComment>().HasQueryFilter(e => e.DeletedAt == null);
     }
 
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)

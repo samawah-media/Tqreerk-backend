@@ -1,0 +1,147 @@
+name: Deploy Doc Processor — Staging
+
+on:
+  push:
+    branches: ["staging"]
+    paths:
+      - "doc-processor/**"
+      - ".github/workflows/deploy-doc-processor-staging.yml"
+  # Manual trigger so we can redeploy without a code change (e.g. to pick
+  # up a new model weight pre-download or refresh CUDA layer cache).
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  # GPU region — Cloud Run L4 GPUs are available in a limited set of regions
+  # (europe-west4, us-central1, asia-southeast1 at time of writing). We use
+  # a separate secret from the CPU services so the GPU host can move
+  # independently if a new region opens up closer to the DB.
+  REGION: ${{ secrets.GCP_GPU_REGION }}
+  REPO: ${{ secrets.ARTIFACT_REGISTRY_REPO }}
+  SERVICE: taqreerk-doc-processor-staging
+  IMAGE: taqreerk-doc-processor
+
+jobs:
+  build-and-deploy:
+    name: Build, Push & Deploy Doc Processor to Staging
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Cloud Build does the heavy lifting. The image is ~12 GB (CUDA +
+      # PyTorch + Florence-2 + Surya OCR + pix2tex weights pre-cached) which
+      # routinely OOMs the GitHub-hosted runner if we build there.
+      - name: Build & push image via Cloud Build
+        run: |
+          gcloud builds submit ./doc-processor \
+            --config=./doc-processor/cloudbuild.yaml \
+            --substitutions=_TAG=${{ github.sha }},_LATEST_TAG=staging-latest,_REGION=${{ env.REGION }},_REPO=${{ env.REPO }},_IMAGE=${{ env.IMAGE }} \
+            --project=${{ env.PROJECT_ID }}
+
+      # Cloud Run deploy — using `gcloud run deploy` directly because the GPU
+      # flags (--gpu, --gpu-type, --no-gpu-zonal-redundancy) need to round-
+      # trip cleanly and the deploy-cloudrun action can lag on flag support.
+      #
+      # Configuration notes:
+      #   --no-allow-unauthenticated  → service is internal-only; ai-service
+      #                                 invokes it via Cloud Run IAM (the
+      #                                 ai-service SA needs run.invoker
+      #                                 granted out-of-band, one-time).
+      #   --concurrency=1             → GPU is the bottleneck; keep one
+      #                                 inference in flight per instance.
+      #   --min-instances=0           → idle = $0. Cold starts are 60-90 s
+      #                                 but ingest is async so users don't
+      #                                 see them.
+      #   --timeout=3600              → /v1/ingest_job is synchronous as of
+      #                                 2026-05-08 — the request stays in
+      #                                 flight for the entire ingest so
+      #                                 Cloud Run's autoscaler sees the pod
+      #                                 as at-capacity and spawns a second
+      #                                 pod for parallel triggers. 1 h covers
+      #                                 the longest expected ingest (~10-15
+      #                                 min on a 200-page report).
+      - name: Deploy to Cloud Run (Staging)
+        env:
+          # All secrets are loaded as shell env vars first so Python can read
+          # them and write a properly YAML-escaped --env-vars-file. This avoids
+          # any shell word-splitting on semicolons/equals in connection strings.
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          INTERNAL_API_TOKEN: ${{ secrets.DOC_PROCESSOR_INTERNAL_TOKEN }}
+          GCP_PROJECT_ID_VAL: ${{ secrets.GCP_PROJECT_ID }}
+          GPU_REGION: ${{ env.REGION }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, yaml
+          env_vars = {
+              "ENVIRONMENT": "staging",
+              "SENTRY_DSN": os.environ["SENTRY_DSN"],
+              "INTERNAL_API_TOKEN": os.environ["INTERNAL_API_TOKEN"],
+              "GCP_PROJECT_ID": os.environ["GCP_PROJECT_ID_VAL"],
+              "DATABASE_URL": os.environ["DATABASE_URL"],
+              "VERTEX_LOCATION": os.environ["GPU_REGION"],
+          }
+          with open("/tmp/env-vars.yaml", "w") as f:
+              yaml.dump(env_vars, f, default_flow_style=False, allow_unicode=True)
+          PYEOF
+
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }} \
+            --gpu=1 \
+            --gpu-type=nvidia-l4 \
+            --no-gpu-zonal-redundancy \
+            --cpu=4 \
+            --memory=16Gi \
+            --min-instances=0 \
+            --max-instances=3 \
+            --concurrency=1 \
+            --timeout=3600 \
+            --port=8080 \
+            --allow-unauthenticated \
+            --no-cpu-throttling \
+            --execution-environment=gen2 \
+            --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }} \
+            --env-vars-file=/tmp/env-vars.yaml
+
+          
+      # Health check tolerates the extended cold-start window. We poll for up
+      # to 5 minutes because a fully cold L4 instance loading 4 ML models can
+      # legitimately take 60-120 s before /health flips from "loading" to
+      # "healthy".
+      - name: Verify deployment
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --format "value(status.url)")
+          echo "Service URL: $SERVICE_URL"
+
+          URL="$SERVICE_URL/health"
+          echo "Polling $URL ..."
+
+          for i in $(seq 1 30); do
+            RESPONSE=$(curl -s -o /tmp/health.json -w "%{http_code}" "$URL")
+            BODY=$(cat /tmp/health.json)
+            echo "Attempt $i → HTTP $RESPONSE: $BODY"
+            if [ "$RESPONSE" = "200" ] && echo "$BODY" | grep -q '"status":"healthy"'; then
+              echo "✅ Doc-processor healthy at $SERVICE_URL"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "❌ Doc-processor health check failed after 5 minutes."
+          echo "Last body: $(cat /tmp/health.json)"
+          exit 1
