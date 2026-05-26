@@ -68,10 +68,21 @@ class Settings(BaseSettings):
     # chat / summary share. Override per-deploy via GEMINI_VISION_MODEL.
     gemini_vision_model: str = "gemini-2.5-flash-lite"
 
-    # Surya OCR language hint (CSV). Surya can auto-detect script per line,
-    # but passing the expected languages gives a small accuracy bump on mixed
-    # AR/EN reports. Set to "" to let Surya auto-detect. Weights live in
-    # HF_HOME and are pre-baked into the image — no per-language download tax.
+    # ── RapidOCR model paths ─────────────────────────────────────────────────
+    # ONNX model files pre-downloaded at image build time (Dockerfile.gpu).
+    # Empty string → RapidOCR falls back to its bundled English/CJK models
+    # (no hallucination either way; just lower Arabic accuracy).
+    ocr_det_model_path: str = "/app/ocr_models/PP-OCRv4_det_infer.onnx"
+    ocr_rec_model_path: str = "/app/ocr_models/arabic_PP-OCRv3_rec_infer.onnx"
+    ocr_rec_keys_path:  str = "/app/ocr_models/arabic_dict.txt"
+
+    # Drop recognition results whose confidence falls below this threshold.
+    # RapidOCR's detection model already prevents hallucination on non-text
+    # crops; this threshold removes borderline reads on degraded scan regions.
+    ocr_min_confidence: float = 0.5
+
+    # Kept for backwards compatibility — no longer used (RapidOCR selects
+    # the language via its recognition model, not a runtime parameter).
     ocr_languages: str = "ar,en"
 
     # Multilingual sentence-transformer for /v1/embed.
