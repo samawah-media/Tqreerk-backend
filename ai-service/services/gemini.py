@@ -274,29 +274,20 @@ class IndicatorItem(BaseModel):
     context: str | None = None
 
 
-class TrendItem(BaseModel):
-    topic: str
-    direction: str
-    time_span: str | None = None
-    magnitude: str | None = None
-    explanation: str | None = None
-
-
 class ReportSummary(BaseModel):
     """Combined summarization + insights output. One Gemini call populates
     every report_ai_contents column (summary, key_findings, topics,
-    indicators, trends) so the C# finalizer can copy them all in one pass.
+    indicators) so the C# finalizer can copy them all in one pass.
 
-    `summary` is a 5-7 item bullet list, not a paragraph — see the matching
-    SummarizeResponse model in models/ingest.py for the rationale."""
-    summary: list[str] = Field(min_length=5, max_length=7)
-    key_findings: list[str]
-    topics: list[str]
-    # No maxItems on these — Gemini rejects schemas with maxItems on nested
-    # object arrays (400 "too many states"). Output is capped via the prompt
-    # ("up to 30 indicators", "up to 15 trends") which Gemini honours reliably.
-    indicators: list[IndicatorItem] = Field(default=[])
-    trends: list[TrendItem]         = Field(default=[])
+    trends removed: stored in DB but never returned by any API endpoint —
+    was spending tokens/time for nothing.
+
+    maxItems works on list[str] (primitive arrays); not supported on
+    list[object] arrays by Gemini — those are capped via the prompt."""
+    summary:      list[str]           = Field(min_length=5, max_length=7)
+    key_findings: list[str]           = Field(max_length=8)
+    topics:       list[str]           = Field(max_length=10)
+    indicators:   list[IndicatorItem] = Field(default=[])
 
 
 # ── Plain text completion (used by Ragas judge) ─────────────────────────────

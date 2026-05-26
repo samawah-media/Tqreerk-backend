@@ -77,10 +77,8 @@ def _language_name(code: str | None) -> str:
 
 
 def summarize_prompt(combined_text: str, language: str = "ar") -> str:
-    """Combined summary + insights prompt — one Gemini call returns all 5 fields:
-    summary, key_findings, topics, indicators, trends. Replaces the previous
-    two-call design (summarize + extract_insights) so a single ingest job
-    populates every report_ai_contents column.
+    """Combined summary + insights prompt — one Gemini call returns 4 fields:
+    summary, key_findings, topics, indicators.
 
     `language` is the report's OriginalLanguage (ISO code) — used to pin
     the output language with a hard directive instead of trusting Gemini's
@@ -102,10 +100,6 @@ def summarize_prompt(combined_text: str, language: str = "ar") -> str:
         "(headline totals and key breakdowns only — skip granular row-level data). "
         "Each item: name (max 10 words), value (numeric), unit (max 5 words, if any), "
         "time_period (max 10 words, if any), context (max 10 words, if any).\n"
-        "- trends: up to 8 of the most significant directional patterns. "
-        "Each item: topic (max 8 words), direction (one of: increasing/decreasing/"
-        "stable/volatile/mixed), time_span (max 8 words), magnitude (max 10 words), "
-        "explanation (1 sentence, maximum 30 words).\n"
         "\n"
         f"CRITICAL — output language: every string value in the JSON MUST be "
         f"written in {lang_name}. Do not mix languages. Numeric values stay "
@@ -140,22 +134,8 @@ REPORT_SUMMARY_SCHEMA = {
                 "required": ["name", "value"],
             },
         },
-        "trends": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "topic":       {"type": "string"},
-                    "direction":   {"type": "string"},
-                    "time_span":   {"type": "string"},
-                    "magnitude":   {"type": "string"},
-                    "explanation": {"type": "string"},
-                },
-                "required": ["topic", "direction"],
-            },
-        },
     },
-    "required": ["summary", "key_findings", "topics", "indicators", "trends"],
+    "required": ["summary", "key_findings", "topics", "indicators"],
 }
 
 

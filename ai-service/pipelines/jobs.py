@@ -264,9 +264,9 @@ async def run_summarize_job(job_id: UUID, report_id: UUID) -> None:
         )
 
         logger.info(
-            "[job %s] summarize done: %d findings, %d topics, %d indicators, %d trends",
+            "[job %s] summarize done: %d findings, %d topics, %d indicators",
             job_id, len(summary.key_findings), len(summary.topics),
-            len(summary.indicators), len(summary.trends),
+            len(summary.indicators),
         )
 
         await mark_completed(job_id, {
@@ -274,7 +274,6 @@ async def run_summarize_job(job_id: UUID, report_id: UUID) -> None:
             "key_findings": summary.key_findings,
             "topics":       summary.topics,
             "indicators":   [i.model_dump(mode="json") for i in summary.indicators],
-            "trends":       [t.model_dump(mode="json") for t in summary.trends],
         })
     except Exception as exc:
         logger.exception("[job %s] summarize FAILED: %s", job_id, exc)

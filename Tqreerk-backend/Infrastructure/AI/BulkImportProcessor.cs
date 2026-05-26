@@ -1060,7 +1060,6 @@ public class BulkImportProcessor : BackgroundService
             var keyFindings = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "key_findings"));
             var topics      = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "topics"));
             var indicators  = ExtractRawJsonArray(doc.RootElement, "indicators");
-            var trends      = ExtractRawJsonArray(doc.RootElement, "trends");
 
             var lang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
             var existing = await db.ReportAiContents
@@ -1077,7 +1076,6 @@ public class BulkImportProcessor : BackgroundService
                     KeyFindings = keyFindings,
                     Topics      = topics,
                     Indicators  = indicators,
-                    Trends      = trends,
                     GeneratedAt = DateTime.UtcNow,
                 });
             }
@@ -1087,7 +1085,6 @@ public class BulkImportProcessor : BackgroundService
                 existing.KeyFindings = keyFindings;
                 existing.Topics      = topics;
                 existing.Indicators  = indicators;
-                existing.Trends      = trends;
                 existing.GeneratedAt = DateTime.UtcNow;
                 existing.AiJobId     = jobId;
             }
