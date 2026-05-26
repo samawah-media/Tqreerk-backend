@@ -71,6 +71,19 @@ public class MeController : ControllerBase
         return Ok(await _me.GetPlanFeaturesAsync(userId, ct));
     }
 
+    /// <summary>Caller subscription row for settings / checkout banners.
+    /// 204 when no row exists.</summary>
+    [HttpGet("subscription")]
+    [ProducesResponseType(typeof(MySubscriptionDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> Subscription(CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        var dto = await _me.GetSubscriptionAsync(userId, ct);
+        if (dto is null) return NoContent();
+        return Ok(dto);
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);

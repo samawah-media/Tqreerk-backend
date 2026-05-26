@@ -15,10 +15,12 @@ public class ReportInteractionsService : IReportInteractionsService
     private static readonly TimeSpan ViewDedupeWindow = TimeSpan.FromHours(1);
 
     private readonly TaqreerkDbContext _db;
+    private readonly IFileStorage _files;
 
-    public ReportInteractionsService(TaqreerkDbContext db)
+    public ReportInteractionsService(TaqreerkDbContext db, IFileStorage files)
     {
         _db = db;
+        _files = files;
     }
 
     public async Task<ReportInteractionStateDto> RateAsync(
@@ -69,6 +71,9 @@ public class ReportInteractionsService : IReportInteractionsService
         }
         return await BuildStateAsync(userId, reportId, ct);
     }
+
+    public Task<bool> IsSavedAsync(Guid userId, Guid reportId, CancellationToken ct = default)
+        => _db.SavedReports.AnyAsync(x => x.UserId == userId && x.ReportId == reportId, ct);
 
     public async Task<ReportInteractionStateDto> SaveAsync(
         Guid userId, Guid reportId, CancellationToken ct = default)
@@ -179,6 +184,32 @@ public class ReportInteractionsService : IReportInteractionsService
         });
         report.ViewsCount += 1;
         await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<ReportFullAccessDto> GetFullAccessAsync(
+        Guid userId, Guid reportId, CancellationToken ct = default)
+    {
+        var fileKey = await _db.Reports
+            .AsNoTracking()
+            .Where(r => r.Id == reportId && r.Status == ReportStatus.Published)
+            .Select(r => r.FileUrl)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new KeyNotFoundException("Report not found.");
+
+        if (string.IsNullOrWhiteSpace(fileKey))
+            throw new InvalidOperationException("هذا التقرير لا يحتوي على ملف PDF.");
+
+        string signed;
+        try
+        {
+            signed = await _files.GetReadUrlAsync(fileKey, ct: ct);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("تعذّر إنشاء رابط القراءة.", ex);
+        }
+
+        return new ReportFullAccessDto(signed);
     }
 
     public async Task<MyReportInteractionDto> GetMyStateAsync(

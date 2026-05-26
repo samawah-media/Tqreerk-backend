@@ -18,6 +18,7 @@ public class AuthService : IAuthService
     private readonly IRbacService _rbac;
     private readonly IEmailSender _email;
     private readonly ITwoFactorService _twoFactor;
+    private readonly ISubscriptionProvisioningService _subscriptions;
     private readonly JwtSettings _jwt;
     private readonly EmailSettings _emailSettings;
 
@@ -27,6 +28,7 @@ public class AuthService : IAuthService
         IRbacService rbac,
         IEmailSender email,
         ITwoFactorService twoFactor,
+        ISubscriptionProvisioningService subscriptions,
         IOptions<JwtSettings> jwt,
         IOptions<EmailSettings> emailSettings)
     {
@@ -35,6 +37,7 @@ public class AuthService : IAuthService
         _rbac = rbac;
         _email = email;
         _twoFactor = twoFactor;
+        _subscriptions = subscriptions;
         _jwt = jwt.Value;
         _emailSettings = emailSettings.Value;
     }
@@ -81,6 +84,8 @@ public class AuthService : IAuthService
     {
         var normalized = req.Email.ToLowerInvariant();
 
+        await ValidateOrganizationPlanIdAsync(req.PlanId, ct);
+
         if (await _db.Users.AnyAsync(u => u.Email == normalized, ct))
             throw new InvalidOperationException("Email already registered.");
 
@@ -107,7 +112,7 @@ public class AuthService : IAuthService
             OrgSectorScope = req.SectorScope,
             OrgCommercialRegisterNo = req.CommercialRegisterNo,
             OrgCommercialRegisterName = req.CommercialRegisterName,
-            OrgCommercialRegisterExpiryDate = req.CommercialRegisterExpiryDate,
+            OrgCommercialRegisterExpiryDate = AsUtcDate(req.CommercialRegisterExpiryDate),
             OrgTaxNumber = req.TaxNumber,
             OrgLicenseDocumentUrl = req.LicenseDocumentUrl,
             OrgEmployeeCount = req.EmployeeCount,
@@ -461,7 +466,13 @@ public class AuthService : IAuthService
         await _email.SendEmailAsync(user.Email, "Your Taqreerk verification code", body, ct);
     }
 
-    public async Task<AuthResult> VerifyEmailOtpAsync(string email, string code, string? ipAddress, string? deviceInfo, CancellationToken ct = default)
+    public async Task<AuthResult> VerifyEmailOtpAsync(
+        string email,
+        string code,
+        string? ipAddress,
+        string? deviceInfo,
+        Guid? organizationPlanId = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(code) || code.Length != OtpCodeLength || !code.All(char.IsDigit))
             throw new ArgumentException("Invalid verification code.");
@@ -480,7 +491,7 @@ public class AuthService : IAuthService
             if (pending.OtpExpiresAt < DateTime.UtcNow)
                 throw new UnauthorizedAccessException("Verification code has expired.");
 
-            return await PromotePendingToUserAsync(pending, ipAddress, deviceInfo, ct);
+            return await PromotePendingToUserAsync(pending, ipAddress, deviceInfo, organizationPlanId, ct);
         }
 
         // Existing user re-verifying (e.g. resend OTP flow).
@@ -508,7 +519,12 @@ public class AuthService : IAuthService
         return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
     }
 
-    private async Task<AuthResult> PromotePendingToUserAsync(PendingRegistration pending, string? ipAddress, string? deviceInfo, CancellationToken ct)
+    private async Task<AuthResult> PromotePendingToUserAsync(
+        PendingRegistration pending,
+        string? ipAddress,
+        string? deviceInfo,
+        Guid? organizationPlanId,
+        CancellationToken ct)
     {
         var user = new User
         {
@@ -552,7 +568,7 @@ public class AuthService : IAuthService
                 {
                     CommercialRegisterNo = pending.OrgCommercialRegisterNo,
                     CommercialRegisterName = pending.OrgCommercialRegisterName,
-                    CommercialRegisterExpiryDate = pending.OrgCommercialRegisterExpiryDate,
+                    CommercialRegisterExpiryDate = AsUtcDate(pending.OrgCommercialRegisterExpiryDate),
                     TaxNumber = pending.OrgTaxNumber,
                     LicenseDocumentUrl = pending.OrgLicenseDocumentUrl,
                     EmployeeCount = pending.OrgEmployeeCount,
@@ -581,9 +597,38 @@ public class AuthService : IAuthService
                 RoleId = adminRole.Id,
             });
             await _db.SaveChangesAsync(ct);
+
+            if (!organizationPlanId.HasValue)
+            {
+                throw new InvalidOperationException(
+                    "Organization plan is required to complete institution registration.");
+            }
+
+            await ValidateOrganizationPlanIdAsync(organizationPlanId.Value, ct);
+            await _subscriptions.EnsureOrganizationPlanAsync(
+                organization.Id,
+                organizationPlanId.Value,
+                awaitingPayment: true,
+                ct);
+        }
+        else
+        {
+            await _subscriptions.EnsureIndividualFreeAsync(user.Id, ct);
         }
 
         return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
+    }
+
+    private async Task ValidateOrganizationPlanIdAsync(Guid planId, CancellationToken ct)
+    {
+        var valid = await _db.Plans.AnyAsync(
+            p => p.Id == planId
+              && p.IsActive
+              && p.TargetType == PlanTargetType.Organization,
+            ct);
+
+        if (!valid)
+            throw new InvalidOperationException("Invalid or inactive organization plan.");
     }
 
     private static string GenerateNumericCode(int length)
@@ -689,6 +734,21 @@ public class AuthService : IAuthService
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Date-only fields from JSON deserialize as Kind=Unspecified; Npgsql timestamptz requires UTC.
+    /// </summary>
+    private static DateTime? AsUtcDate(DateTime? value)
+    {
+        if (value is null) return null;
+        var dt = value.Value;
+        return dt.Kind switch
+        {
+            DateTimeKind.Utc => dt,
+            DateTimeKind.Local => dt.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(dt.Date, DateTimeKind.Utc),
+        };
+    }
 
     private static string GenerateToken()
     {

@@ -17,11 +17,13 @@ public class FeatureRequestsService : IFeatureRequestsService
 
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
+    private readonly IUsageService _usage;
 
-    public FeatureRequestsService(TaqreerkDbContext db, IFileStorage files)
+    public FeatureRequestsService(TaqreerkDbContext db, IFileStorage files, IUsageService usage)
     {
         _db = db;
         _files = files;
+        _usage = usage;
     }
 
     // ── Org-side ─────────────────────────────────────────────────────
@@ -140,6 +142,8 @@ public class FeatureRequestsService : IFeatureRequestsService
         entity.ReviewedByUserId = actingAdminUserId;
         entity.ReviewedAt = now;
         entity.DecisionNote = note;
+
+        await _usage.EnsureOrgCanFeatureReportAsync(entity.OrganizationId, ct);
 
         // Auto-create the editorial pin so the approval ships immediately.
         // Position is the section's current count + 1 — the admin can

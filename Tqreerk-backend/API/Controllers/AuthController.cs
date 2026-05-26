@@ -151,7 +151,8 @@ public class AuthController : ControllerBase
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
         var device = Request.Headers.UserAgent.ToString();
 
-        var result = await _auth.VerifyEmailOtpAsync(req.Email, req.Code, ip, device, ct);
+        var result = await _auth.VerifyEmailOtpAsync(
+            req.Email, req.Code, ip, device, req.OrganizationPlanId, ct);
         AppendRefreshCookie(result.RefreshToken);
         return Ok(result.Response);
     }

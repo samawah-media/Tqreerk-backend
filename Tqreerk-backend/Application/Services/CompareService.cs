@@ -207,13 +207,8 @@ public class CompareService : ICompareService
     /// user has no active subscription — same posture as UsageService.
     private async Task<int> GetCompareMaxReportsAsync(Guid userId, CancellationToken ct)
     {
-        var max = await _db.Subscriptions
-            .AsNoTracking()
-            .Where(s => s.UserId == userId && s.Status == SubscriptionStatus.Active)
-            .OrderByDescending(s => s.CreatedAt)
-            .Select(s => (int?)s.Plan.AiCompareMaxReports)
-            .FirstOrDefaultAsync(ct);
-        return max ?? 0;
+        var resolved = await SubscriptionResolver.TryGetActiveForUserAsync(_db, userId, ct);
+        return resolved?.Plan.AiCompareMaxReports ?? 0;
     }
 
     private async Task<ComparisonResultDto> BuildDtoAsync(

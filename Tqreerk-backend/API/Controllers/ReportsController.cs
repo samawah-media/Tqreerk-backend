@@ -1,10 +1,12 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Taqreerk.API.Filters;
 using Taqreerk.Application.DTOs.Analytics;
 using Taqreerk.Application.DTOs.FeatureRequests;
 using Taqreerk.Application.DTOs.Reports;
 using Taqreerk.Application.Interfaces;
+using Taqreerk.Domain.Enums;
 
 namespace Taqreerk.API.Controllers;
 
@@ -305,6 +307,7 @@ public class ReportsController : ControllerBase
     /// /reports/{id}/ai/status for completion.
     /// </summary>
     [HttpPost("{id:guid}/ai/translate")]
+    [EnforceUsageLimit(UsageActionType.AiTranslate)]
     [ProducesResponseType(typeof(ReportAiStatusDto), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]

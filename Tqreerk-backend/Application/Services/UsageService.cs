@@ -17,6 +17,8 @@ namespace Taqreerk.Application.Services;
 /// the transaction commits or rolls back — no cleanup needed.
 public class UsageService : IUsageService
 {
+    private const decimal DownloadPercentageOfDb = 0.10m;
+
     private readonly TaqreerkDbContext _db;
     private readonly ILogger<UsageService> _logger;
 
@@ -32,11 +34,12 @@ public class UsageService : IUsageService
         Guid? resourceId,
         Func<CancellationToken, Task> actionFn,
         CancellationToken ct = default,
-        string? metadata = null)
+        string? metadata = null,
+        bool idempotentPerResource = false)
         => EnsureWithinLimitAndConsumeAsync<object?>(
             userId, actionType, resourceId,
             async ctInner => { await actionFn(ctInner); return null; },
-            ct, metadata);
+            ct, metadata, idempotentPerResource);
 
     public async Task<TResult> EnsureWithinLimitAndConsumeAsync<TResult>(
         Guid userId,
@@ -44,39 +47,47 @@ public class UsageService : IUsageService
         Guid? resourceId,
         Func<CancellationToken, Task<TResult>> actionFn,
         CancellationToken ct = default,
-        string? metadata = null)
+        string? metadata = null,
+        bool idempotentPerResource = false)
     {
         var (subscription, plan) = await GetActiveSubscriptionAsync(userId, ct);
-        var (limit, _) = ResolveLimit(plan, actionType);
+        var period = CurrentBillingPeriodStart();
 
-        // Unlimited path: skip the lock + count, just record and run.
+        if (idempotentPerResource && resourceId.HasValue)
+        {
+            var alreadyConsumed = await _db.UsageTracking
+                .AsNoTracking()
+                .AnyAsync(
+                    u => u.UserId == userId
+                      && u.ActionType == actionType
+                      && u.BillingPeriodStart == period
+                      && u.ResourceId == resourceId,
+                    ct);
+            if (alreadyConsumed)
+                return await actionFn(ct);
+        }
+
+        var limit = await ResolveLimitAsync(plan, actionType, ct);
+
         if (limit < 0)
         {
             return await ExecuteAndRecordAsync(
                 userId, subscription, actionType, resourceId, actionFn, ct, metadata);
         }
 
-        // Hard 0: plan disallows the action entirely (e.g. free-tier AI).
-        // Throw before opening a transaction.
         if (limit == 0)
         {
             throw new UsageLimitExceededException(
                 actionType, limit: 0, used: 0, ResetsAt());
         }
 
-        var period = CurrentBillingPeriodStart();
-
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-        // Advisory lock keyed on (userId, actionType). Two int4 args is
-        // the cheapest variant; we hash userId + actionType into them.
         var (lockA, lockB) = AdvisoryLockKey(userId, actionType);
         await _db.Database.ExecuteSqlRawAsync(
             "SELECT pg_advisory_xact_lock({0}, {1})",
             new object[] { lockA, lockB }, ct);
 
-        // Count under the lock, AsNoTracking so EF doesn't try to attach
-        // existing rows we won't modify.
         var used = await _db.UsageTracking
             .AsNoTracking()
             .CountAsync(
@@ -87,8 +98,6 @@ public class UsageService : IUsageService
 
         if (used >= limit)
         {
-            // Release the lock by rolling back. (Commit would also work
-            // but rollback is the obvious "we did nothing" signal.)
             await tx.RollbackAsync(ct);
             _logger.LogInformation(
                 "[usage] user={UserId} hit cap for {Action} ({Used}/{Limit})",
@@ -96,8 +105,6 @@ public class UsageService : IUsageService
             throw new UsageLimitExceededException(actionType, limit, used, ResetsAt());
         }
 
-        // Run the actual action first. If it throws, the transaction
-        // rolls back and we don't burn a count.
         TResult result;
         try
         {
@@ -151,9 +158,6 @@ public class UsageService : IUsageService
         }
         catch (Exception ex)
         {
-            // Best-effort telemetry — the user's primary action already
-            // succeeded by the time we get here, so swallowing the
-            // failure is safer than 500ing the response.
             _logger.LogWarning(ex,
                 "[usage] failed to record {Action} for user={UserId}",
                 actionType, userId);
@@ -166,8 +170,6 @@ public class UsageService : IUsageService
         var period = CurrentBillingPeriodStart();
         var resetsAt = ResetsAt();
 
-        // One round-trip — group by action_type, count, then merge with
-        // the static set of action types the plan exposes.
         var grouped = await _db.UsageTracking
             .AsNoTracking()
             .Where(u => u.UserId == userId && u.BillingPeriodStart == period)
@@ -178,7 +180,7 @@ public class UsageService : IUsageService
         var counters = new List<UsageCounterDto>();
         foreach (UsageActionType action in Enum.GetValues<UsageActionType>())
         {
-            var (limit, _) = ResolveLimit(plan, action);
+            var limit = await ResolveLimitAsync(plan, action, ct);
             var used = grouped.GetValueOrDefault(action, 0);
             var unlimited = limit < 0;
             var remaining = unlimited ? int.MaxValue : Math.Max(0, limit - used);
@@ -225,6 +227,84 @@ public class UsageService : IUsageService
         return new UsageHistoryPageDto(items, page, pageSize, total);
     }
 
+    public async Task EnsureOrgCanAddMemberAsync(Guid organizationId, CancellationToken ct = default)
+    {
+        var plan = await GetActiveOrgPlanAsync(organizationId, ct);
+        if (plan.UserLimit < 0) return;
+
+        var activeMembers = await _db.OrganizationMembers
+            .CountAsync(m => m.OrganizationId == organizationId && m.IsActive, ct);
+        var pendingInvites = await _db.OrganizationInvitations
+            .CountAsync(
+                i => i.OrganizationId == organizationId
+                  && i.Status == InvitationStatus.Pending,
+                ct);
+
+        if (activeMembers + pendingInvites >= plan.UserLimit)
+        {
+            throw new InvalidOperationException(
+                $"وصلت مؤسستك إلى الحد الأقصى للمقاعد ({plan.UserLimit}). قم بترقية الباقة لإضافة أعضاء جدد.");
+        }
+    }
+
+    public async Task EnsureOrgCanAcceptMemberAsync(Guid organizationId, CancellationToken ct = default)
+    {
+        var plan = await GetActiveOrgPlanAsync(organizationId, ct);
+        if (plan.UserLimit < 0) return;
+
+        var activeMembers = await _db.OrganizationMembers
+            .CountAsync(m => m.OrganizationId == organizationId && m.IsActive, ct);
+
+        if (activeMembers >= plan.UserLimit)
+        {
+            throw new InvalidOperationException(
+                $"وصلت مؤسستك إلى الحد الأقصى للمقاعد ({plan.UserLimit}).");
+        }
+    }
+
+    public async Task EnsureOrgCanUploadReportAsync(Guid organizationId, CancellationToken ct = default)
+    {
+        var plan = await GetActiveOrgPlanAsync(organizationId, ct);
+        if (plan.ReportsUploadLimit < 0) return;
+
+        var yearStart = new DateTime(DateTime.UtcNow.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var uploadedThisYear = await _db.Reports
+            .CountAsync(
+                r => r.OrganizationId == organizationId && r.CreatedAt >= yearStart,
+                ct);
+
+        if (uploadedThisYear >= plan.ReportsUploadLimit)
+        {
+            throw new InvalidOperationException(
+                $"وصلت مؤسستك إلى حد رفع التقارير السنوي ({plan.ReportsUploadLimit}). قم بترقية الباقة لرفع المزيد.");
+        }
+    }
+
+    public async Task EnsureOrgCanFeatureReportAsync(Guid organizationId, CancellationToken ct = default)
+    {
+        var plan = await GetActiveOrgPlanAsync(organizationId, ct);
+        if (plan.FeaturedReportsMonthly < 0) return;
+
+        var period = CurrentBillingPeriodStart();
+        var periodStartUtc = period.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var periodEndUtc = periodStartUtc.AddMonths(1);
+
+        var featuredThisMonth = await (
+            from f in _db.FeaturedReports
+            join r in _db.Reports on f.ReportId equals r.Id
+            where f.CreatedAt >= periodStartUtc
+               && f.CreatedAt < periodEndUtc
+               && r.OrganizationId == organizationId
+            select f.Id
+        ).CountAsync(ct);
+
+        if (featuredThisMonth >= plan.FeaturedReportsMonthly)
+        {
+            throw new InvalidOperationException(
+                $"وصلت مؤسستك إلى حد التمييز الشهري ({plan.FeaturedReportsMonthly}). قم بترقية الباقة أو انتظر الشهر القادم.");
+        }
+    }
+
     // ── helpers ────────────────────────────────────────────────────────
 
     private async Task<TResult> ExecuteAndRecordAsync<TResult>(
@@ -234,9 +314,6 @@ public class UsageService : IUsageService
         CancellationToken ct,
         string? metadata = null)
     {
-        // Unlimited tier still records — useful for analytics + the
-        // history endpoint. We don't open a transaction since there's no
-        // race condition to guard against when there's no cap.
         var result = await actionFn(ct);
         _db.UsageTracking.Add(new UsageTracking
         {
@@ -253,54 +330,72 @@ public class UsageService : IUsageService
         return result;
     }
 
-    /// Loads the user's currently-active subscription with its plan. If
-    /// none exists (which shouldn't happen — registration auto-creates a
-    /// free subscription, and a backfill migration covers existing rows),
-    /// throw a 500 rather than silently let the action through. Free tier
-    /// limits are still limits.
-    private async Task<(Subscription, Plan)> GetActiveSubscriptionAsync(
+    private Task<(Subscription, Plan)> GetActiveSubscriptionAsync(
         Guid userId, CancellationToken ct)
+        => SubscriptionResolver.GetActiveForUserAsync(_db, userId, ct);
+
+    private async Task<Plan> GetActiveOrgPlanAsync(Guid organizationId, CancellationToken ct)
     {
         var sub = await _db.Subscriptions
+            .AsNoTracking()
             .Include(s => s.Plan)
-            .Where(s => s.UserId == userId
-                     && s.Status == SubscriptionStatus.Active)
+            .Where(s => s.OrganizationId == organizationId && s.Status == SubscriptionStatus.Active)
             .OrderByDescending(s => s.CreatedAt)
             .FirstOrDefaultAsync(ct);
 
-        if (sub is null)
+        if (sub?.Plan is null)
         {
             throw new InvalidOperationException(
-                $"User {userId} has no active subscription. Registration " +
-                "should auto-link to the free plan; check the backfill ran.");
+                "لا يوجد اشتراك نشط لهذه المؤسسة.");
         }
 
-        return (sub, sub.Plan);
+        return sub.Plan;
     }
 
-    /// Maps an action to the column on `plans` that holds its monthly
-    /// cap. Returns the cap (-1 = unlimited, 0 = blocked) and a debug
-    /// label.
-    ///
-    /// Each AI action gets its own column now (decision 2026-05-07);
-    /// the legacy shared `AiCallsLimit` is gone. Pro-only AI features
-    /// (Trend Analysis, Knowledge Graph, etc.) are *not* in this
-    /// enum — they're gated by boolean Plan flags inside the
-    /// controllers that own them, not by usage counters.
-    private static (int limit, string label) ResolveLimit(Plan plan, UsageActionType action) => action switch
+    /// Maps an action to the plan column cap. -1 = unlimited, 0 = blocked.
+    /// Download caps of -1 mean floor(10% * published_reports).
+    /// Org members never consume IndividualReadsLimit (always unlimited).
+    private async Task<int> ResolveLimitAsync(
+        Plan plan, UsageActionType action, CancellationToken ct)
     {
-        UsageActionType.ReportFullAccess     => (plan.IndividualReadsLimit, "reads"),
-        UsageActionType.ReportDownload       => (plan.IndividualDownloadsLimit, "downloads"),
-        UsageActionType.SaveReport           => (plan.IndividualSavedReportsLimit, "saved"),
+        if (plan.TargetType == PlanTargetType.Organization
+            && action == UsageActionType.ReportFullAccess)
+        {
+            return -1;
+        }
 
-        UsageActionType.AiSummarize          => (plan.AiSummarizeLimit, "ai_summarize"),
-        UsageActionType.AiKeyFindings        => (plan.AiKeyFindingsLimit, "ai_key_findings"),
-        UsageActionType.AiTranslate          => (plan.AiTranslateLimit, "ai_translate"),
-        UsageActionType.AiSimilarSuggestions => (plan.AiSimilarSuggestionsLimit, "ai_similar"),
-        UsageActionType.AiCompare            => (plan.AiCompareLimit, "ai_compare"),
+        if (action == UsageActionType.ReportDownload)
+        {
+            var raw = plan.TargetType == PlanTargetType.Organization
+                ? plan.ReportsDownloadLimit
+                : plan.IndividualDownloadsLimit;
+            return await ResolveDownloadLimitAsync(raw, ct);
+        }
 
-        _ => throw new ArgumentOutOfRangeException(nameof(action), action, null),
-    };
+        return action switch
+        {
+            UsageActionType.ReportFullAccess => plan.IndividualReadsLimit,
+            UsageActionType.SaveReport => plan.IndividualSavedReportsLimit,
+            UsageActionType.AiSummarize => plan.AiSummarizeLimit,
+            UsageActionType.AiKeyFindings => plan.AiKeyFindingsLimit,
+            UsageActionType.AiTranslate => plan.AiTranslateLimit,
+            UsageActionType.AiSimilarSuggestions => plan.AiSimilarSuggestionsLimit,
+            UsageActionType.AiCompare => plan.AiCompareLimit,
+            _ => throw new ArgumentOutOfRangeException(nameof(action), action, null),
+        };
+    }
+
+    private async Task<int> ResolveDownloadLimitAsync(int rawLimit, CancellationToken ct)
+    {
+        if (rawLimit == 0) return 0;
+        if (rawLimit != -1) return rawLimit;
+
+        var published = await CountPublishedReportsAsync(ct);
+        return (int)Math.Floor(published * DownloadPercentageOfDb);
+    }
+
+    private Task<int> CountPublishedReportsAsync(CancellationToken ct)
+        => _db.Reports.CountAsync(r => r.Status == ReportStatus.Published, ct);
 
     private static DateOnly CurrentBillingPeriodStart()
     {
@@ -308,25 +403,14 @@ public class UsageService : IUsageService
         return new DateOnly(now.Year, now.Month, 1);
     }
 
-    /// First instant of the next month (UTC) — when free counters reset.
     private static DateTime ResetsAt()
     {
         var now = DateTime.UtcNow;
-        var firstOfNextMonth = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(1);
-        return firstOfNextMonth;
+        return new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(1);
     }
 
-    /// Pack (userId, actionType) into two int4 keys for
-    /// pg_advisory_xact_lock(int4, int4). The first slot is a stable hash
-    /// of the userId; the second carries the actionType ordinal so two
-    /// different actions for the same user don't serialize.
     private static (int, int) AdvisoryLockKey(Guid userId, UsageActionType action)
     {
-        // GetHashCode on Guid is well-defined and stable within a runtime;
-        // we don't need cross-process determinism here — only that the
-        // same (userId, action) maps to the same key inside a single DB
-        // session window. Belt-and-braces: tag the high bit so we can
-        // tell our locks apart from anyone else's advisory locks.
         var slot1 = userId.GetHashCode();
         var slot2 = unchecked((int)0xA0000000) | (int)action;
         return (slot1, slot2);

@@ -24,8 +24,8 @@ public sealed record EditorBootstrapDto(
 /// Guids.
 public sealed record EditorPlanInfo(
     Guid PlanId,
-    /// "free" | "basic" | "premium" | "unknown". Frontend keys layout
-    /// branches on this string.
+    /// "free" | "annual" | "org_basic" | "org_pro" | "unknown". Frontend
+    /// keys layout branches on this string.
     string Tier,
     string PlanNameAr,
     string PlanNameEn);

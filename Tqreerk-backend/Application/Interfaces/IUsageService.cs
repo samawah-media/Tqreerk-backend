@@ -33,7 +33,8 @@ public interface IUsageService
         Guid? resourceId,
         Func<CancellationToken, Task<TResult>> actionFn,
         CancellationToken ct = default,
-        string? metadata = null);
+        string? metadata = null,
+        bool idempotentPerResource = false);
 
     /// Same as the generic overload but for void actions.
     Task EnsureWithinLimitAndConsumeAsync(
@@ -42,7 +43,20 @@ public interface IUsageService
         Guid? resourceId,
         Func<CancellationToken, Task> actionFn,
         CancellationToken ct = default,
-        string? metadata = null);
+        string? metadata = null,
+        bool idempotentPerResource = false);
+
+    /// Org plan: active members + pending invites must stay under UserLimit.
+    Task EnsureOrgCanAddMemberAsync(Guid organizationId, CancellationToken ct = default);
+
+    /// Org plan: accepting an invite when active seats are already at cap.
+    Task EnsureOrgCanAcceptMemberAsync(Guid organizationId, CancellationToken ct = default);
+
+    /// Org plan: reports created in the current calendar year vs ReportsUploadLimit.
+    Task EnsureOrgCanUploadReportAsync(Guid organizationId, CancellationToken ct = default);
+
+    /// Org plan: featured placements created this month vs FeaturedReportsMonthly.
+    Task EnsureOrgCanFeatureReportAsync(Guid organizationId, CancellationToken ct = default);
 
     /// Append a usage_tracking row WITHOUT enforcing the plan limit.
     /// For actions that should appear in the user's recent-activity feed
@@ -105,6 +119,14 @@ public sealed class UsageLimitExceededException : Exception
 /// Middleware translates to 403 with body:
 ///   { status, title, code = "AI_FEATURE_NOT_AVAILABLE",
 ///     featureName, currentPlanName, traceId }
+/// Thrown when the user/org has a subscription row but it is not Active
+/// (e.g. org awaiting payment). Middleware maps to 403 with
+/// code = SUBSCRIPTION_INACTIVE so the SPA can route to checkout.
+public sealed class SubscriptionInactiveException : Exception
+{
+    public SubscriptionInactiveException(string message) : base(message) { }
+}
+
 public sealed class PlanFeatureNotAvailableException : Exception
 {
     /// Plan column name (e.g. "HasKnowledgeGraph"). Frontend uses this

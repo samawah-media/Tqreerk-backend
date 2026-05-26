@@ -226,23 +226,14 @@ public class AnnotationsService : IAnnotationsService
         // seeded individual plan ids. Anything else (no row, an org
         // plan, a future plan we don't recognize) falls through to
         // "unknown" and the UI treats it as "no premium features".
-        var subscription = await _db.Subscriptions
-            .AsNoTracking()
-            .Include(s => s.Plan)
-            .Where(s => s.UserId == userId && s.Status == SubscriptionStatus.Active)
-            .OrderByDescending(s => s.CreatedAt)
-            .FirstOrDefaultAsync(ct);
-
-        var (tier, planNameAr, planNameEn, planId) = subscription?.PlanId switch
-        {
-            { } id when id == PlanIds.IndividualFree =>
-                ("free", subscription!.Plan.NameAr, subscription.Plan.NameEn, id),
-            { } id when id == PlanIds.IndividualBasic =>
-                ("basic", subscription!.Plan.NameAr, subscription.Plan.NameEn, id),
-            { } id when id == PlanIds.IndividualPremium =>
-                ("premium", subscription!.Plan.NameAr, subscription.Plan.NameEn, id),
-            _ => ("unknown", "—", "—", subscription?.PlanId ?? Guid.Empty),
-        };
+        var resolved = await SubscriptionResolver.TryGetActiveForUserAsync(_db, userId, ct);
+        var (tier, planNameAr, planNameEn, planId) = resolved is null
+            ? ("unknown", "—", "—", Guid.Empty)
+            : (
+                PlanTierHelper.ResolveTier(resolved.Value.Plan.Id),
+                resolved.Value.Plan.NameAr,
+                resolved.Value.Plan.NameEn,
+                resolved.Value.Plan.Id);
 
         var annotations = await ListAsync(userId, reportId, ct);
         var notes = await ListNotesAsync(userId, reportId, ct);

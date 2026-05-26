@@ -34,6 +34,7 @@ public class ExceptionHandlingMiddleware
                 or QuotaExceededException
                 or UsageLimitExceededException
                 or PlanFeatureNotAvailableException
+                or SubscriptionInactiveException
                 or Taqreerk.Application.Services.ForbiddenException))
             {
                 SentrySdk.CaptureException(ex);
@@ -75,6 +76,17 @@ public class ExceptionHandlingMiddleware
                 code = "AI_FEATURE_NOT_AVAILABLE",
                 featureName = feature.FeatureName,
                 currentPlanName = feature.CurrentPlanName,
+                traceId = context.TraceIdentifier,
+            });
+        }
+
+        if (ex is SubscriptionInactiveException)
+        {
+            return WriteJson(context, HttpStatusCode.Forbidden, isDevelopment, ex, new
+            {
+                status = (int)HttpStatusCode.Forbidden,
+                title = ex.Message,
+                code = "SUBSCRIPTION_INACTIVE",
                 traceId = context.TraceIdentifier,
             });
         }
