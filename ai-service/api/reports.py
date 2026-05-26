@@ -166,6 +166,28 @@ async def _ensure_ingested(
     }
 
 
+async def _get_inflight_job_id(
+    conn: AsyncConnection,
+    report_id: UUID,
+    job_type: str,
+) -> UUID | None:
+    """Return the latest Pending/Processing job id for report+type, if any."""
+    cur = await conn.execute(
+        '''
+        SELECT "Id"
+        FROM ai_jobs
+        WHERE "ReportId" = %s
+          AND "JobType" = %s
+          AND "Status" IN ('Pending', 'Processing')
+        ORDER BY "CreatedAt" DESC
+        LIMIT 1
+        ''',
+        [str(report_id), job_type],
+    )
+    row = await cur.fetchone()
+    return row[0] if row else None
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.post("/ingest", response_model=IngestResponse, status_code=202)
@@ -574,15 +596,21 @@ async def bulk_ingest(
     GET /api/ai/reports/jobs/{job_id} per row.
     """
     created: list[CreatedJob] = []
+    dispatch_jobs: list[tuple[str, str, str]] = []
     for item in body.items:
-        job_id = uuid4()
-        await insert_job(
-            conn,
-            job_id=job_id,
-            job_type="Ingestion",
-            report_id=item.report_id,
-            input_data={"file_url": item.file_url, "step": "ingest"},
-        )
+        in_flight = await _get_inflight_job_id(conn, item.report_id, "Ingestion")
+        if in_flight:
+            job_id = in_flight
+        else:
+            job_id = uuid4()
+            await insert_job(
+                conn,
+                job_id=job_id,
+                job_type="Ingestion",
+                report_id=item.report_id,
+                input_data={"file_url": item.file_url, "step": "ingest"},
+            )
+            dispatch_jobs.append((str(job_id), str(item.report_id), item.file_url))
         created.append(CreatedJob(job_id=job_id, report_id=item.report_id))
     await conn.commit()
 
@@ -593,12 +621,8 @@ async def bulk_ingest(
     # so Cloud Run autoscales horizontally to N pods without creating
     # queue depth it can't scale into. As each job finishes, the next
     # trigger fires.
-    asyncio.create_task(
-        _dispatch_bulk_ingest(
-            [(str(cj.job_id), str(item.report_id), item.file_url)
-             for cj, item in zip(created, body.items)],
-        ),
-    )
+    if dispatch_jobs:
+        asyncio.create_task(_dispatch_bulk_ingest(dispatch_jobs))
 
     return BulkJobsResponse(jobs=created)
 
@@ -662,14 +686,18 @@ async def bulk_summarize(
     """
     created: list[CreatedJob] = []
     for item in body.items:
-        job_id = uuid4()
-        await insert_job(
-            conn,
-            job_id=job_id,
-            job_type="Summarization",
-            report_id=item.report_id,
-            input_data={"step": "summarize"},
-        )
+        in_flight = await _get_inflight_job_id(conn, item.report_id, "Summarization")
+        if in_flight:
+            job_id = in_flight
+        else:
+            job_id = uuid4()
+            await insert_job(
+                conn,
+                job_id=job_id,
+                job_type="Summarization",
+                report_id=item.report_id,
+                input_data={"step": "summarize"},
+            )
         created.append(CreatedJob(job_id=job_id, report_id=item.report_id))
     await conn.commit()
 
@@ -688,14 +716,18 @@ async def bulk_translate(
     """Queue translate jobs for many reports. Returns immediately."""
     created: list[CreatedJob] = []
     for item in body.items:
-        job_id = uuid4()
-        await insert_job(
-            conn,
-            job_id=job_id,
-            job_type="Translation",
-            report_id=item.report_id,
-            input_data={"file_url": item.file_url, "output_prefix": item.output_prefix},
-        )
+        in_flight = await _get_inflight_job_id(conn, item.report_id, "Translation")
+        if in_flight:
+            job_id = in_flight
+        else:
+            job_id = uuid4()
+            await insert_job(
+                conn,
+                job_id=job_id,
+                job_type="Translation",
+                report_id=item.report_id,
+                input_data={"file_url": item.file_url, "output_prefix": item.output_prefix},
+            )
         created.append(CreatedJob(job_id=job_id, report_id=item.report_id))
     await conn.commit()
 
