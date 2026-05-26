@@ -12193,6 +12193,9 @@
             "type": "string",
             "nullable": true
           },
+          "coverImages": {
+            "$ref": "#/components/schemas/CoverImagesDto"
+          },
           "views": {
             "type": "integer",
             "format": "int64"
