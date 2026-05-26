@@ -435,20 +435,20 @@ public class BulkImportProcessor : BackgroundService
                 // Build a URL-safe slug: keep ASCII letters/digits, replace
                 // everything else (including Arabic) with hyphens, then append
                 // a short random suffix to guarantee uniqueness.
-                var slugBase = new string(item.SectorNameAr
+                var sectorSlugBase = new string(item.SectorNameAr
                     .ToLowerInvariant()
                     .Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')
                     .ToArray())
                     .Trim('-');
-                if (string.IsNullOrEmpty(slugBase)) slugBase = "sector";
-                var slug = $"{slugBase}-{Guid.NewGuid().ToString("N")[..8]}";
+                if (string.IsNullOrEmpty(sectorSlugBase)) sectorSlugBase = "sector";
+                var sectorSlug = $"{sectorSlugBase}-{Guid.NewGuid().ToString("N")[..8]}";
 
                 var newSector = new Sector
                 {
                     Id       = Guid.NewGuid(),
                     NameAr   = item.SectorNameAr,
                     NameEn   = item.SectorNameAr, // placeholder — admin can localise later
-                    Slug     = slug,
+                    Slug     = sectorSlug,
                     IsActive = true,
                     SortOrder = 0,
                 };
