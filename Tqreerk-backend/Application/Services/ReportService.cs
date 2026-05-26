@@ -175,7 +175,8 @@ public class ReportService : IReportService
             var like = $"%{query.Trim()}%";
             q = q.Where(r => EF.Functions.ILike(r.TitleAr, like)
                           || EF.Functions.ILike(r.TitleEn, like)
-                          || (r.Description != null && EF.Functions.ILike(r.Description, like)));
+                          || (r.Description != null && EF.Functions.ILike(r.Description, like))
+                          || r.Keywords.Any(k => EF.Functions.ILike(k.Keyword, like)));
         }
 
         var total = await q.CountAsync(ct);

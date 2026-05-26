@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PDFtoImage;
+using Taqreerk.Application.Common;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Settings;
 using Taqreerk.Domain.Entities;
@@ -187,54 +188,61 @@ public class BulkImportProcessor : BackgroundService
             .ToList();
         if (pendingItems.Count == 0) return;
 
-        var uploadedBatch = new List<BulkImportItem>(IngestFlushSize);
-
-        foreach (var item in pendingItems)
+        // Process items in parallel batches of IngestFlushSize. Each upload
+        // task (HTTP fetch + GCS write) runs concurrently in its own DI scope
+        // + DbContext (EF Core is not thread-safe). After each batch finishes
+        // we reload fresh state from the DB and immediately dispatch /bulk/ingest
+        // for that mini-batch — upload and GPU stages overlap.
+        foreach (var batch in pendingItems.Chunk(IngestFlushSize))
         {
             ct.ThrowIfCancellationRequested();
 
-            // Retry path: the item already has a Report row from a prior
-            // attempt. Skip re-fetching the PDF and queue it for ingest.
-            if (item.ReportId.HasValue)
+            // Detach batch items from the outer context so parallel tasks can
+            // reload them in their own scopes without a change-tracker conflict.
+            foreach (var item in batch)
+                db.Entry(item).State = EntityState.Detached;
+
+            await Task.WhenAll(batch.Select(item =>
+                UploadItemInNewScopeAsync(item, job.OrganizationId, job.CreatedByUserId, ct)));
+
+            // Re-query fresh state — each upload committed in its own scope.
+            var batchIds = batch.Select(i => i.Id).ToHashSet();
+            var freshItems = await db.BulkImportItems
+                .Where(i => batchIds.Contains(i.Id))
+                .Include(i => i.Report)
+                .ToListAsync(ct);
+
+            // Sync the in-memory job.Items collection so FinaliseJobIfDoneAsync
+            // and later AdvanceInFlightJobAsync see the correct per-item stages.
+            int newlyFailed = 0;
+            foreach (var fresh in freshItems)
             {
-                item.Stage = BulkImportItemStage.Uploading;
-                item.StartedAt = DateTime.UtcNow;
-                uploadedBatch.Add(item);
-            }
-            else
-            {
-                try
-                {
-                    await UploadItemAsync(db, files, item, job.OrganizationId, job.CreatedByUserId, ct);
-                    // UploadItemAsync may set Stage to Completed / Ingesting / Pending
-                    // (resume-from-existing paths). Only forward to ingest if the
-                    // normal Uploading path completed.
-                    if (item.Stage == BulkImportItemStage.Uploading)
-                        uploadedBatch.Add(item);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex,
-                        "[bulk-import] item={ItemId} upload failed: {Msg}",
-                        item.Id, ex.Message);
-                    MarkItemFailed(item, ex.Message);
-                    job.FailedCount++;
-                    await db.SaveChangesAsync(ct);
-                }
+                var mem = job.Items.FirstOrDefault(i => i.Id == fresh.Id);
+                if (mem == null) continue;
+                mem.Stage        = fresh.Stage;
+                mem.ReportId     = fresh.ReportId;
+                mem.Report       = fresh.Report;
+                mem.ErrorMessage = fresh.ErrorMessage;
+                mem.StartedAt    = fresh.StartedAt;
+                mem.CompletedAt  = fresh.CompletedAt;
+                if (fresh.Stage == BulkImportItemStage.Failed) newlyFailed++;
             }
 
-            // Pipeline flush: dispatch ingest for this mini-batch so AI
-            // processing begins while the remaining PDFs are still uploading.
-            if (uploadedBatch.Count >= IngestFlushSize)
+            // Reload job counters — resume paths in UploadItemInNewScopeAsync
+            // may have incremented CompletedCount atomically in the DB.
+            await db.Entry(job).ReloadAsync(ct);
+            if (newlyFailed > 0)
             {
+                job.FailedCount += newlyFailed;
+                await db.SaveChangesAsync(ct);
+            }
+
+            var uploadedBatch = freshItems
+                .Where(i => i.Stage == BulkImportItemStage.Uploading)
+                .ToList();
+            if (uploadedBatch.Count > 0)
                 await FlushBatchToIngestAsync(db, ai, storage, job, uploadedBatch, ct);
-                uploadedBatch.Clear();
-            }
         }
-
-        // Flush any remaining items that didn't fill a full batch.
-        if (uploadedBatch.Count > 0)
-            await FlushBatchToIngestAsync(db, ai, storage, job, uploadedBatch, ct);
 
         // Edge-case: every item failed at upload before any ingest was dispatched.
         await FinaliseJobIfDoneAsync(db, job, ct);
@@ -506,12 +514,103 @@ public class BulkImportProcessor : BackgroundService
                 .FirstOrDefaultAsync(ct);
         }
 
+        var keywordsRaw = BulkImportKeywordsCache.Get(item.JobId, item.RowIndex);
+        foreach (var kw in ReportKeywordHelper.ParseCommaSeparated(keywordsRaw))
+        {
+            report.Keywords.Add(new ReportKeyword
+            {
+                Keyword = kw,
+                Language = report.OriginalLanguage,
+            });
+        }
+
         db.Reports.Add(report);
         await db.SaveChangesAsync(ct);
 
         item.ReportId = report.Id;
         item.Report = report;
         await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Upload a single pending item in its own DI scope + DbContext so
+    /// <see cref="ProcessPendingItemsAsync"/> can run a full batch concurrently
+    /// with <see cref="Task.WhenAll"/> without sharing a non-thread-safe
+    /// <see cref="TaqreerkDbContext"/>.
+    ///
+    /// All state changes (Stage, ReportId, ErrorMessage) are persisted inside
+    /// this scope's transaction. The caller re-queries the outer db after
+    /// <see cref="Task.WhenAll"/> completes to get fresh item + job values.
+    /// </summary>
+    private async Task UploadItemInNewScopeAsync(
+        BulkImportItem item,
+        Guid orgId,
+        Guid uploaderUserId,
+        CancellationToken ct)
+    {
+        using var scope = _services.CreateScope();
+        var scopeDb    = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
+        var scopeFiles = scope.ServiceProvider.GetRequiredService<IFileStorage>();
+
+        // Resume path: item already has a Report row from a prior attempt.
+        // Check whether report_chunks exist to decide where to resume:
+        //   • chunks exist → ingest already succeeded; go straight to summarize
+        //     (sets Stage=Ingesting with no IngestJobId so AdvanceInFlightJobAsync
+        //     dispatches /bulk/summarize on the next tick — skips GPU re-ingest)
+        //   • no chunks → ingest never finished; re-run it (Stage=Uploading)
+        if (item.ReportId.HasValue)
+        {
+            var hasChunks = await scopeDb.ReportChunks
+                .AnyAsync(c => c.ReportId == item.ReportId.Value, ct);
+
+            if (hasChunks)
+            {
+                // Chunks are fine — only summarization failed. Park at Ingesting
+                // (no IngestJobId) so the processor skips GPU and re-summarizes.
+                _logger.LogInformation(
+                    "[bulk-import] item={ItemId} report={ReportId} has chunks — resuming at summarize",
+                    item.Id, item.ReportId);
+                await scopeDb.BulkImportItems
+                    .Where(i => i.Id == item.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(i => i.Stage, BulkImportItemStage.Ingesting)
+                        .SetProperty(i => i.IngestJobId, (Guid?)null)
+                        .SetProperty(i => i.SummarizeJobId, (Guid?)null)
+                        .SetProperty(i => i.ErrorMessage, (string?)null)
+                        .SetProperty(i => i.StartedAt, DateTime.UtcNow), ct);
+            }
+            else
+            {
+                // No chunks — ingest never finished. Re-run GPU pipeline.
+                await scopeDb.BulkImportItems
+                    .Where(i => i.Id == item.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(i => i.Stage, BulkImportItemStage.Uploading)
+                        .SetProperty(i => i.StartedAt, DateTime.UtcNow), ct);
+            }
+            return;
+        }
+
+        try
+        {
+            // Reload the item in this scope so EF can track it cleanly.
+            var trackedItem = await scopeDb.BulkImportItems
+                .FirstAsync(i => i.Id == item.Id, ct);
+            await UploadItemAsync(scopeDb, scopeFiles, trackedItem, orgId, uploaderUserId, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "[bulk-import] item={ItemId} upload failed: {Msg}", item.Id, ex.Message);
+            var msg = (ex.Message ?? string.Empty) is { Length: > 4000 } m
+                ? m[..4000] : ex.Message ?? string.Empty;
+            await scopeDb.BulkImportItems
+                .Where(i => i.Id == item.Id)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(i => i.Stage, BulkImportItemStage.Failed)
+                    .SetProperty(i => i.ErrorMessage, msg)
+                    .SetProperty(i => i.CompletedAt, DateTime.UtcNow), ct);
+        }
     }
 
     /// <summary>
@@ -737,6 +836,7 @@ public class BulkImportProcessor : BackgroundService
         job.Status = BulkImportStatus.Completed;
         job.CompletedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+        BulkImportKeywordsCache.ClearJob(job.Id);
 
         _logger.LogInformation(
             "[bulk-import] job={JobId} finished — completed={Completed} failed={Failed}",
@@ -772,6 +872,15 @@ public class BulkImportProcessor : BackgroundService
         item.ReportId = existingReportId;
         item.StartedAt = DateTime.UtcNow;
 
+        var lang = string.IsNullOrWhiteSpace(item.OriginalLanguage) ? "ar" : item.OriginalLanguage!;
+        await ReportKeywordHelper.ReplaceAsync(
+            db,
+            existingReportId,
+            lang,
+            ReportKeywordHelper.ParseCommaSeparated(
+                BulkImportKeywordsCache.Get(item.JobId, item.RowIndex)),
+            ct);
+
         if (hasChunks && hasContent)
         {
             // Already past summarize. Make sure the Report's Status
@@ -788,9 +897,14 @@ public class BulkImportProcessor : BackgroundService
             item.Stage = BulkImportItemStage.Completed;
             item.CompletedAt = DateTime.UtcNow;
             item.ErrorMessage = null;
-            // Bump the job's success counter — we won't pass through any
-            // later branch that would normally increment it.
-            item.Job.CompletedCount++;
+            // Bump the job's success counter atomically in the DB — we won't
+            // pass through any later branch that would normally increment it.
+            // ExecuteUpdateAsync works whether the Job nav-property is loaded
+            // or not (parallel upload tasks don't eagerly load it).
+            await db.BulkImportJobs
+                .Where(j => j.Id == item.JobId)
+                .ExecuteUpdateAsync(s => s.SetProperty(
+                    j => j.CompletedCount, j => j.CompletedCount + 1), ct);
             _logger.LogInformation(
                 "[bulk-import] item={ItemId} reused existing complete report={ReportId}",
                 item.Id, existingReportId);

@@ -62,4 +62,9 @@ public interface IReviewService
         Guid reportId,
         ReturnForEditDecisionRequest req,
         CancellationToken ct = default);
+
+    /// Soft-delete a report (sets <c>DeletedAt</c>). Staff with
+    /// <c>reports:delete</c> only — no active claim required. Removes any
+    /// featured-placement rows for the report.
+    Task DeleteAsync(Guid adminUserId, Guid reportId, CancellationToken ct = default);
 }

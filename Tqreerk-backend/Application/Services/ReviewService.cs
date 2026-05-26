@@ -398,6 +398,49 @@ public class ReviewService : IReviewService
             ?? throw new InvalidOperationException("Report disappeared after decision.");
     }
 
+    public async Task DeleteAsync(Guid adminUserId, Guid reportId, CancellationToken ct = default)
+    {
+        var report = await _db.Reports
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(r => r.Id == reportId, ct)
+            ?? throw new KeyNotFoundException("Report not found.");
+
+        if (report.DeletedAt is not null)
+            throw new KeyNotFoundException("Report not found.");
+
+        var beforeState = new
+        {
+            status = report.Status.ToString(),
+            titleAr = report.TitleAr,
+            organizationId = report.OrganizationId,
+        };
+
+        report.DeletedAt = DateTime.UtcNow;
+        report.ClaimedByReviewerId = null;
+        report.ClaimedAt = null;
+
+        var featured = await _db.FeaturedReports
+            .Where(f => f.ReportId == reportId)
+            .ToListAsync(ct);
+        if (featured.Count > 0)
+            _db.FeaturedReports.RemoveRange(featured);
+
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Admin {AdminId} soft-deleted report {ReportId}",
+            adminUserId, report.Id);
+
+        await _audit.LogAsync(
+            adminUserId: adminUserId,
+            actionType: "report.deleted",
+            targetEntityType: "report",
+            targetEntityId: report.Id,
+            beforeState: beforeState,
+            afterState: new { deletedAt = report.DeletedAt },
+            ct: ct);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /// Loads a report and ensures the calling reviewer is the active

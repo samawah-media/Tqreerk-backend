@@ -6220,11 +6220,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
+      "projectUniqueName": "c:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
       "projectName": "Tqreerk-backend",
-      "projectPath": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
+      "projectPath": "c:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
       "packagesPath": "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\obj\\",
+      "outputPath": "c:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\obj\\",
       "projectStyle": "PackageReference",
       "fallbackFolders": [
         "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
@@ -6354,13 +6354,5 @@
         "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.306/PortableRuntimeIdentifierGraph.json"
       }
     }
-  },
-  "logs": [
-    {
-      "code": "Undefined",
-      "level": "Warning",
-      "warningLevel": 1,
-      "message": "Problem reading the cache file C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\obj\\project.nuget.cache : '<' is an invalid start of a property name. Expected a '\"'. Path: $ | LineNumber: 2 | BytePositionInLine: 0."
-    }
-  ]
+  }
 }

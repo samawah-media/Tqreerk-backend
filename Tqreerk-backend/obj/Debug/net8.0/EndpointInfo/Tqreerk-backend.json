@@ -2251,6 +2251,37 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "AdminReviews"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/admin/reviews/{id}/approve": {
@@ -9324,6 +9355,10 @@
             "nullable": true
           },
           "reportType": {
+            "type": "string",
+            "nullable": true
+          },
+          "keywords": {
             "type": "string",
             "nullable": true
           },

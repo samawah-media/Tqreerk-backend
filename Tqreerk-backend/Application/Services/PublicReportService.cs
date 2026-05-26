@@ -421,7 +421,8 @@ public class PublicReportService : IPublicReportService
             q = q.Where(r =>
                 EF.Functions.ILike(r.TitleAr, like)
                 || EF.Functions.ILike(r.TitleEn, like)
-                || (r.Description != null && EF.Functions.ILike(r.Description, like)));
+                || (r.Description != null && EF.Functions.ILike(r.Description, like))
+                || r.Keywords.Any(k => EF.Functions.ILike(k.Keyword, like)));
         }
 
         if (except != FacetDim.Sectors && req.Sectors is { Length: > 0 })

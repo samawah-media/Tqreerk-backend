@@ -292,8 +292,11 @@ class ReportSummary(BaseModel):
     summary: list[str] = Field(min_length=3, max_length=7)
     key_findings: list[str]
     topics: list[str]
-    indicators: list[IndicatorItem] = []
-    trends: list[TrendItem] = []
+    # Hard caps so reports with hundreds of data points (e.g. comprehensive
+    # aid / financial reports) don't produce JSON that overflows max_output_tokens.
+    # The model is instructed to pick the most important ones in the prompt.
+    indicators: list[IndicatorItem] = Field(default=[], max_length=30)
+    trends: list[TrendItem]         = Field(default=[], max_length=15)
 
 
 # ── Plain text completion (used by Ragas judge) ─────────────────────────────

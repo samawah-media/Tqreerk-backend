@@ -72,9 +72,13 @@ class Settings(BaseSettings):
     # ONNX model files pre-downloaded at image build time (Dockerfile.gpu).
     # Empty string → RapidOCR falls back to its bundled English/CJK models
     # (no hallucination either way; just lower Arabic accuracy).
-    ocr_det_model_path: str = "/app/ocr_models/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx"
-    ocr_rec_model_path: str = "/app/ocr_models/languages/arabic/rec.onnx"
-    ocr_rec_keys_path:  str = "/app/ocr_models/languages/arabic/dict.txt"
+    # Multilingual detector + Arabic recognizer — all from SWHL/RapidOCR PP-OCRv3/multilingual/
+    # The multilingual detector handles Arabic, Latin, and mixed-script pages.
+    # arabic_dict.txt includes both Arabic Unicode glyphs AND Latin digits/letters
+    # so mixed Arabic+English documents are handled by a single rec model.
+    ocr_det_model_path: str = "/app/ocr_models/PP-OCRv3/multilingual/Multilingual_PP-OCRv3_det_infer.onnx"
+    ocr_rec_model_path: str = "/app/ocr_models/PP-OCRv3/multilingual/arabic_PP-OCRv3_rec_infer.onnx"
+    ocr_rec_keys_path:  str = "/app/ocr_models/PP-OCRv3/multilingual/arabic_dict.txt"
 
     # Drop recognition results whose confidence falls below this threshold.
     # RapidOCR's detection model already prevents hallucination on non-text
@@ -160,10 +164,10 @@ class Settings(BaseSettings):
 
     # ── /v1/ingest_full chunk cap ────────────────────────────────────────────
     # Safety ceiling so a malformed PDF can't produce a 50 MB embedding payload.
-    # 1000 chunks ≈ 3 MB of vectors + ~3 MB of text — well under any worker
-    # memory limit. Calls that would exceed are rejected with HTTP 413; caller
+    # 5000 chunks ≈ 15 MB of vectors + ~15 MB of text — still well under worker
+    # memory limits. Calls that would exceed are rejected with HTTP 413; caller
     # falls back to per-page mode.
-    ingest_full_max_chunks: int = 1000
+    ingest_full_max_chunks: int = 5000
 
     # ── Markdown export upload (Stage 1.5) ──────────────────────────────────
     # When enabled, /v1/ingest uploads the Docling markdown export to the
