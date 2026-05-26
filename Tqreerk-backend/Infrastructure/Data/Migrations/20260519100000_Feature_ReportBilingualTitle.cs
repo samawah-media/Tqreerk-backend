@@ -35,25 +35,11 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                 maxLength: 500,
                 nullable: true);
 
-            // 3) Backfill legacy rows: TitleEn = TitleAr. Admins refine later.
-            migrationBuilder.Sql(@"UPDATE reports SET ""TitleEn"" = ""TitleAr"" WHERE ""TitleEn"" IS NULL;");
-
-            // 4) Lock TitleEn as NOT NULL once every row has a value.
-            migrationBuilder.AlterColumn<string>(
-                name: "TitleEn",
-                table: "reports",
-                type: "character varying(500)",
-                maxLength: 500,
-                nullable: false,
-                oldClrType: typeof(string),
-                oldType: "character varying(500)",
-                oldMaxLength: 500,
-                oldNullable: true);
-
-            // 5) Rewrite the FTS trigger so the Arabic arm indexes TitleAr
-            //    and the English arm indexes TitleEn. ExtractedText keeps
-            //    feeding both arms because the pipeline doesn't separate
-            //    extracted languages today.
+            // 3) Rewrite the FTS trigger BEFORE any UPDATE so the trigger
+            //    body references the renamed column (TitleAr) and the new
+            //    column (TitleEn) rather than the old "Title". If we run
+            //    the backfill UPDATE first, the old trigger fires and crashes
+            //    with "record 'new' has no field 'Title'".
             migrationBuilder.Sql("""
                 CREATE OR REPLACE FUNCTION reports_search_vector_update()
                 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -69,6 +55,22 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                 END;
                 $$;
                 """);
+
+            // 4) Backfill legacy rows: TitleEn = TitleAr. Admins refine later.
+            //    The trigger now references TitleAr/TitleEn so this is safe.
+            migrationBuilder.Sql(@"UPDATE reports SET ""TitleEn"" = ""TitleAr"" WHERE ""TitleEn"" IS NULL;");
+
+            // 5) Lock TitleEn as NOT NULL once every row has a value.
+            migrationBuilder.AlterColumn<string>(
+                name: "TitleEn",
+                table: "reports",
+                type: "character varying(500)",
+                maxLength: 500,
+                nullable: false,
+                oldClrType: typeof(string),
+                oldType: "character varying(500)",
+                oldMaxLength: 500,
+                oldNullable: true);
 
             // 6) Backfill the search vector for every existing row by
             //    issuing a no-op update — the trigger fires and rebuilds

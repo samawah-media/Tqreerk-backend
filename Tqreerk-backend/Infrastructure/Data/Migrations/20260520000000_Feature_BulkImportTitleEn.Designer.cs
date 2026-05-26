@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using NpgsqlTypes;
@@ -12,9 +13,11 @@ using Taqreerk.Infrastructure.Data;
 namespace Taqreerk.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(TaqreerkDbContext))]
-    partial class TaqreerkDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260520000000_Feature_BulkImportTitleEn")]
+    partial class Feature_BulkImportTitleEn
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1407,51 +1410,7 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                             NameAr = "المحتوى البارز",
                             NameEn = "Featured",
                             SortOrder = 13
-                        },
-                        new
-                        {
-                            Id = new Guid("10000000-0000-0000-0000-00000000000e"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
-                            IsSystem = true,
-                            Key = "partners",
-                            NameAr = "الشركاء",
-                            NameEn = "Partners",
-                            SortOrder = 14
                         });
-                });
-
-            modelBuilder.Entity("Taqreerk.Domain.Entities.Partner", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("LogoUrl")
-                        .HasColumnType("text");
-
-                    b.Property<string>("NameAr")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("NameEn")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<int>("SortOrder")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("WebsiteUrl")
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("Partners");
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.PasswordResetToken", b =>
@@ -2228,46 +2187,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                             NameAr = "حذف",
                             NameEn = "Delete",
                             PageId = new Guid("10000000-0000-0000-0000-00000000000d")
-                        },
-                        new
-                        {
-                            Id = new Guid("20000000-0000-0000-0000-000000000e01"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
-                            IsSystem = true,
-                            Key = "view",
-                            NameAr = "عرض",
-                            NameEn = "View",
-                            PageId = new Guid("10000000-0000-0000-0000-00000000000e")
-                        },
-                        new
-                        {
-                            Id = new Guid("20000000-0000-0000-0000-000000000e02"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
-                            IsSystem = true,
-                            Key = "create",
-                            NameAr = "إنشاء",
-                            NameEn = "Create",
-                            PageId = new Guid("10000000-0000-0000-0000-00000000000e")
-                        },
-                        new
-                        {
-                            Id = new Guid("20000000-0000-0000-0000-000000000e03"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
-                            IsSystem = true,
-                            Key = "edit",
-                            NameAr = "تعديل",
-                            NameEn = "Edit",
-                            PageId = new Guid("10000000-0000-0000-0000-00000000000e")
-                        },
-                        new
-                        {
-                            Id = new Guid("20000000-0000-0000-0000-000000000e04"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc),
-                            IsSystem = true,
-                            Key = "delete",
-                            NameAr = "حذف",
-                            NameEn = "Delete",
-                            PageId = new Guid("10000000-0000-0000-0000-00000000000e")
                         });
                 });
 
@@ -3664,30 +3583,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         },
                         new
                         {
-                            RoleId = new Guid("30000000-0000-0000-0000-000000000001"),
-                            PermissionId = new Guid("20000000-0000-0000-0000-000000000e01"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
-                        },
-                        new
-                        {
-                            RoleId = new Guid("30000000-0000-0000-0000-000000000001"),
-                            PermissionId = new Guid("20000000-0000-0000-0000-000000000e02"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
-                        },
-                        new
-                        {
-                            RoleId = new Guid("30000000-0000-0000-0000-000000000001"),
-                            PermissionId = new Guid("20000000-0000-0000-0000-000000000e03"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
-                        },
-                        new
-                        {
-                            RoleId = new Guid("30000000-0000-0000-0000-000000000001"),
-                            PermissionId = new Guid("20000000-0000-0000-0000-000000000e04"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
-                        },
-                        new
-                        {
                             RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000101"),
                             CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
@@ -3948,30 +3843,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         {
                             RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000d04"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
-                        },
-                        new
-                        {
-                            RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
-                            PermissionId = new Guid("20000000-0000-0000-0000-000000000e01"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
-                        },
-                        new
-                        {
-                            RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
-                            PermissionId = new Guid("20000000-0000-0000-0000-000000000e02"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
-                        },
-                        new
-                        {
-                            RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
-                            PermissionId = new Guid("20000000-0000-0000-0000-000000000e03"),
-                            CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
-                        },
-                        new
-                        {
-                            RoleId = new Guid("30000000-0000-0000-0000-000000000002"),
-                            PermissionId = new Guid("20000000-0000-0000-0000-000000000e04"),
                             CreatedAt = new DateTime(2026, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
                         },
                         new
