@@ -34,6 +34,7 @@ public record BulkImportItemDto(
     string? SectorNameAr,
     string? CountryNameAr,
     string? ReportType,
+    string? Keywords,
     Guid? ReportId,
     string? ReportSlug,
     string? ErrorMessage,

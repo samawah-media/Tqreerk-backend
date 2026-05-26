@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using ClosedXML.Excel;
 using Microsoft.EntityFrameworkCore;
+using Taqreerk.Application.Common;
 using Taqreerk.Application.DTOs.Admin;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Domain.Entities;
@@ -38,6 +39,7 @@ public class BulkImportService : IBulkImportService
         "authors",
         "original_language",
         "source",
+        "keywords",
     };
 
     private readonly TaqreerkDbContext _db;
@@ -104,6 +106,7 @@ public class BulkImportService : IBulkImportService
                 StartedAt = stage == BulkImportItemStage.Failed ? DateTime.UtcNow : null,
                 CompletedAt = stage == BulkImportItemStage.Failed ? DateTime.UtcNow : null,
             });
+            BulkImportKeywordsCache.Set(job.Id, idx, NullIfBlank(row.Keywords));
         }
 
         // Pre-populate counters — rows that failed validation up-front
@@ -153,14 +156,51 @@ public class BulkImportService : IBulkImportService
 
         if (job is null) return null;
 
+        var reportIds = job.Items
+            .Where(i => i.ReportId.HasValue)
+            .Select(i => i.ReportId!.Value)
+            .Distinct()
+            .ToList();
+
+        Dictionary<Guid, string> keywordsByReport;
+        if (reportIds.Count == 0)
+        {
+            keywordsByReport = new Dictionary<Guid, string>();
+        }
+        else
+        {
+            var keywordRows = await _db.ReportKeywords
+                .AsNoTracking()
+                .Where(k => reportIds.Contains(k.ReportId))
+                .OrderBy(k => k.ReportId)
+                .ThenBy(k => k.Keyword)
+                .Select(k => new { k.ReportId, k.Keyword })
+                .ToListAsync(ct);
+
+            keywordsByReport = keywordRows
+                .GroupBy(k => k.ReportId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => string.Join("، ", g.Select(x => x.Keyword)));
+        }
+
         var items = job.Items
-            .Select(i => new BulkImportItemDto(
-                i.Id, i.RowIndex, i.Stage.ToString(),
-                i.Title, i.TitleEn, i.FileUrl, i.Source, i.Authors,
-                i.OriginalLanguage, i.PublicationYear,
-                i.SectorNameAr, i.CountryNameAr, i.ReportType,
-                i.ReportId, i.ReportSlug,
-                i.ErrorMessage, i.StartedAt, i.CompletedAt))
+            .Select(i =>
+            {
+                string? keywords = null;
+                if (i.ReportId is { } rid && keywordsByReport.TryGetValue(rid, out var saved))
+                    keywords = saved;
+                else
+                    keywords = BulkImportKeywordsCache.Get(jobId, i.RowIndex);
+
+                return new BulkImportItemDto(
+                    i.Id, i.RowIndex, i.Stage.ToString(),
+                    i.Title, i.TitleEn, i.FileUrl, i.Source, i.Authors,
+                    i.OriginalLanguage, i.PublicationYear,
+                    i.SectorNameAr, i.CountryNameAr, i.ReportType, keywords,
+                    i.ReportId, i.ReportSlug,
+                    i.ErrorMessage, i.StartedAt, i.CompletedAt);
+            })
             .ToList();
 
         return new BulkImportJobDetailDto(
@@ -216,6 +256,7 @@ public class BulkImportService : IBulkImportService
         sheet.Cell(2, 8).Value = "أحمد محمد، فاطمة علي";
         sheet.Cell(2, 9).Value = "ar";
         sheet.Cell(2, 10).Value = "البنك الدولي";
+        sheet.Cell(2, 11).Value = "اقتصاد، نمو، استثمار";
 
         sheet.Columns().AdjustToContents();
 
@@ -308,7 +349,8 @@ public class BulkImportService : IBulkImportService
         int? PublicationYear,
         string? Authors,
         string? OriginalLanguage,
-        string? Source);
+        string? Source,
+        string? Keywords);
 
     private List<ParsedRow> ParseExcel(Stream excelStream)
     {
@@ -382,7 +424,8 @@ public class BulkImportService : IBulkImportService
                     ReadIntCell(row, headerMap, "publication_year"),
                     ReadCell(row, headerMap, "authors"),
                     ReadCell(row, headerMap, "original_language"),
-                    ReadCell(row, headerMap, "source")));
+                    ReadCell(row, headerMap, "source"),
+                    ReadCell(row, headerMap, "keywords")));
 
                 if (rows.Count > MaxRowsPerJob)
                 {

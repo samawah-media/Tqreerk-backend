@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PDFtoImage;
+using Taqreerk.Application.Common;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Settings;
 using Taqreerk.Domain.Entities;
@@ -438,6 +439,16 @@ public class BulkImportProcessor : BackgroundService
                 .FirstOrDefaultAsync(ct);
         }
 
+        var keywordsRaw = BulkImportKeywordsCache.Get(item.JobId, item.RowIndex);
+        foreach (var kw in ReportKeywordHelper.ParseCommaSeparated(keywordsRaw))
+        {
+            report.Keywords.Add(new ReportKeyword
+            {
+                Keyword = kw,
+                Language = report.OriginalLanguage,
+            });
+        }
+
         db.Reports.Add(report);
         await db.SaveChangesAsync(ct);
 
@@ -662,6 +673,7 @@ public class BulkImportProcessor : BackgroundService
         job.Status = BulkImportStatus.Completed;
         job.CompletedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+        BulkImportKeywordsCache.ClearJob(job.Id);
 
         _logger.LogInformation(
             "[bulk-import] job={JobId} finished — completed={Completed} failed={Failed}",
@@ -696,6 +708,15 @@ public class BulkImportProcessor : BackgroundService
 
         item.ReportId = existingReportId;
         item.StartedAt = DateTime.UtcNow;
+
+        var lang = string.IsNullOrWhiteSpace(item.OriginalLanguage) ? "ar" : item.OriginalLanguage!;
+        await ReportKeywordHelper.ReplaceAsync(
+            db,
+            existingReportId,
+            lang,
+            ReportKeywordHelper.ParseCommaSeparated(
+                BulkImportKeywordsCache.Get(item.JobId, item.RowIndex)),
+            ct);
 
         if (hasChunks && hasContent)
         {

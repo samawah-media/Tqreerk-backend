@@ -9327,6 +9327,10 @@
             "type": "string",
             "nullable": true
           },
+          "keywords": {
+            "type": "string",
+            "nullable": true
+          },
           "reportId": {
             "type": "string",
             "format": "uuid",
