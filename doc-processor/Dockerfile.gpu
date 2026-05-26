@@ -73,18 +73,21 @@ WORKDIR /app
 # files are present when the container first starts.
 #
 # Florence-2: snapshot_download fetches the whole repo into HF_HOME.
-# RapidOCR Arabic: download three files from SWHL/RapidOCR on HuggingFace —
-#   PP-OCRv4_det_infer.onnx       universal DB text detector
-#   arabic_PP-OCRv3_rec_infer.onnx Arabic CRNN recognition model
-#   arabic_dict.txt                Arabic character set (keys file)
+# RapidOCR models:
+#   ch_PP-OCRv4_det_infer.onnx     — universal DB text detector
+#                                    source: SWHL/RapidOCR subfolder PP-OCRv4
+#   arabic_PP-OCRv3_rec_infer.onnx — Arabic CRNN recognition model
+#                                    source: Ooredoo-Group/rapidocr-models
+#   arabic_dict.txt                — Arabic character set (keys file)
+#                                    source: PaddleOCR upstream GitHub
 # RapidOCR runs on CPU at inference time — no GPU needed, no TORCH_DEVICE trick.
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download(repo_id='microsoft/Florence-2-base-ft')"
 
 RUN mkdir -p /app/ocr_models \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='PP-OCRv4_det_infer.onnx', local_dir='/app/ocr_models'); print('downloaded PP-OCRv4_det_infer.onnx')" \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_PP-OCRv3_rec_infer.onnx', local_dir='/app/ocr_models'); print('downloaded arabic_PP-OCRv3_rec_infer.onnx')" \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_dict.txt', local_dir='/app/ocr_models'); print('downloaded arabic_dict.txt')" \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='ch_PP-OCRv4_det_infer.onnx', subfolder='PP-OCRv4', local_dir='/app/ocr_models'); print('downloaded ch_PP-OCRv4_det_infer.onnx')" \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='Ooredoo-Group/rapidocr-models', filename='arabic_PP-OCRv3_rec_infer.onnx', local_dir='/app/ocr_models'); print('downloaded arabic_PP-OCRv3_rec_infer.onnx')" \
+    && python -c "import urllib.request; urllib.request.urlretrieve('https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/release/2.7/ppocr/utils/dict/arabic_dict.txt', '/app/ocr_models/arabic_dict.txt'); print('downloaded arabic_dict.txt')" \
     && echo "RapidOCR Arabic models ready"
 
 COPY . .
