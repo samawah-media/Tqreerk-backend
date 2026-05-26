@@ -81,21 +81,11 @@ WORKDIR /app
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download(repo_id='microsoft/Florence-2-base-ft')"
 
-RUN python - <<'PYEOF'
-import os
-from huggingface_hub import hf_hub_download
-
-os.makedirs("/app/ocr_models", exist_ok=True)
-for fname in [
-    "PP-OCRv4_det_infer.onnx",
-    "arabic_PP-OCRv3_rec_infer.onnx",
-    "arabic_dict.txt",
-]:
-    hf_hub_download(repo_id="SWHL/RapidOCR", filename=fname,
-                    local_dir="/app/ocr_models")
-    print(f"downloaded {fname}")
-print("RapidOCR Arabic models ready")
-PYEOF
+RUN mkdir -p /app/ocr_models \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='PP-OCRv4_det_infer.onnx', local_dir='/app/ocr_models'); print('downloaded PP-OCRv4_det_infer.onnx')" \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_PP-OCRv3_rec_infer.onnx', local_dir='/app/ocr_models'); print('downloaded arabic_PP-OCRv3_rec_infer.onnx')" \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_dict.txt', local_dir='/app/ocr_models'); print('downloaded arabic_dict.txt')" \
+    && echo "RapidOCR Arabic models ready"
 
 COPY . .
 
