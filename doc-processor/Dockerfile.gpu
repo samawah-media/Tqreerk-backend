@@ -2,14 +2,16 @@
 #
 # Stack:
 #   • Docling      — layout, reading order, tables (TableFormer)
-#   • Florence-2   — figure captioning (transformers)
-#   • Surya OCR    — Arabic + English text recognition (detection + recognition)
+#   • Gemini Vision— figure captioning (Vertex AI, no local model)
+#   • RapidOCR     — Arabic + English text recognition (ONNX, CPU, ~80 ms/crop)
 #   • pix2tex      — formula image → LaTeX
 #
-# Runs on Cloud Run with NVIDIA L4 (24 GB). All four models fit in VRAM at the
-# same time so we load them once at startup and keep them warm. With
-# min-instances=0, idle cost is zero; the trade-off is a 30-90 s cold start
-# while CUDA initialises and weights stream into VRAM.
+# OCR runs on CPU (ONNX runtime) — saves ~2 GB VRAM vs Surya (PyTorch) with
+# no latency regression: RapidOCR ~20-80 ms/crop vs Surya ~80-300 ms on GPU.
+# Docling + bge-m3 + reranker occupy ~11 GB of the L4's 24 GB.
+#
+# Cold start: ~30-60 s (CUDA init + weight transfer to VRAM).
+# min-instances=0 → idle cost is zero.
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
 # Install build tools and pip-install everything into a venv. The venv is what
@@ -67,17 +69,33 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 
 # Pre-download model weights so cold start only pays for VRAM transfer, not
-# network I/O. snapshot_download fetches files only; the actual model init
-# (which needs a real CUDA driver) happens at container startup.
+# network I/O. All downloads happen here in the runtime stage so the cached
+# files are present when the container first starts.
 #
-# Surya pulls its detection + recognition checkpoints from HF via transformers,
-# so importing the predictors here is enough to populate HF_HOME. We force
-# TORCH_DEVICE=cpu during the build step because the builder has no GPU —
-# weights still land in the cache and the runtime container re-uses them on
-# CUDA at startup.
+# Florence-2: snapshot_download fetches the whole repo into HF_HOME.
+# RapidOCR Arabic: download three files from SWHL/RapidOCR on HuggingFace —
+#   PP-OCRv4_det_infer.onnx       universal DB text detector
+#   arabic_PP-OCRv3_rec_infer.onnx Arabic CRNN recognition model
+#   arabic_dict.txt                Arabic character set (keys file)
+# RapidOCR runs on CPU at inference time — no GPU needed, no TORCH_DEVICE trick.
 RUN python -c "from huggingface_hub import snapshot_download; \
-    snapshot_download(repo_id='microsoft/Florence-2-base-ft')" \
-    && TORCH_DEVICE=cpu python -c "from surya.detection import DetectionPredictor; from surya.recognition import RecognitionPredictor; DetectionPredictor(); RecognitionPredictor()"
+    snapshot_download(repo_id='microsoft/Florence-2-base-ft')"
+
+RUN python - <<'PYEOF'
+import os
+from huggingface_hub import hf_hub_download
+
+os.makedirs("/app/ocr_models", exist_ok=True)
+for fname in [
+    "PP-OCRv4_det_infer.onnx",
+    "arabic_PP-OCRv3_rec_infer.onnx",
+    "arabic_dict.txt",
+]:
+    hf_hub_download(repo_id="SWHL/RapidOCR", filename=fname,
+                    local_dir="/app/ocr_models")
+    print(f"downloaded {fname}")
+print("RapidOCR Arabic models ready")
+PYEOF
 
 COPY . .
 
