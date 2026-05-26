@@ -20,7 +20,7 @@ namespace Taqreerk.Application.Services;
 public class BulkImportService : IBulkImportService
 {
     /// <summary>Hard cap per Excel — matches the stated requirement.</summary>
-    public const int MaxRowsPerJob = 1000;
+    public const int MaxRowsPerJob = 5000;
 
     /// <summary>
     /// Column headers the parser expects (exactly, case-sensitive). The
