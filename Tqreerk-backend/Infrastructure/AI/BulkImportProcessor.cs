@@ -588,6 +588,13 @@ public class BulkImportProcessor : BackgroundService
                 }
             }
 
+            // Persist Failed states immediately — before the BulkSummarizeAsync
+            // HTTP call below. Without this early save, a transient network or
+            // DB error on the summarize call rolls back BOTH the Failed states
+            // AND the SummarizeJobIds in one lost SaveChanges, leaving all items
+            // stuck in Ingesting forever.
+            await db.SaveChangesAsync(ct);
+
             // Resume path: chunks already exist, so we just need to fire
             // /bulk/summarize for these reports without waiting on an
             // ingest poll. They join the same queue as freshly-completed
