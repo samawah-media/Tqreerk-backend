@@ -40,8 +40,8 @@ public class BulkImportProcessor : BackgroundService
 
     /// <summary>Hard cap per fetch so a misconfigured URL pointing at a 5 GB
     /// file doesn't OOM the worker. Mirrors the manual-upload cap in
-    /// ReportsController.</summary>
-    private const long MaxFetchBytes = 50 * 1024 * 1024;
+    /// ReportsController (200 MB).</summary>
+    private const long MaxFetchBytes = 200L * 1024 * 1024;
 
     /// Named client key registered in ServiceExtensions; we resolve via
     /// the factory each time we fetch so HttpMessageHandler lifetime
@@ -357,7 +357,7 @@ public class BulkImportProcessor : BackgroundService
                 total += read;
                 if (total > MaxFetchBytes)
                     throw new InvalidOperationException(
-                        $"حجم الملف يتجاوز الحد المسموح به (50 MB).");
+                        $"حجم الملف يتجاوز الحد المسموح به ({MaxFetchBytes / 1024 / 1024} MB).");
                 ms.Write(buffer, 0, read);
             }
             pdfBytes = ms.ToArray();
