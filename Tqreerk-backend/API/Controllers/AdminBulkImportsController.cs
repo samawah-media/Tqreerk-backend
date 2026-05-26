@@ -21,10 +21,11 @@ namespace Taqreerk.API.Controllers;
 [RequirePlatformStaff]
 public class AdminBulkImportsController : ControllerBase
 {
-    /// <summary>50 MB headroom — a 1000-row bulk-import sheet with text-only
+    /// <summary>200 MB headroom — a 1000-row bulk-import sheet with text-only
     /// columns is typically under 5 MB, but Excel files balloon with embedded
-    /// styles/RTL formatting so we keep an order-of-magnitude buffer.</summary>
-    private const long MaxExcelBytes = 50 * 1024 * 1024;
+    /// styles/RTL formatting so we keep a generous buffer. Raised from 50 MB
+    /// to accommodate larger sheets (e.g. 101 MB uploads).</summary>
+    private const long MaxExcelBytes = 200L * 1024 * 1024;
 
     private readonly IBulkImportService _bulk;
 
