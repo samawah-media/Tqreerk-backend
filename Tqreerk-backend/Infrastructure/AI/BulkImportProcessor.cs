@@ -49,7 +49,7 @@ public class BulkImportProcessor : BackgroundService
     /// processing begins while the remaining PDFs are still being fetched
     /// and uploaded — overlapping upload and AI stages rather than waiting
     /// for all uploads to finish first.</summary>
-    private const int IngestFlushSize = 5;
+    private const int IngestFlushSize = 3;
 
     /// Named client key registered in ServiceExtensions; we resolve via
     /// the factory each time we fetch so HttpMessageHandler lifetime

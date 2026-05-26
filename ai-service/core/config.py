@@ -213,7 +213,7 @@ class Settings(BaseSettings):
     # Each job is a Gemini network call (I/O-bound); asyncio.gather runs them
     # in parallel threads via asyncio.to_thread, so the only limit is Gemini
     # RPM quota (Gemini 2.5 Flash = 1000 RPM >> 5 concurrent jobs).
-    worker_concurrency: int        = 5
+    worker_concurrency: int        = 3
 
     # ── doc-processor (GPU pipeline) ─────────────────────────────────────────
     # Optional alternative extractor for ingest. When enabled, ingest calls
