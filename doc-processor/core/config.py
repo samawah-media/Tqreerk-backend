@@ -72,9 +72,13 @@ class Settings(BaseSettings):
     # ONNX model files pre-downloaded at image build time (Dockerfile.gpu).
     # Empty string → RapidOCR falls back to its bundled English/CJK models
     # (no hallucination either way; just lower Arabic accuracy).
-    ocr_det_model_path: str = "/app/ocr_models/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx"
-    ocr_rec_model_path: str = "/app/ocr_models/languages/arabic/rec.onnx"
-    ocr_rec_keys_path:  str = "/app/ocr_models/languages/arabic/dict.txt"
+    # Multilingual detector + Arabic recognizer — all from SWHL/RapidOCR PP-OCRv3/multilingual/
+    # The multilingual detector handles Arabic, Latin, and mixed-script pages.
+    # arabic_dict.txt includes both Arabic Unicode glyphs AND Latin digits/letters
+    # so mixed Arabic+English documents are handled by a single rec model.
+    ocr_det_model_path: str = "/app/ocr_models/PP-OCRv3/multilingual/Multilingual_PP-OCRv3_det_infer.onnx"
+    ocr_rec_model_path: str = "/app/ocr_models/PP-OCRv3/multilingual/arabic_PP-OCRv3_rec_infer.onnx"
+    ocr_rec_keys_path:  str = "/app/ocr_models/PP-OCRv3/multilingual/arabic_dict.txt"
 
     # Drop recognition results whose confidence falls below this threshold.
     # RapidOCR's detection model already prevents hallucination on non-text

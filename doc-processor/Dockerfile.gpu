@@ -85,10 +85,10 @@ RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download(repo_id='microsoft/Florence-2-base-ft')"
 
 RUN mkdir -p /app/ocr_models \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='ch_PP-OCRv4_det_infer.onnx', subfolder='PP-OCRv4', local_dir='/app/ocr_models'); print('downloaded ch_PP-OCRv4_det_infer.onnx')" \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='monkt/paddleocr-onnx', filename='rec.onnx', subfolder='languages/arabic', local_dir='/app/ocr_models'); print('downloaded arabic rec.onnx')" \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='monkt/paddleocr-onnx', filename='dict.txt', subfolder='languages/arabic', local_dir='/app/ocr_models'); print('downloaded arabic dict.txt')" \
-    && echo "RapidOCR Arabic models ready"
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='Multilingual_PP-OCRv3_det_infer.onnx', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded Multilingual_PP-OCRv3_det_infer.onnx')" \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_PP-OCRv3_rec_infer.onnx', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded arabic_PP-OCRv3_rec_infer.onnx')" \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='SWHL/RapidOCR', filename='arabic_dict.txt', subfolder='PP-OCRv3/multilingual', local_dir='/app/ocr_models'); print('downloaded arabic_dict.txt')" \
+    && echo "RapidOCR Arabic+multilingual models ready"
 
 COPY . .
 

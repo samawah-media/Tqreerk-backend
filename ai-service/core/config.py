@@ -236,7 +236,7 @@ class Settings(BaseSettings):
     # doc-processor's --max-instances so we saturate available pods without
     # creating queue depth Cloud Run can't scale into. Each in-flight
     # trigger holds an HTTP connection open until that job completes.
-    doc_processor_max_concurrency: int = 2
+    doc_processor_max_concurrency: int = 3
     # Above this size we render pages individually instead of sending the
     # whole PDF — Cloud Run's 32 MB request body limit applies, and base64
     # adds ~33% overhead. 22 MB raw → ~29 MB on the wire, comfortably under.
