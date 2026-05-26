@@ -643,4 +643,8 @@ def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSu
             ),
         ),
     )
-    return response.parsed   # already a typed ReportSummary instance — no manual JSON parse
+    # response.parsed is None when the SDK's internal parsing fails silently.
+    # Fall back to manual parse so the error surface is the same as before.
+    if response.parsed is not None:
+        return response.parsed
+    return ReportSummary.model_validate_json(response.text)
