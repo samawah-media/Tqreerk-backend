@@ -741,22 +741,41 @@ public class BulkImportProcessor : BackgroundService
 
             if (readyForSummarize.Count > 0)
             {
+                // Group by ReportId before dispatching: two items can share a
+                // ReportId when the resume-from-retry path and a freshly-
+                // completed ingest path both land in readyForSummarize on the
+                // same tick. Sending duplicate IDs to BulkSummarizeAsync makes
+                // the AI service return two rows for the same report, causing
+                // ToDictionary to throw "same key already added". Send each
+                // ReportId once; assign the returned SummarizeJobId to ALL items
+                // that share that report so none get left behind.
+                var byReportId = readyForSummarize
+                    .Where(i => i.ReportId.HasValue)
+                    .GroupBy(i => i.ReportId!.Value)
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
                 try
                 {
-                    var ids = readyForSummarize.Select(i => i.ReportId!.Value).ToList();
+                    var ids = byReportId.Keys.ToList();
                     var summarizeJobs = await ai.BulkSummarizeAsync(ids, ct);
-                    var byReport = summarizeJobs.ToDictionary(j => j.ReportId, j => j.JobId);
-                    foreach (var item in readyForSummarize)
+                    var jobByReport = summarizeJobs.ToDictionary(j => j.ReportId, j => j.JobId);
+                    foreach (var (reportId, items) in byReportId)
                     {
-                        if (byReport.TryGetValue(item.ReportId!.Value, out var sjId))
+                        if (jobByReport.TryGetValue(reportId, out var sjId))
                         {
-                            item.SummarizeJobId = sjId;
-                            item.Stage = BulkImportItemStage.Summarizing;
+                            foreach (var item in items)
+                            {
+                                item.SummarizeJobId = sjId;
+                                item.Stage = BulkImportItemStage.Summarizing;
+                            }
                         }
                         else
                         {
-                            MarkItemFailed(item, "AI service did not accept the summarize request.");
-                            job.FailedCount++;
+                            foreach (var item in items)
+                            {
+                                MarkItemFailed(item, "AI service did not accept the summarize request.");
+                                job.FailedCount++;
+                            }
                         }
                     }
                 }
