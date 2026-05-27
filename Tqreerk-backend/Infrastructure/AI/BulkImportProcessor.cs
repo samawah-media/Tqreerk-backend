@@ -48,16 +48,16 @@ public class BulkImportProcessor : BackgroundService
     /// we immediately dispatch /bulk/ingest for that mini-batch so GPU
     /// processing begins while the remaining PDFs are still being fetched
     /// and uploaded — overlapping upload and AI stages rather than waiting
-    /// for all uploads to finish first.</summary>
-    private const int IngestFlushSize = 3;
+    /// for all uploads to finish first.
+    /// Matches the number of GPU instances (6) so each flush saturates the
+    /// full GPU fleet in one /bulk/ingest call.</summary>
+    private const int IngestFlushSize = 6;
 
     /// <summary>Maximum number of upload batches to process in a single tick.
     /// Each batch = <see cref="IngestFlushSize"/> items uploaded in parallel.
-    /// Capping at 5 (= 15 items per tick) ensures <see cref="AdvanceInFlightJobAsync"/>
-    /// runs every 10 s even for large imports, so items whose ingest already
-    /// completed can advance to Summarizing without waiting for the entire
-    /// upload phase to finish. Remaining Pending items are picked up on the
-    /// next tick.</summary>
+    /// 5 batches × 6 items = 30 items per upload tick. The advance loop runs
+    /// in a separate Task so AdvanceInFlightJobAsync still fires every 10 s
+    /// regardless of how long these uploads take.</summary>
     private const int MaxPendingBatchesPerTick = 5;
 
     /// Named client key registered in ServiceExtensions; we resolve via
