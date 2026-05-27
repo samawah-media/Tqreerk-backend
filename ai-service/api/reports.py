@@ -626,6 +626,33 @@ async def bulk_ingest(
     return BulkJobsResponse(jobs=created)
 
 
+# Module-level semaphore shared across ALL _dispatch_bulk_ingest calls.
+#
+# Why this matters: the .NET backend calls /bulk/ingest once per upload batch
+# (IngestFlushSize items per batch). With MaxPendingBatchesPerTick=5 batches per
+# tick, up to 5 separate /bulk/ingest requests arrive in quick succession. Each
+# spawns an asyncio.create_task(_dispatch_bulk_ingest(...)). If every call created
+# its own Semaphore(N), 5 tasks × N = 5N simultaneous GPU triggers would fire,
+# flooding the doc-processor with way more requests than it has instances.
+#
+# A shared module-level semaphore means ALL dispatch tasks (from any number of
+# concurrent /bulk/ingest calls) compete for the same N slots — total in-flight
+# GPU triggers never exceeds doc_processor_max_concurrency regardless of how many
+# batches arrived.
+#
+# asyncio.Semaphore() is safe to create at module-import time in Python 3.10+
+# (no longer requires a running event loop). The first actual acquire/release
+# happens inside an async context where the loop is already running.
+_ingest_sem: asyncio.Semaphore | None = None
+
+
+def _get_ingest_sem() -> asyncio.Semaphore:
+    global _ingest_sem
+    if _ingest_sem is None:
+        _ingest_sem = asyncio.Semaphore(settings.doc_processor_max_concurrency)
+    return _ingest_sem
+
+
 async def _dispatch_bulk_ingest(
     jobs: list[tuple[str, str, str]],
 ) -> None:
@@ -635,13 +662,14 @@ async def _dispatch_bulk_ingest(
     HTTP response (with the list of job_ids) doesn't have to wait for
     the actual pipelines to finish. Each trigger holds its httpx
     connection open until the doc-processor finishes that job; the
-    semaphore caps how many run in parallel.
+    shared module-level semaphore caps how many run in parallel across
+    ALL concurrent /bulk/ingest calls.
 
     Failures are logged and the job is left Pending — the
     _pending_job_watcher (main.py) re-fires it within 60 s, so this
     function doesn't need its own retry logic.
     """
-    sem = asyncio.Semaphore(settings.doc_processor_max_concurrency)
+    sem = _get_ingest_sem()
     started = time.time()
     logger.info(
         "[bulk_ingest] dispatching %d jobs with concurrency=%d",
