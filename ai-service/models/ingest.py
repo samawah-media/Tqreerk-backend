@@ -43,18 +43,10 @@ class IndicatorItem(BaseModel):
     context: str | None = None
 
 
-class TrendItem(BaseModel):
-    topic: str
-    direction: str
-    time_span: str | None = None
-    magnitude: str | None = None
-    explanation: str | None = None
-
-
 class SummarizeResponse(BaseModel):
-    """Combined summary + insights output. One Gemini call now produces all
-    five fields (summary, key_findings, topics, indicators, trends), and they
-    all get returned to the caller so the .NET finalizer (or any direct
+    """Combined summary + insights output. One Gemini call produces all
+    four fields (summary, key_findings, topics, indicators) and they
+    get returned to the caller so the .NET finalizer (or any direct
     consumer) can persist them in one round-trip.
 
     `summary` is a list of 3-7 bullet points (not a paragraph blob). The
@@ -65,7 +57,6 @@ class SummarizeResponse(BaseModel):
     key_findings: list[str]
     topics: list[str]
     indicators: list[IndicatorItem] = []
-    trends: list[TrendItem] = []
 
 
 class TranslateRequest(BaseModel):

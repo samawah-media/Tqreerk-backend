@@ -266,7 +266,6 @@ async def summarize(
         key_findings=result.key_findings,
         topics=result.topics,
         indicators=[i.model_dump(mode="json") for i in result.indicators],
-        trends=[t.model_dump(mode="json") for t in result.trends],
     )
 
 
