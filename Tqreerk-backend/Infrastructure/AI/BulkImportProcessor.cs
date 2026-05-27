@@ -51,6 +51,15 @@ public class BulkImportProcessor : BackgroundService
     /// for all uploads to finish first.</summary>
     private const int IngestFlushSize = 3;
 
+    /// <summary>Maximum number of upload batches to process in a single tick.
+    /// Each batch = <see cref="IngestFlushSize"/> items uploaded in parallel.
+    /// Capping at 5 (= 15 items per tick) ensures <see cref="AdvanceInFlightJobAsync"/>
+    /// runs every 10 s even for large imports, so items whose ingest already
+    /// completed can advance to Summarizing without waiting for the entire
+    /// upload phase to finish. Remaining Pending items are picked up on the
+    /// next tick.</summary>
+    private const int MaxPendingBatchesPerTick = 5;
+
     /// Named client key registered in ServiceExtensions; we resolve via
     /// the factory each time we fetch so HttpMessageHandler lifetime
     /// rotation works correctly for this long-running BackgroundService
@@ -193,8 +202,15 @@ public class BulkImportProcessor : BackgroundService
         // + DbContext (EF Core is not thread-safe). After each batch finishes
         // we reload fresh state from the DB and immediately dispatch /bulk/ingest
         // for that mini-batch — upload and GPU stages overlap.
+        //
+        // We cap at MaxPendingBatchesPerTick per tick so AdvanceInFlightJobAsync
+        // can run every polling interval. Without this cap a 500-item import
+        // would block the advance loop for 30+ minutes; items with completed
+        // ingests would stay stuck in Ingesting until all uploads finished.
+        int batchesThisTick = 0;
         foreach (var batch in pendingItems.Chunk(IngestFlushSize))
         {
+            if (batchesThisTick++ >= MaxPendingBatchesPerTick) break;
             ct.ThrowIfCancellationRequested();
 
             // Detach batch items from the outer context so parallel tasks can
