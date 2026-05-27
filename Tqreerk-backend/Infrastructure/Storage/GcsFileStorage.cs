@@ -46,7 +46,16 @@ public class GcsFileStorage : IFileStorage
             credential = GoogleCredential.GetApplicationDefault();
         }
 
-        _storage = StorageClient.Create(credential);
+        // Use the builder instead of the static factory so we can raise the
+        // per-request HTTP timeout. The default (100 s) is too short for large
+        // PDFs (~15-20 MB) being uploaded to GCS from Cloud Run — the resumable
+        // upload PUT request itself can take 2-3 min on a slow source download
+        // that has to be re-streamed. 10 min covers the largest reports we see.
+        _storage = new StorageClientBuilder
+        {
+            Credential = credential,
+            HttpClientTimeout = TimeSpan.FromMinutes(10),
+        }.Build();
 
         // ServiceAccountCredential carries a private key — sign locally.
         // ComputeCredential (Cloud Run / GCE) has no private key — delegate

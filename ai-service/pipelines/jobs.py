@@ -113,7 +113,36 @@ async def insert_job(
     )
     # Wake the worker if it's scaled to zero. Fire-and-forget — a failure here
     # just means the worker stays asleep until its next cold-start trigger.
-    asyncio.create_task(_wake_worker())
+    # _schedule_wake_worker() deduplicates: bulk inserts (e.g. 15 summarize
+    # jobs in one request) produce only one health ping instead of 15.
+    _schedule_wake_worker()
+
+
+_wake_pending: bool = False
+
+
+def _schedule_wake_worker() -> None:
+    """Schedule a single _wake_worker task, deduplicating concurrent calls.
+
+    When a bulk request inserts N jobs in one tick, N asyncio.create_task calls
+    would otherwise fire N simultaneous /health pings. This guard ensures at
+    most one ping is in-flight at a time — subsequent calls while a ping is
+    already running are ignored; the running ping is sufficient to keep the
+    worker alive.
+    """
+    global _wake_pending
+    if _wake_pending:
+        return
+    _wake_pending = True
+
+    async def _run() -> None:
+        global _wake_pending
+        try:
+            await _wake_worker()
+        finally:
+            _wake_pending = False
+
+    asyncio.create_task(_run())
 
 
 async def _wake_worker() -> None:

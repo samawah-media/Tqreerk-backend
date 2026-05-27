@@ -17,6 +17,13 @@ import signal
 import uuid
 from contextlib import asynccontextmanager
 
+# Jobs currently being re-triggered by the watcher. Prevents the watcher from
+# firing duplicate trigger_ingest tasks for the same job on back-to-back cycles
+# (each trigger holds an HTTP connection open for up to 600 s, so without this
+# guard the same job accumulates one task per 60-s cycle → 429 storms + the GPU
+# processes the same job multiple times).
+_in_flight_gpu_jobs: set[str] = set()
+
 # Sentry must initialize BEFORE FastAPI/Starlette are imported so its
 # auto-instrumentation can hook into them. If SENTRY_DSN is not set, this
 # becomes a no-op and the rest of the app runs normally.
@@ -54,6 +61,24 @@ class _RootFilter(logging.Filter):
 logging.getLogger().addFilter(_RootFilter())
 
 
+async def _trigger_and_untrack(job_id: str, report_id: str, file_url: str) -> None:
+    """Wrapper around trigger_ingest that removes the job from the in-flight
+    set when done (success or failure). Called as an asyncio.create_task so
+    the watcher loop never waits on it.
+
+    The in-flight set prevents the watcher from firing a second task for the
+    same job_id while the first is still waiting for the GPU to finish. Without
+    this guard the watcher fires one new task per 60-s cycle (each holding an
+    HTTP connection open for up to 600 s), leading to 429 storms and the GPU
+    processing the same job multiple times.
+    """
+    from services.doc_extractor import trigger_ingest
+    try:
+        await trigger_ingest(job_id, report_id, file_url)
+    finally:
+        _in_flight_gpu_jobs.discard(job_id)
+
+
 async def _pending_job_watcher() -> None:
     """Background loop that recovers stuck Pending jobs. Runs only in API mode.
 
@@ -63,13 +88,14 @@ async def _pending_job_watcher() -> None:
        Re-fires trigger_ingest() for each stuck job so the GPU can claim and
        process it. Handles the case where the initial trigger (fired at job
        creation) failed because the GPU was cold/unavailable.
+       Deduplication: jobs already being re-triggered (_in_flight_gpu_jobs)
+       are skipped so the same job is never in-flight twice simultaneously.
 
     2. Other Pending jobs (worker-owned: Summarization, Translation, Evaluation):
        Wakes the worker service via a health ping so it polls and claims them.
     """
     from core.db import conn_ctx
     from pipelines.jobs import _wake_worker
-    from services.doc_extractor import trigger_ingest
 
     while True:
         await asyncio.sleep(60)
@@ -116,15 +142,24 @@ async def _pending_job_watcher() -> None:
                 worker_count = int(worker_row[0]) if worker_row else 0
 
             if gpu_rows:
+                # Filter out jobs that already have an active trigger task.
+                new_rows = [
+                    (jid, rid, url)
+                    for jid, rid, url in gpu_rows
+                    if url and str(jid) not in _in_flight_gpu_jobs
+                ]
+                skipped = len(gpu_rows) - len(new_rows)
                 logger.info(
-                    "[watcher] %d stuck GPU ingest job(s) — re-triggering (cap=%d)",
-                    len(gpu_rows), settings.doc_processor_max_concurrency,
+                    "[watcher] %d stuck GPU ingest job(s) — re-triggering %d "
+                    "(skipping %d already in-flight, cap=%d)",
+                    len(gpu_rows), len(new_rows), skipped,
+                    settings.doc_processor_max_concurrency,
                 )
-                for job_id, report_id, file_url in gpu_rows:
-                    if file_url:
-                        asyncio.create_task(
-                            trigger_ingest(str(job_id), str(report_id), file_url)
-                        )
+                for job_id, report_id, file_url in new_rows:
+                    _in_flight_gpu_jobs.add(str(job_id))
+                    asyncio.create_task(
+                        _trigger_and_untrack(str(job_id), str(report_id), file_url)
+                    )
 
             if worker_count > 0:
                 logger.info(
