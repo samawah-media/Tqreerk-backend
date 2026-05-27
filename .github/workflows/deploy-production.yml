@@ -115,6 +115,7 @@ jobs:
           docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
           docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest
 
+          
       - name: Deploy to Cloud Run (Production)
         id: deploy
         uses: google-github-actions/deploy-cloudrun@v2
