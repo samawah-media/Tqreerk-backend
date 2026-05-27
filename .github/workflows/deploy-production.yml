@@ -133,7 +133,7 @@ jobs:
             --memory=2Gi
             --cpu=1
             --cpu-boost
-            --min-instances=0
+            --min-instances=1
             --max-instances=5
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}

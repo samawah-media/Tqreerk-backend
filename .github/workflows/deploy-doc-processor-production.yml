@@ -80,7 +80,7 @@ jobs:
             --no-gpu-zonal-redundancy \
             --cpu=4 \
             --memory=16Gi \
-            --min-instances=0 \
+            --min-instances=1 \
             --max-instances=3 \
             --concurrency=1 \
             --timeout=3600 \

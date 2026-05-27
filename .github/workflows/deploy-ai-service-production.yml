@@ -68,7 +68,7 @@ jobs:
             --port=8080
             --memory=2Gi
             --cpu=2
-            --min-instances=0
+            --min-instances=1
             --max-instances=3
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -125,7 +125,7 @@ jobs:
             --port=8080
             --memory=2Gi
             --cpu=2
-            --min-instances=0
+            --min-instances=1
             --max-instances=3
             --timeout=900
             --no-cpu-throttling
