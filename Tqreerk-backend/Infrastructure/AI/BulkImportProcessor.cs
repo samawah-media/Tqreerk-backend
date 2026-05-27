@@ -86,39 +86,130 @@ public class BulkImportProcessor : BackgroundService
             "BulkImportProcessor started — polling every {Seconds}s",
             PollInterval.TotalSeconds);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await TickAsync(stoppingToken);
-            }
-            catch (Exception ex)
-            {
-                // Worker MUST never die — a single bad tick is logged and we
-                // sleep until the next interval.
-                _logger.LogError(ex, "BulkImportProcessor tick failed");
-            }
-
-            try { await Task.Delay(PollInterval, stoppingToken); }
-            catch (OperationCanceledException) { break; }
-        }
+        // Two independent loops so the fast "advance" path (Ingesting →
+        // Summarizing → Completed, just DB reads + short HTTP calls to the AI
+        // service) is NEVER blocked by the slow "upload" path (PDF downloads
+        // from external servers, GCS writes — can take 5-25 min per batch).
+        //
+        // Before this split, AdvanceInFlightJobAsync ran in the same tick as
+        // ProcessPendingItemsAsync. Because ProcessPendingItemsAsync was awaited
+        // first and could block for up to 25 minutes (MaxPendingBatchesPerTick=5
+        // × 3 items × 5-min per-item timeout), completed GPU ingest jobs sat in
+        // Ingesting with no summarize dispatched for the entire upload duration.
+        // That's why summarization stopped while ingest kept running.
+        await Task.WhenAll(
+            RunAdvanceLoopAsync(stoppingToken),
+            RunUploadLoopAsync(stoppingToken)
+        );
 
         _logger.LogInformation("BulkImportProcessor stopped");
     }
 
     /// <summary>
-    /// One full sweep. We split the work by stage and process them serially
-    /// per-job — Pending → Ingesting → Summarizing — so each tick advances
-    /// the job by one stage at most. Cheap; the admin UI polls fast enough
-    /// that the user-perceived time-to-progress is bounded by the AI side.
+    /// Fast loop: advances in-flight jobs through Ingesting → Summarizing →
+    /// Completed. Fires every <see cref="PollInterval"/> (10 s) without
+    /// exception — PDF download speed never delays it.
     /// </summary>
-    private async Task TickAsync(CancellationToken ct)
+    private async Task RunAdvanceLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await AdvanceTickAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BulkImportProcessor advance-tick failed");
+            }
+
+            try { await Task.Delay(PollInterval, ct); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// <summary>
+    /// Slow loop: downloads PDFs, uploads to GCS, and dispatches /bulk/ingest.
+    /// Each tick can take 5-25 min for large batches; that never delays the
+    /// advance loop because the two loops run via <see cref="Task.WhenAll"/>.
+    /// </summary>
+    private async Task RunUploadLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await UploadTickAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BulkImportProcessor upload-tick failed");
+            }
+
+            try { await Task.Delay(PollInterval, ct); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// <summary>
+    /// Advance tick: for every Processing job, polls ai_jobs for completed
+    /// Ingestion/Summarization work and advances items to the next stage.
+    /// Fast — only indexed DB reads and short HTTP calls; no file I/O.
+    /// </summary>
+    private async Task AdvanceTickAsync(CancellationToken ct)
+    {
+        using var scope = _services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
+        var ai = scope.ServiceProvider.GetRequiredService<IAiServiceClient>();
+
+        var inFlightJobs = await db.BulkImportJobs
+            .Where(j => j.Status == BulkImportStatus.Processing)
+            .Include(j => j.Items)
+            .ToListAsync(ct);
+
+        foreach (var job in inFlightJobs)
+        {
+            await AdvanceInFlightJobAsync(db, ai, job, ct);
+        }
+    }
+
+    /// <summary>How long an item may stay in Uploading before it is considered
+    /// orphaned and reset to Pending. Items get stuck in Uploading when the
+    /// worker restarts mid-download (Cloud Run deploy, scale event, OOM).
+    /// The new instance's upload tick only looks at Pending rows, so without
+    /// this reset the orphaned row would stay stuck forever.
+    /// 15 min is comfortably above the per-item 5-min body-read timeout plus
+    /// the GCS write time for the largest PDFs we handle (≤ 200 MB).</summary>
+    private static readonly TimeSpan StuckUploadTimeout = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// Upload tick: processes newly-queued jobs and retry-driven Pending items
+    /// inside already-Processing jobs. Slow — fetches PDFs and writes to GCS.
+    /// </summary>
+    private async Task UploadTickAsync(CancellationToken ct)
     {
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
         var files = scope.ServiceProvider.GetRequiredService<IFileStorage>();
         var ai = scope.ServiceProvider.GetRequiredService<IAiServiceClient>();
         var storageOpts = scope.ServiceProvider.GetRequiredService<IOptions<FileStorageSettings>>().Value;
+
+        // 0. Stuck-upload recovery. When the worker restarts mid-download the
+        //    item stays in Uploading forever because ProcessPendingItemsAsync
+        //    only queries Pending rows. Reset any item that has been Uploading
+        //    for longer than StuckUploadTimeout back to Pending so the queries
+        //    below pick it up and retry it.
+        var stuckCutoff = DateTime.UtcNow - StuckUploadTimeout;
+        var stuckCount = await db.BulkImportItems
+            .Where(i => i.Stage == BulkImportItemStage.Uploading
+                     && i.StartedAt < stuckCutoff)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.Stage, BulkImportItemStage.Pending)
+                .SetProperty(i => i.StartedAt, (DateTime?)null), ct);
+        if (stuckCount > 0)
+            _logger.LogWarning(
+                "[bulk-import] reset {Count} stuck-Uploading item(s) back to Pending " +
+                "(StartedAt < {Cutoff:u})", stuckCount, stuckCutoff);
 
         // 1. Newly-queued jobs — kick off the upload stage for each pending item.
         var pendingJobs = await db.BulkImportJobs
@@ -130,25 +221,21 @@ public class BulkImportProcessor : BackgroundService
             await ProcessPendingJobAsync(db, files, ai, storageOpts, job, ct);
         }
 
-        // 2. In-flight jobs — advance Ingesting → Summarizing → Completed
-        //    as their respective ai_jobs rows reach terminal state. Also
-        //    pick up any Pending items inside a Processing job; the only
-        //    way to land in that state is via the retry endpoint, which
-        //    rolls Failed items back to Pending without flipping the job.
-        var inFlightJobs = await db.BulkImportJobs
-            .Where(j => j.Status == BulkImportStatus.Processing)
+        // 2. Retry-driven Pending items inside already-Processing jobs. Items
+        //    land here after /retry-failed rolls Failed rows back to Pending
+        //    without flipping the job's own Status. Also picks up any items
+        //    just reset from Uploading above (their job is already Processing).
+        //    The advance loop cannot handle these because they have no
+        //    IngestJobId to poll yet — they need the full upload + ingest
+        //    dispatch path first.
+        var inFlightJobsWithPending = await db.BulkImportJobs
+            .Where(j => j.Status == BulkImportStatus.Processing
+                     && j.Items.Any(i => i.Stage == BulkImportItemStage.Pending))
             .Include(j => j.Items)
             .ToListAsync(ct);
-        foreach (var job in inFlightJobs)
+        foreach (var job in inFlightJobsWithPending)
         {
-            // Retry-driven Pending items first — they can then move into
-            // Ingesting in the same tick so the admin's progress UI shows
-            // the row advancing immediately.
-            if (job.Items.Any(i => i.Stage == BulkImportItemStage.Pending))
-            {
-                await ProcessPendingItemsAsync(db, files, ai, storageOpts, job, ct);
-            }
-            await AdvanceInFlightJobAsync(db, ai, job, ct);
+            await ProcessPendingItemsAsync(db, files, ai, storageOpts, job, ct);
         }
     }
 
