@@ -397,8 +397,18 @@ public class BulkImportProcessor : BackgroundService
         string contentType;
         try
         {
+            // Per-item body-read timeout (5 min). HttpClient.Timeout covers only
+            // the header phase when ResponseHeadersRead is used — after headers
+            // arrive the body stream is otherwise unbounded. Some Saudi charity
+            // servers stream at < 100 KB/s, so a 35 MB PDF takes 5-11 minutes and
+            // a 70 MB PDF can drop the connection mid-stream. Without this cap the
+            // whole batch stalls for the duration of the slowest item.
+            using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            downloadCts.CancelAfter(TimeSpan.FromMinutes(5));
+            var dlToken = downloadCts.Token;
+
             using var http = _httpFactory.CreateClient(HttpClientName);
-            using var resp = await http.GetAsync(item.FileUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var resp = await http.GetAsync(item.FileUrl, HttpCompletionOption.ResponseHeadersRead, dlToken);
             if (!resp.IsSuccessStatusCode)
                 throw new InvalidOperationException(
                     $"تعذّر تحميل الملف من الرابط (HTTP {(int)resp.StatusCode}).");
@@ -410,12 +420,12 @@ public class BulkImportProcessor : BackgroundService
                 throw new InvalidOperationException(
                     $"حجم الملف ({declaredLength / 1024 / 1024} MB) يتجاوز الحد المسموح به.");
 
-            await using var src = await resp.Content.ReadAsStreamAsync(ct);
+            await using var src = await resp.Content.ReadAsStreamAsync(dlToken);
             using var ms = new MemoryStream();
             var buffer = new byte[64 * 1024];
             int read;
             long total = 0;
-            while ((read = await src.ReadAsync(buffer.AsMemory(), ct)) > 0)
+            while ((read = await src.ReadAsync(buffer.AsMemory(), dlToken)) > 0)
             {
                 total += read;
                 if (total > MaxFetchBytes)
@@ -425,6 +435,12 @@ public class BulkImportProcessor : BackgroundService
             }
             pdfBytes = ms.ToArray();
             contentType = resp.Content.Headers.ContentType?.MediaType ?? "application/pdf";
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Body-read timeout fired (downloadCts), not a shutdown signal.
+            throw new InvalidOperationException(
+                "انتهت مهلة تحميل الملف (5 دقائق) — الخادم بطيء جداً أو الاتصال متقطع.");
         }
         catch (HttpRequestException ex)
         {
