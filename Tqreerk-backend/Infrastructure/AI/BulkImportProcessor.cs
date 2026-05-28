@@ -207,20 +207,22 @@ public class BulkImportProcessor : BackgroundService
 
         // 0. Stuck-upload recovery. When the worker restarts mid-download the
         //    item stays in Uploading forever because ProcessPendingItemsAsync
-        //    only queries Pending rows. Reset any item that has been Uploading
-        //    for longer than StuckUploadTimeout back to Pending so the queries
-        //    below pick it up and retry it.
+        //    only queries Pending rows. Mark stuck items Failed (not Pending) so
+        //    they don't loop: the same slow-server URL would be retried
+        //    indefinitely, filling the global cap and blocking all progress.
+        //    The admin's retry-failed endpoint handles intentional retries.
         var stuckCutoff = DateTime.UtcNow - StuckUploadTimeout;
         var stuckCount = await db.BulkImportItems
             .Where(i => i.Stage == BulkImportItemStage.Uploading
                      && i.StartedAt < stuckCutoff)
             .ExecuteUpdateAsync(s => s
-                .SetProperty(i => i.Stage, BulkImportItemStage.Pending)
-                .SetProperty(i => i.StartedAt, (DateTime?)null), ct);
+                .SetProperty(i => i.Stage, BulkImportItemStage.Failed)
+                .SetProperty(i => i.ErrorMessage, "انتهت مهلة رفع الملف — استخدم إعادة المحاولة.")
+                .SetProperty(i => i.CompletedAt, DateTime.UtcNow), ct);
         if (stuckCount > 0)
             _logger.LogWarning(
-                "[bulk-import] reset {Count} stuck-Uploading item(s) back to Pending " +
-                "(StartedAt < {Cutoff:u})", stuckCount, stuckCutoff);
+                "[bulk-import] failed {Count} stuck-Uploading item(s) (StartedAt < {Cutoff:u})",
+                stuckCount, stuckCutoff);
 
         // 1. Newly-queued jobs — kick off the upload stage for each pending item.
         var pendingJobs = await db.BulkImportJobs
