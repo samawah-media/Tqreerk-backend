@@ -34,9 +34,9 @@ public static class ServiceExtensions
             ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is required.");
         var builder = new NpgsqlConnectionStringBuilder(raw);
         if (!builder.ContainsKey("Pooling")) builder.Pooling = true;
-        if (!builder.ContainsKey("Minimum Pool Size")) builder.MinPoolSize = 1;
-        if (!builder.ContainsKey("Maximum Pool Size")) builder.MaxPoolSize = 8;
-        if (!builder.ContainsKey("Connection Idle Lifetime")) builder.ConnectionIdleLifetime = 60;
+        if (!builder.ContainsKey("Minimum Pool Size")) builder.MinPoolSize = 0;
+        if (!builder.ContainsKey("Maximum Pool Size")) builder.MaxPoolSize = 5;
+        if (!builder.ContainsKey("Connection Idle Lifetime")) builder.ConnectionIdleLifetime = 30;
 
         services.AddDbContext<TaqreerkDbContext>(options =>
             options.UseNpgsql(
