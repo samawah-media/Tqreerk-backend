@@ -909,13 +909,25 @@ public class BulkImportProcessor : BackgroundService
             .ToList();
         if (summarizing.Count > 0)
         {
-            var summarizeIds = summarizing.Select(i => i.SummarizeJobId!.Value).ToList();
+            var summarizeIds = summarizing.Select(i => i.SummarizeJobId!.Value).Distinct().ToList();
             var statuses = await db.AiJobs
                 .Where(j => summarizeIds.Contains(j.Id))
                 .Select(j => new { j.Id, j.Status, j.ErrorMessage, j.OutputData })
                 .ToListAsync(ct);
 
             var statusById = statuses.ToDictionary(s => s.Id);
+            // Guard against duplicate INSERTs into report_ai_contents when
+            // multiple BulkImportItems share the same ReportId+SummarizeJobId
+            // (resume-from-retry path, or parallel uploads dispatching the same
+            // report twice). CopySummaryToContentAsync checks DB for an existing
+            // row, but the check happens before SaveChanges so a second call
+            // within the same tick also sees null → two INSERTs → 23505 unique
+            // constraint violation → SaveChanges rolls back → report stays
+            // unpublished. Tracking which ReportIds we've already copied in this
+            // pass means CopySummaryToContentAsync is called at most once per
+            // report per tick; all items sharing that report still get their
+            // stage/counter updated correctly.
+            var copiedReportIds = new HashSet<Guid>();
             foreach (var item in summarizing)
             {
                 if (!statusById.TryGetValue(item.SummarizeJobId!.Value, out var st)) continue;
@@ -929,9 +941,10 @@ public class BulkImportProcessor : BackgroundService
                         job.FailedCount++;
                         continue;
                     }
-                    await CopySummaryToContentAsync(db, report, item.SummarizeJobId.Value, st.OutputData, ct);
+                    if (copiedReportIds.Add(rid))
+                        await CopySummaryToContentAsync(db, report, item.SummarizeJobId.Value, st.OutputData, ct);
                     report.Status = ReportStatus.Published;
-                    report.PublishedAt = DateTime.UtcNow;
+                    report.PublishedAt ??= DateTime.UtcNow;
 
                     item.Stage = BulkImportItemStage.Completed;
                     item.CompletedAt = DateTime.UtcNow;
