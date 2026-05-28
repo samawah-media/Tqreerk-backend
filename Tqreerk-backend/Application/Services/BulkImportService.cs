@@ -309,7 +309,17 @@ public class BulkImportService : IBulkImportService
             .FirstOrDefaultAsync(j => j.Id == jobId, ct)
             ?? throw new KeyNotFoundException("Bulk import job not found.");
 
-        var failed = job.Items.Where(i => i.Stage == BulkImportItemStage.Failed).ToList();
+        // Include items stuck in active stages (Uploading/Ingesting/Summarizing)
+        // for longer than 30 min — these are orphaned by a crashed worker and
+        // will not self-recover until Hangfire's invisibility timeout expires.
+        // Resetting them here re-enqueues immediately instead of waiting.
+        var stuckThreshold = DateTime.UtcNow.AddMinutes(-30);
+        var failed = job.Items.Where(i =>
+            i.Stage == BulkImportItemStage.Failed ||
+            ((i.Stage == BulkImportItemStage.Uploading ||
+              i.Stage == BulkImportItemStage.Ingesting ||
+              i.Stage == BulkImportItemStage.Summarizing) &&
+             i.StartedAt < stuckThreshold)).ToList();
         if (failed.Count == 0) return 0;
 
         foreach (var item in failed)
