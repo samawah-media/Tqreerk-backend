@@ -134,6 +134,7 @@ jobs:
             --memory=2Gi
             --cpu=1
             --cpu-boost
+            --no-cpu-throttling
             --min-instances=1
             --max-instances=5
             --timeout=300
