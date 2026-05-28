@@ -345,13 +345,44 @@ public class BulkUploadItemJob(
             return;
         }
 
-        item.Stage        = BulkImportItemStage.Pending;
-        item.IngestJobId  = null;
+        // No chunks — the matched report exists in GCS but ingest never completed.
+        // Re-enqueueing BulkUploadItemJob would loop forever: dedup always
+        // matches the same report, which still has no chunks. Dispatch ingest
+        // directly instead. Share a sibling's active IngestJobId when possible
+        // so we don't fire duplicate GPU jobs for the same report.
+        var siblingIngestJobId = await db.BulkImportItems
+            .Where(i => i.ReportId == existingReportId
+                     && i.Stage == BulkImportItemStage.Ingesting
+                     && i.IngestJobId != null)
+            .Select(i => i.IngestJobId)
+            .FirstOrDefaultAsync(ct);
+
+        if (siblingIngestJobId is not null)
+        {
+            item.IngestJobId = siblingIngestJobId;
+        }
+        else
+        {
+            var existingFileUrl = await db.Reports
+                .Where(r => r.Id == existingReportId)
+                .Select(r => r.FileUrl)
+                .FirstOrDefaultAsync(ct);
+            var existingGcsUri = BulkPipelineStatics.ToGcsUri(existingFileUrl, storageOpts.Value);
+            var ingestResult = await ai.BulkIngestAsync(
+                new List<BulkIngestItem> { new(existingReportId, existingGcsUri) }, ct);
+            var ingestJobId = ingestResult.FirstOrDefault(j => j.ReportId == existingReportId)?.JobId;
+            if (ingestJobId is null)
+                throw new InvalidOperationException("AI service did not accept the ingest request for existing report.");
+            item.IngestJobId = ingestJobId;
+        }
+
+        item.Stage        = BulkImportItemStage.Ingesting;
         item.SummarizeJobId = null;
         item.ErrorMessage = null;
         await db.SaveChangesAsync(ct);
-        // Re-enqueue upload (this execution will complete, new job handles the upload).
-        jobClient.Enqueue<BulkUploadItemJob>(j => j.ExecuteAsync(item.Id, CancellationToken.None));
+        logger.LogInformation(
+            "[bulk-upload] item={ItemId} re-ingesting existing report={ReportId}", item.Id, existingReportId);
+        jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(item.Id, CancellationToken.None));
     }
 
     // ── Cover rendering ───────────────────────────────────────────────────────

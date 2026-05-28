@@ -1,10 +1,8 @@
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using Npgsql;
 using Taqreerk.Application.Common;
 using Taqreerk.Application.Interfaces;
-using Taqreerk.Application.Settings;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
 
@@ -35,7 +33,6 @@ namespace Taqreerk.Infrastructure.AI.Jobs;
 public class BulkAdvanceItemJob(
     TaqreerkDbContext db,
     IAiServiceClient ai,
-    IOptions<FileStorageSettings> storageOpts,
     IBackgroundJobClient jobClient,
     ILogger<BulkAdvanceItemJob> logger)
 {
@@ -192,8 +189,6 @@ public class BulkAdvanceItemJob(
                 db, report, item.SummarizeJobId.Value, aiJob.OutputData, ct);
             report.Status      = ReportStatus.Published;
             report.PublishedAt ??= DateTime.UtcNow;
-            item.Stage         = BulkImportItemStage.Completed;
-            item.CompletedAt   = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
         }
         catch (DbUpdateException ex)
@@ -206,10 +201,19 @@ public class BulkAdvanceItemJob(
 
             report.Status      = ReportStatus.Published;
             report.PublishedAt ??= DateTime.UtcNow;
-            item.Stage         = BulkImportItemStage.Completed;
-            item.CompletedAt   = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
         }
+
+        // Atomic stage transition — only the first racing worker wins the
+        // Summarizing→Completed flip. A crash-recovery duplicate gets
+        // affected==0 and returns without double-incrementing CompletedCount.
+        var affected = await db.BulkImportItems
+            .Where(i => i.Id == item.Id && i.Stage == BulkImportItemStage.Summarizing)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.Stage, BulkImportItemStage.Completed)
+                .SetProperty(i => i.CompletedAt, DateTime.UtcNow), ct);
+
+        if (affected == 0) return;
 
         await db.BulkImportJobs
             .Where(j => j.Id == item.JobId)
@@ -233,11 +237,32 @@ public class BulkAdvanceItemJob(
     private async Task SaveAndUpdateCountersAsync(
         Domain.Entities.BulkImportItem item, CancellationToken ct)
     {
-        await db.SaveChangesAsync(ct);
-        if (item.Stage == BulkImportItemStage.Failed)
-            await db.BulkImportJobs
-                .Where(j => j.Id == item.JobId)
-                .ExecuteUpdateAsync(s => s.SetProperty(j => j.FailedCount, j => j.FailedCount + 1), ct);
+        if (item.Stage != BulkImportItemStage.Failed)
+        {
+            await db.SaveChangesAsync(ct);
+            await TryFinaliseJobAsync(item.JobId, ct);
+            return;
+        }
+
+        // Atomic guard: only the first racing worker flips stage→Failed.
+        // FailedCount is only incremented when this worker made the actual flip;
+        // a crash-recovery duplicate gets affected==0 and skips double-counting.
+        var errorMsg    = item.ErrorMessage;
+        var completedAt = item.CompletedAt ?? DateTime.UtcNow;
+        var affected = await db.BulkImportItems
+            .Where(i => i.Id == item.Id
+                     && i.Stage != BulkImportItemStage.Failed
+                     && i.Stage != BulkImportItemStage.Completed)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.Stage, BulkImportItemStage.Failed)
+                .SetProperty(i => i.ErrorMessage, errorMsg)
+                .SetProperty(i => i.CompletedAt, completedAt), ct);
+
+        if (affected == 0) return;
+
+        await db.BulkImportJobs
+            .Where(j => j.Id == item.JobId)
+            .ExecuteUpdateAsync(s => s.SetProperty(j => j.FailedCount, j => j.FailedCount + 1), ct);
         await TryFinaliseJobAsync(item.JobId, ct);
     }
 
