@@ -284,70 +284,59 @@ public class BulkImportProcessor : BackgroundService
             .ToList();
         if (pendingItems.Count == 0) return;
 
-        // Process items in parallel batches of IngestFlushSize. Each upload
-        // task (HTTP fetch + GCS write) runs concurrently in its own DI scope
-        // + DbContext (EF Core is not thread-safe). After each batch finishes
-        // we reload fresh state from the DB and immediately dispatch /bulk/ingest
-        // for that mini-batch — upload and GPU stages overlap.
-        //
-        // We cap at MaxPendingBatchesPerTick per tick so AdvanceInFlightJobAsync
-        // can run every polling interval. Without this cap a 500-item import
-        // would block the advance loop for 30+ minutes; items with completed
-        // ingests would stay stuck in Ingesting until all uploads finished.
-        int batchesThisTick = 0;
-        foreach (var batch in pendingItems.Chunk(IngestFlushSize))
+        // Upload all items in this tick concurrently — each in its own DI scope
+        // + DbContext (EF Core is not thread-safe across tasks).
+        // Previously items were processed in sequential batches: a single slow
+        // PDF blocked the next batch from starting, leaving GPU slots idle while
+        // waiting for the slowest item. Now all items upload in parallel — the
+        // slowest PDF sets the wall-clock time for the wave, not the sum.
+        // Cap: MaxPendingBatchesPerTick × IngestFlushSize = 30 items per tick
+        // so peak memory stays bounded (≈ 30 × avg PDF size in RAM at once).
+        var itemsThisTick = pendingItems.Take(MaxPendingBatchesPerTick * IngestFlushSize).ToList();
+
+        foreach (var item in itemsThisTick)
+            db.Entry(item).State = EntityState.Detached;
+
+        await Task.WhenAll(itemsThisTick.Select(item =>
+            UploadItemInNewScopeAsync(item, job.OrganizationId, job.CreatedByUserId, ct)));
+
+        // Re-query all items fresh — each upload committed in its own scope.
+        var allIds = itemsThisTick.Select(i => i.Id).ToHashSet();
+        var freshItems = await db.BulkImportItems
+            .Where(i => allIds.Contains(i.Id))
+            .Include(i => i.Report)
+            .ToListAsync(ct);
+
+        int newlyFailed = 0;
+        foreach (var fresh in freshItems)
         {
-            if (batchesThisTick++ >= MaxPendingBatchesPerTick) break;
-            ct.ThrowIfCancellationRequested();
-
-            // Detach batch items from the outer context so parallel tasks can
-            // reload them in their own scopes without a change-tracker conflict.
-            foreach (var item in batch)
-                db.Entry(item).State = EntityState.Detached;
-
-            await Task.WhenAll(batch.Select(item =>
-                UploadItemInNewScopeAsync(item, job.OrganizationId, job.CreatedByUserId, ct)));
-
-            // Re-query fresh state — each upload committed in its own scope.
-            var batchIds = batch.Select(i => i.Id).ToHashSet();
-            var freshItems = await db.BulkImportItems
-                .Where(i => batchIds.Contains(i.Id))
-                .Include(i => i.Report)
-                .ToListAsync(ct);
-
-            // Sync the in-memory job.Items collection so FinaliseJobIfDoneAsync
-            // and later AdvanceInFlightJobAsync see the correct per-item stages.
-            int newlyFailed = 0;
-            foreach (var fresh in freshItems)
-            {
-                var mem = job.Items.FirstOrDefault(i => i.Id == fresh.Id);
-                if (mem == null) continue;
-                mem.Stage        = fresh.Stage;
-                mem.ReportId     = fresh.ReportId;
-                mem.Report       = fresh.Report;
-                mem.ErrorMessage = fresh.ErrorMessage;
-                mem.StartedAt    = fresh.StartedAt;
-                mem.CompletedAt  = fresh.CompletedAt;
-                if (fresh.Stage == BulkImportItemStage.Failed) newlyFailed++;
-            }
-
-            // Reload job counters — resume paths in UploadItemInNewScopeAsync
-            // may have incremented CompletedCount atomically in the DB.
-            await db.Entry(job).ReloadAsync(ct);
-            if (newlyFailed > 0)
-            {
-                job.FailedCount += newlyFailed;
-                await db.SaveChangesAsync(ct);
-            }
-
-            var uploadedBatch = freshItems
-                .Where(i => i.Stage == BulkImportItemStage.Uploading)
-                .ToList();
-            if (uploadedBatch.Count > 0)
-                await FlushBatchToIngestAsync(db, ai, storage, job, uploadedBatch, ct);
+            var mem = job.Items.FirstOrDefault(i => i.Id == fresh.Id);
+            if (mem == null) continue;
+            mem.Stage        = fresh.Stage;
+            mem.ReportId     = fresh.ReportId;
+            mem.Report       = fresh.Report;
+            mem.ErrorMessage = fresh.ErrorMessage;
+            mem.StartedAt    = fresh.StartedAt;
+            mem.CompletedAt  = fresh.CompletedAt;
+            if (fresh.Stage == BulkImportItemStage.Failed) newlyFailed++;
         }
 
-        // Edge-case: every item failed at upload before any ingest was dispatched.
+        await db.Entry(job).ReloadAsync(ct);
+        if (newlyFailed > 0)
+        {
+            job.FailedCount += newlyFailed;
+            await db.SaveChangesAsync(ct);
+        }
+
+        // Dispatch all successfully uploaded items to the GPU in one call.
+        // The AI service's module-level Semaphore(6) ensures at most 6 concurrent
+        // trigger_ingest connections — excess triggers queue and fire as slots free up.
+        var uploadedItems = freshItems
+            .Where(i => i.Stage == BulkImportItemStage.Uploading)
+            .ToList();
+        if (uploadedItems.Count > 0)
+            await FlushBatchToIngestAsync(db, ai, storage, job, uploadedItems, ct);
+
         await FinaliseJobIfDoneAsync(db, job, ct);
     }
 
