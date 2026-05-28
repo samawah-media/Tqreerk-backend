@@ -90,8 +90,14 @@ public class BulkAdvanceItemJob(
         }
 
         if (aiJob.Status == AiJobStatus.Failed)
-            throw new InvalidOperationException(
-                aiJob.ErrorMessage ?? "فشل استخراج محتوى التقرير.");
+        {
+            // AI job is permanently failed — no point retrying; it won't
+            // un-fail itself. Mark directly instead of throwing so we don't
+            // burn all 5 Hangfire retries polling a dead ai_jobs row.
+            MarkFailed(item, aiJob.ErrorMessage ?? "فشل استخراج محتوى التقرير.");
+            await SaveAndUpdateCountersAsync(item, ct);
+            return;
+        }
 
         // Completed — update page count and chain to summarize.
         if (item.ReportId is { } rid)
@@ -164,7 +170,11 @@ public class BulkAdvanceItemJob(
         }
 
         if (aiJob.Status == AiJobStatus.Failed)
-            throw new InvalidOperationException(aiJob.ErrorMessage ?? "فشل التلخيص.");
+        {
+            MarkFailed(item, aiJob.ErrorMessage ?? "فشل التلخيص.");
+            await SaveAndUpdateCountersAsync(item, ct);
+            return;
+        }
 
         // Completed — persist summary and publish report.
         var report = await db.Reports.FirstOrDefaultAsync(r => r.Id == item.ReportId, ct);
