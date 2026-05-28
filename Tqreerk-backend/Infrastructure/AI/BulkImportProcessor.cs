@@ -229,15 +229,18 @@ public class BulkImportProcessor : BackgroundService
         //    The advance loop cannot handle these because they have no
         //    IngestJobId to poll yet — they need the full upload + ingest
         //    dispatch path first.
-        var inFlightJobsWithPending = await db.BulkImportJobs
+        // Process ONE job per tick so total in-flight = N_instances × IngestFlushSize,
+        // not N_instances × N_jobs × IngestFlushSize. Round-robin across jobs is
+        // handled implicitly: after the batch completes, the tick ends, and the next
+        // tick re-queries — if this job's pending items are now Uploading, a different
+        // job (the next in line) will be the first result.
+        var jobWithPending = await db.BulkImportJobs
             .Where(j => j.Status == BulkImportStatus.Processing
                      && j.Items.Any(i => i.Stage == BulkImportItemStage.Pending))
             .Include(j => j.Items)
-            .ToListAsync(ct);
-        foreach (var job in inFlightJobsWithPending)
-        {
-            await ProcessPendingItemsAsync(db, files, ai, storageOpts, job, ct);
-        }
+            .FirstOrDefaultAsync(ct);
+        if (jobWithPending is not null)
+            await ProcessPendingItemsAsync(db, files, ai, storageOpts, jobWithPending, ct);
     }
 
     // ── Stage 1: Pending → Uploading → Ingesting ────────────────────────────
