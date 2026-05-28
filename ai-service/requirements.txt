@@ -1,6 +1,7 @@
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 psycopg[binary]==3.2.3
+psycopg-pool==3.2.3
 pgvector==0.3.6
 # Bumped 0.8.0 → 1.24.0 because langchain-google-vertexai==2.0.28 pulls in
 # google-cloud-aiplatform 1.97.0 which requires google-genai>=1.0.0,<2.0.0.
