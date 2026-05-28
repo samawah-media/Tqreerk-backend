@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Hangfire;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
@@ -135,6 +136,15 @@ if ((fileStorage.Provider ?? "local").ToLowerInvariant() != "gcs")
 app.UseCors("DefaultCors");
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Hangfire dashboard — internal operations view. Restricted to local
+// requests in development; disabled in production (use Cloud Console
+// port-forward or promote to a dedicated admin endpoint with JWT auth
+// once the dashboard auth story is settled).
+if (!app.Environment.IsProduction())
+{
+    app.UseHangfireDashboard("/admin/hangfire");
+}
 
 // Maintenance gate. Sits after auth so the middleware can identify
 // admin paths (it short-circuits everything except /api/admin/*,
