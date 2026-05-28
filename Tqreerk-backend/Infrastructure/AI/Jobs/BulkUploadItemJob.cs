@@ -30,9 +30,7 @@ namespace Taqreerk.Infrastructure.AI.Jobs;
 /// completion was recorded) the job skips without re-doing work.
 /// </summary>
 [Queue("bulk-upload")]
-[AutomaticRetry(Attempts = 3,
-    DelaysInSeconds = new[] { 120, 600, 1800 },
-    OnAttemptsExceeded = AttemptsExceededAction.Fail)]
+[AutomaticRetry(Attempts = 0, OnAttemptsExceeded = AttemptsExceededAction.Fail)]
 public class BulkUploadItemJob(
     TaqreerkDbContext db,
     IFileStorage files,
