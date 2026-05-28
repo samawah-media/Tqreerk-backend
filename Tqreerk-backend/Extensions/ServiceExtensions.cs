@@ -267,6 +267,13 @@ public static class ServiceExtensions
                        // 5 min means stuck jobs resume within one poll cycle after
                        // a hard crash instead of blocking the queue for half an hour.
                        InvisibilityTimeout = TimeSpan.FromMinutes(5),
+                       // Multiple Cloud Run instances each run a Hangfire server and
+                       // compete for the DelayedJobScheduler lock. The default timeout
+                       // is too short — instances that lose the race log an error and
+                       // stop promoting scheduled jobs for up to 70 s. 30 s gives the
+                       // lock holder enough time to finish its cycle before contenders
+                       // give up and retry.
+                       DistributedLockTimeout = TimeSpan.FromSeconds(30),
                    })
                // BulkJobFailedFilter marks items Failed when all Hangfire
                // retries are exhausted. Registered globally so it fires for
