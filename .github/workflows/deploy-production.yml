@@ -136,7 +136,7 @@ jobs:
             --cpu-boost
             --no-cpu-throttling
             --min-instances=1
-            --max-instances=5
+            --max-instances=6
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
