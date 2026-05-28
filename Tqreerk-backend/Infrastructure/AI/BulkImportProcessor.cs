@@ -278,30 +278,37 @@ public class BulkImportProcessor : BackgroundService
         BulkImportJob job,
         CancellationToken ct)
     {
-        var pendingItems = job.Items
-            .Where(i => i.Stage == BulkImportItemStage.Pending)
-            .OrderBy(i => i.RowIndex)
-            .ToList();
-        if (pendingItems.Count == 0) return;
+        // Atomically claim pending items — prevents duplicate processing when
+        // multiple backend instances run concurrently (Cloud Run autoscaling).
+        // FOR UPDATE SKIP LOCKED makes this a work-queue: each row is claimed
+        // by exactly one instance; other instances skip it and move on.
+        var limit = MaxPendingBatchesPerTick * IngestFlushSize;
+        var claimedItems = await db.BulkImportItems
+            .FromSqlInterpolated($@"
+                UPDATE bulk_import_items
+                SET ""Stage"" = 'Uploading', ""StartedAt"" = NOW()
+                WHERE ""Id"" IN (
+                    SELECT ""Id"" FROM bulk_import_items
+                    WHERE ""JobId"" = {job.Id}
+                      AND ""Stage"" = 'Pending'
+                    ORDER BY ""RowIndex""
+                    LIMIT {limit}
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING *")
+            .AsNoTracking()
+            .ToListAsync(ct);
 
-        // Upload all items in this tick concurrently — each in its own DI scope
-        // + DbContext (EF Core is not thread-safe across tasks).
-        // Previously items were processed in sequential batches: a single slow
-        // PDF blocked the next batch from starting, leaving GPU slots idle while
-        // waiting for the slowest item. Now all items upload in parallel — the
-        // slowest PDF sets the wall-clock time for the wave, not the sum.
-        // Cap: MaxPendingBatchesPerTick × IngestFlushSize = 30 items per tick
-        // so peak memory stays bounded (≈ 30 × avg PDF size in RAM at once).
-        var itemsThisTick = pendingItems.Take(MaxPendingBatchesPerTick * IngestFlushSize).ToList();
+        if (claimedItems.Count == 0) return;
 
-        foreach (var item in itemsThisTick)
+        foreach (var item in claimedItems)
             db.Entry(item).State = EntityState.Detached;
 
-        await Task.WhenAll(itemsThisTick.Select(item =>
+        await Task.WhenAll(claimedItems.Select(item =>
             UploadItemInNewScopeAsync(item, job.OrganizationId, job.CreatedByUserId, ct)));
 
         // Re-query all items fresh — each upload committed in its own scope.
-        var allIds = itemsThisTick.Select(i => i.Id).ToHashSet();
+        var allIds = claimedItems.Select(i => i.Id).ToHashSet();
         var freshItems = await db.BulkImportItems
             .Where(i => allIds.Contains(i.Id))
             .Include(i => i.Report)
