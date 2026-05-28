@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using PDFtoImage;
 using Taqreerk.Application.Common;
 using Taqreerk.Application.Interfaces;
@@ -959,7 +960,24 @@ public class BulkImportProcessor : BackgroundService
                     job.FailedCount++;
                 }
             }
-            await db.SaveChangesAsync(ct);
+
+            // Two instances can race here: both see existing=null for the same
+            // ReportId+Language, both queue an INSERT, second one hits 23505.
+            // On conflict: detach the new ReportAiContent entries (the other
+            // instance already persisted them) and re-save so item stages and
+            // report status still commit.
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex)
+                when (ex.InnerException is PostgresException { SqlState: "23505", ConstraintName: "IX_report_ai_contents_ReportId_Language" })
+            {
+                foreach (var entry in db.ChangeTracker.Entries<ReportAiContent>()
+                             .Where(e => e.State == EntityState.Added).ToList())
+                    entry.State = EntityState.Detached;
+                await db.SaveChangesAsync(ct);
+            }
         }
 
         await FinaliseJobIfDoneAsync(db, job, ct);
