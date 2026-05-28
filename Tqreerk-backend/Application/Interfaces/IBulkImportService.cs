@@ -52,4 +52,15 @@ public interface IBulkImportService
     /// not an error; the controller maps it to a no-op 200.
     /// </summary>
     Task<int> RetryFailedAsync(Guid jobId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Stop a running job immediately: all items still in an active stage
+    /// (Pending / Uploading / Ingesting / Summarizing) are flipped to Failed
+    /// and the job itself is marked Failed. Already-Completed items are left
+    /// untouched so successfully processed reports remain Published.
+    ///
+    /// Returns the number of items that were cancelled. Zero means the job
+    /// was already in a terminal state — still a 200, not an error.
+    /// </summary>
+    Task<int> CancelJobAsync(Guid jobId, CancellationToken ct = default);
 }

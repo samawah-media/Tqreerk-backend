@@ -337,6 +337,41 @@ public class BulkImportService : IBulkImportService
         return failed.Count;
     }
 
+    public async Task<int> CancelJobAsync(Guid jobId, CancellationToken ct = default)
+    {
+        var job = await _db.BulkImportJobs
+            .FirstOrDefaultAsync(j => j.Id == jobId, ct)
+            ?? throw new KeyNotFoundException("Bulk import job not found.");
+
+        if (job.Status is BulkImportStatus.Completed or BulkImportStatus.Failed)
+            return 0;
+
+        // Atomically fail every item still in an active stage. ExecuteUpdateAsync
+        // goes straight to the DB — no need to load 5000 rows into memory.
+        var cancelled = await _db.BulkImportItems
+            .Where(i => i.JobId == jobId
+                     && i.Stage != BulkImportItemStage.Completed
+                     && i.Stage != BulkImportItemStage.Failed)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.Stage, BulkImportItemStage.Failed)
+                .SetProperty(i => i.ErrorMessage, "تم إلغاء المهمة")
+                .SetProperty(i => i.CompletedAt, DateTime.UtcNow), ct);
+
+        // Recalculate counters from DB truth rather than guessing deltas.
+        job.CompletedCount = await _db.BulkImportItems
+            .CountAsync(i => i.JobId == jobId && i.Stage == BulkImportItemStage.Completed, ct);
+        job.FailedCount = await _db.BulkImportItems
+            .CountAsync(i => i.JobId == jobId && i.Stage == BulkImportItemStage.Failed, ct);
+        job.Status = BulkImportStatus.Failed;
+        job.CompletedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "[bulk-import] cancel job={JobId} stopped {Count} active item(s)",
+            jobId, cancelled);
+        return cancelled;
+    }
+
     // ── Excel parsing ──────────────────────────────────────────────────────
 
     private record ParsedRow(
