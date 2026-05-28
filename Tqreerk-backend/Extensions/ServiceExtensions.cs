@@ -259,7 +259,15 @@ public static class ServiceExtensions
             cfg.SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
                .UseSimpleAssemblyNameTypeSerializer()
                .UseRecommendedSerializerSettings()
-               .UsePostgreSqlStorage(o => o.UseNpgsqlConnection(hangfireConnStr))
+               .UsePostgreSqlStorage(
+                   o => o.UseNpgsqlConnection(hangfireConnStr),
+                   new Hangfire.PostgreSql.PostgreSqlStorageOptions
+                   {
+                       // Default is 30 min — too long after an OOM kill (SIGKILL).
+                       // 5 min means stuck jobs resume within one poll cycle after
+                       // a hard crash instead of blocking the queue for half an hour.
+                       InvisibilityTimeout = TimeSpan.FromMinutes(5),
+                   })
                // BulkJobFailedFilter marks items Failed when all Hangfire
                // retries are exhausted. Registered globally so it fires for
                // both bulk-upload and bulk-advance queues without needing
