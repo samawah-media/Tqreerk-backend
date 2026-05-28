@@ -55,10 +55,11 @@ public class BulkImportProcessor : BackgroundService
 
     /// <summary>Maximum number of upload batches to process in a single tick.
     /// Each batch = <see cref="IngestFlushSize"/> items uploaded in parallel.
-    /// 5 batches × 6 items = 30 items per upload tick. The advance loop runs
-    /// in a separate Task so AdvanceInFlightJobAsync still fires every 10 s
-    /// regardless of how long these uploads take.</summary>
-    private const int MaxPendingBatchesPerTick = 5;
+    /// Kept at 1 to cap per-instance memory: 1 × 6 items × ~40 MB each = ~240 MB.
+    /// At 5 the system OOM'd (5 × 6 × 40 MB = 1.2 GB per instance × N instances).
+    /// Throughput is maintained by multiple Cloud Run instances each taking one
+    /// batch; raise this only after profiling memory headroom per instance.</summary>
+    private const int MaxPendingBatchesPerTick = 1;
 
     /// Named client key registered in ServiceExtensions; we resolve via
     /// the factory each time we fetch so HttpMessageHandler lifetime
@@ -439,31 +440,26 @@ public class BulkImportProcessor : BackgroundService
         Guid uploaderUserId,
         CancellationToken ct)
     {
-        // Resume-from-existing gate. Scoped to the platform org because
-        // bulk-imports only ever land there — a report with the same
-        // title under a real organisation is the org's own work and
-        // doesn't conflict. Case-insensitive + trimmed so trailing
-        // whitespace or capitalisation in the Excel doesn't slip a
-        // duplicate past us. Soft-deleted rows are intentionally NOT
-        // counted (the global query filter on Reports already drops
-        // them) so re-uploading after an admin deletion works.
-        //
-        // Instead of failing the row outright, we attach it to the
-        // existing Report and resume the AI pipeline from whichever
-        // stage that report stalled at. The processor's later stages
-        // pick the row up from there exactly as if a fresh upload
-        // produced it.
+        // Deduplication: same title AND same Source → reuse the existing Report.
+        // We search across all BulkImportItems (every job) for a non-Failed row
+        // that already received a ReportId for this title+source combination.
+        // This handles re-uploading the same Excel: the second run finds the
+        // first run's completed rows and skips download + AI work entirely.
         var normalisedTitle = (item.Title ?? string.Empty).Trim();
-        if (normalisedTitle.Length > 0)
+        var normalisedSource = (item.Source ?? string.Empty).Trim();
+        if (normalisedTitle.Length > 0 && normalisedSource.Length > 0)
         {
-            var existing = await db.Reports
-                .Where(r => r.OrganizationId == orgId
-                         && r.TitleAr.ToLower() == normalisedTitle.ToLower())
-                .Select(r => new { r.Id, r.Status })
+            var existingReportId = await db.BulkImportItems
+                .Where(i => i.Id != item.Id
+                         && i.ReportId != null
+                         && i.Source == normalisedSource
+                         && i.Title.ToLower() == normalisedTitle.ToLower()
+                         && i.Stage != BulkImportItemStage.Failed)
+                .Select(i => i.ReportId)
                 .FirstOrDefaultAsync(ct);
-            if (existing is not null)
+            if (existingReportId is not null)
             {
-                await ResumeExistingReportAsync(db, item, existing.Id, ct);
+                await ResumeExistingReportAsync(db, item, existingReportId.Value, ct);
                 return;
             }
         }
