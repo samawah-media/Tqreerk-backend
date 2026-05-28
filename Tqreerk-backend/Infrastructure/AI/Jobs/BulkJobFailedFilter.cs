@@ -50,6 +50,28 @@ public sealed class BulkJobFailedFilter(IServiceProvider services)
                 db.BulkImportJobs
                     .Where(j => j.Items.Any(i => i.Id == itemId.Value))
                     .ExecuteUpdate(s => s.SetProperty(j => j.FailedCount, j => j.FailedCount + 1));
+
+                // Finalise the parent job if this was the last active item.
+                // Without this, a job whose last item fails via this filter
+                // stays in Processing forever — TryFinaliseJobAsync on the
+                // Hangfire jobs only runs on the success path.
+                var jobId = db.BulkImportItems
+                    .Where(i => i.Id == itemId.Value)
+                    .Select(i => (Guid?)i.JobId)
+                    .FirstOrDefault();
+                if (jobId is not null)
+                {
+                    var anyActive = db.BulkImportItems.Any(i =>
+                        i.JobId == jobId.Value
+                        && i.Stage != BulkImportItemStage.Completed
+                        && i.Stage != BulkImportItemStage.Failed);
+                    if (!anyActive)
+                        db.BulkImportJobs
+                            .Where(j => j.Id == jobId.Value && j.Status == BulkImportStatus.Processing)
+                            .ExecuteUpdate(s => s
+                                .SetProperty(j => j.Status, BulkImportStatus.Completed)
+                                .SetProperty(j => j.CompletedAt, DateTime.UtcNow));
+                }
             }
         }
         catch
