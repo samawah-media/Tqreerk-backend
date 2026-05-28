@@ -62,6 +62,15 @@ public class BulkImportProcessor : BackgroundService
     /// batch; raise this only after profiling memory headroom per instance.</summary>
     private const int MaxPendingBatchesPerTick = 1;
 
+    /// <summary>Global cap on simultaneous Uploading items across ALL backend
+    /// instances. Before claiming a new batch, the processor counts items
+    /// currently in Uploading; if the count is at or above this limit it skips
+    /// the tick entirely. This prevents N Cloud Run instances from each
+    /// claiming IngestFlushSize items and flooding memory/connections when the
+    /// API scales out under load. 24 = 4 instances × 6 items; raise if
+    /// throughput is too slow once GPU concurrency is also at 6.</summary>
+    private const int MaxGlobalUploading = 40;
+
     /// Named client key registered in ServiceExtensions; we resolve via
     /// the factory each time we fetch so HttpMessageHandler lifetime
     /// rotation works correctly for this long-running BackgroundService
@@ -223,22 +232,23 @@ public class BulkImportProcessor : BackgroundService
             await ProcessPendingJobAsync(db, files, ai, storageOpts, job, ct);
         }
 
-        // 2. Retry-driven Pending items inside already-Processing jobs. Items
-        //    land here after /retry-failed rolls Failed rows back to Pending
-        //    without flipping the job's own Status. Also picks up any items
-        //    just reset from Uploading above (their job is already Processing).
-        //    The advance loop cannot handle these because they have no
-        //    IngestJobId to poll yet — they need the full upload + ingest
-        //    dispatch path first.
-        var inFlightJobsWithPending = await db.BulkImportJobs
+        // Global cap: if too many items are already uploading across all
+        // instances, skip this tick entirely. Prevents N Cloud Run instances
+        // from each claiming IngestFlushSize items simultaneously and OOMing.
+        var currentlyUploading = await db.BulkImportItems
+            .CountAsync(i => i.Stage == BulkImportItemStage.Uploading, ct);
+        if (currentlyUploading >= MaxGlobalUploading) return;
+
+        // 2. Retry-driven Pending items inside already-Processing jobs. Process
+        //    ONE job per tick so total in-flight = MaxGlobalUploading regardless
+        //    of how many backend instances are running.
+        var jobWithPending = await db.BulkImportJobs
             .Where(j => j.Status == BulkImportStatus.Processing
                      && j.Items.Any(i => i.Stage == BulkImportItemStage.Pending))
             .Include(j => j.Items)
-            .ToListAsync(ct);
-        foreach (var job in inFlightJobsWithPending)
-        {
-            await ProcessPendingItemsAsync(db, files, ai, storageOpts, job, ct);
-        }
+            .FirstOrDefaultAsync(ct);
+        if (jobWithPending is not null)
+            await ProcessPendingItemsAsync(db, files, ai, storageOpts, jobWithPending, ct);
     }
 
     // ── Stage 1: Pending → Uploading → Ingesting ────────────────────────────
