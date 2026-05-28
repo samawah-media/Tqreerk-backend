@@ -126,6 +126,27 @@ public class AdminBulkImportsController : ControllerBase
         }
     }
 
+    /// <summary>Stop a running job: all items still in an active stage
+    /// (Pending / Uploading / Ingesting / Summarizing) are flipped to Failed
+    /// and the job is marked Failed. Items that already Completed are kept
+    /// as-is — their reports remain Published. Returns the number of items
+    /// that were actively cancelled (zero = job was already terminal).</summary>
+    [HttpPost("{id:guid}/cancel")]
+    [ProducesResponseType(typeof(CancelResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Cancel(Guid id, CancellationToken ct)
+    {
+        try
+        {
+            var count = await _bulk.CancelJobAsync(id, ct);
+            return Ok(new CancelResponse(count));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -138,4 +159,8 @@ public class AdminBulkImportsController : ControllerBase
     /// uses this to decide between a "بدأت إعادة المحاولة لـ N صف" toast
     /// and a "لا توجد صفوف فاشلة" hint when the count is zero.</summary>
     public record RetryResponse(int RetriedCount);
+
+    /// <summary>Number of items that were actively stopped. Zero means the
+    /// job was already in a terminal state.</summary>
+    public record CancelResponse(int CancelledCount);
 }
