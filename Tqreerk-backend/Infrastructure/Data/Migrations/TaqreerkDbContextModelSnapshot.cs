@@ -332,6 +332,9 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasDefaultValueSql("gen_random_uuid()");
 
+                    b.Property<long>("AccumulatedSeconds")
+                        .HasColumnType("bigint");
+
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("timestamp with time zone");
 

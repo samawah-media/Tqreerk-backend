@@ -169,6 +169,14 @@ def _is_quota_error(exc: Exception) -> bool:
     return any(m in str(exc).lower() for m in _QUOTA_ERROR_MARKERS)
 
 
+def _is_token_overflow_error(exc: Exception) -> bool:
+    """Detect 400 INVALID_ARGUMENT token-limit errors.
+    These are deterministic — retrying the same content never helps.
+    Surface immediately so the caller can truncate and retry."""
+    s = str(exc)
+    return "400" in s and "INVALID_ARGUMENT" in s and "token" in s.lower() and "exceeds" in s.lower()
+
+
 _CONN_ERROR_MARKERS = (
     "ssl", "eof", "connection reset", "broken pipe",
     "remote end closed", "connection aborted", "max retries",
@@ -216,6 +224,8 @@ def _call_with_retry(operation: str, fn):
             # with a separate quota pool (e.g. Flash → Flash-Lite). Callers
             # that don't use the fallback wrapper see the 429 directly.
             if quota_error:
+                raise
+            if _is_token_overflow_error(exc):
                 raise
             if connection_error:
                 _replace_if_same(client)
@@ -632,40 +642,53 @@ def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSu
         candidate = text[start:end + 1].strip()
         return candidate if candidate.startswith("{") and candidate.endswith("}") else None
 
-    # Gemini context window: 1,048,576 tokens. Reserve ~100K for the prompt
-    # and output. At ~4 chars/token that leaves ~3.6M chars for page content.
-    # Walk pages in order and stop before we exceed the budget so that for
-    # oversized reports we summarise as much as fits rather than failing hard.
-    _MAX_CONTENT_CHARS = 3_600_000
-    page_parts: list[str] = []
-    total = 0
-    for i, content in enumerate(pages_content):
-        part = f"[Page {i + 1}]\n{content}"
-        needed = (4 if page_parts else 0) + len(part)  # 4 = len("\n\n")
-        if total + needed > _MAX_CONTENT_CHARS:
-            logger.warning(
-                "summarize_report: content too large, truncated at page %d/%d",
-                i, len(pages_content),
+    # Start with the full content. If Gemini rejects with a 400 token overflow,
+    # halve the char budget and retry — up to 4 halvings before giving up.
+    _MAX_CONTENT_CHARS: int | None = None  # None = no limit on first pass
+    response = None
+    for trunc_pass in range(5):
+        page_parts: list[str] = []
+        total = 0
+        for i, content in enumerate(pages_content):
+            part = f"[Page {i + 1}]\n{content}"
+            needed = (4 if page_parts else 0) + len(part)
+            if _MAX_CONTENT_CHARS is not None and total + needed > _MAX_CONTENT_CHARS:
+                logger.warning(
+                    "summarize_report: truncated at page %d/%d (pass=%d max_chars=%d)",
+                    i, len(pages_content), trunc_pass, _MAX_CONTENT_CHARS,
+                )
+                break
+            page_parts.append(part)
+            total += needed
+        combined = "\n\n".join(page_parts)
+        prompt_text = prompts.summarize_prompt(combined, language=language)
+        try:
+            response = _call_with_model_fallback(
+                operation="summarize_report",
+                models=[settings.gemini_summary_model, settings.gemini_summary_model_fallback],
+                build_call=lambda model: lambda client: client.models.generate_content(
+                    model=model,
+                    contents=prompt_text,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=65535,
+                        response_mime_type="application/json",
+                        response_schema=ReportSummary,
+                    ),
+                ),
             )
             break
-        page_parts.append(part)
-        total += needed
-    combined = "\n\n".join(page_parts)
-    prompt_text = prompts.summarize_prompt(combined, language=language)
-    response = _call_with_model_fallback(
-        operation="summarize_report",
-        models=[settings.gemini_summary_model, settings.gemini_summary_model_fallback],
-        build_call=lambda model: lambda client: client.models.generate_content(
-            model=model,
-            contents=prompt_text,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=65535,   # Flash default is 8192; range is [1,65536) so max is 65535
-                response_mime_type="application/json",
-                response_schema=ReportSummary,   # SDK auto-generates schema + returns response.parsed
-            ),
-        ),
-    )
+        except Exception as exc:
+            if _is_token_overflow_error(exc) and trunc_pass < 4:
+                # Remove 10% of content on each overflow and retry.
+                _MAX_CONTENT_CHARS = int((_MAX_CONTENT_CHARS or total) * 0.9)
+                logger.warning(
+                    "summarize_report: token overflow on pass %d, retrying with max_chars=%d",
+                    trunc_pass, _MAX_CONTENT_CHARS,
+                )
+                continue
+            raise
+    assert response is not None
     # response.parsed is None when the SDK's internal parsing fails silently.
     # Fall back to manual parse so the error surface is the same as before.
     if response.parsed is not None:
