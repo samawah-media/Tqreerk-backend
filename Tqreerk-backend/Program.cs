@@ -137,14 +137,14 @@ app.UseCors("DefaultCors");
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Hangfire dashboard — internal operations view. Restricted to local
-// requests in development; disabled in production (use Cloud Console
-// port-forward or promote to a dedicated admin endpoint with JWT auth
-// once the dashboard auth story is settled).
-if (!app.Environment.IsProduction())
+// Hangfire dashboard — protected by JWT + IsPlatformStaff in all environments.
+// Browser access: navigate to /admin/hangfire?access_token=<jwt>
+// API client: Authorization: Bearer <jwt>
+app.UseHangfireDashboard("/admin/hangfire", new DashboardOptions
 {
-    app.UseHangfireDashboard("/admin/hangfire");
-}
+    Authorization = [new Taqreerk.API.Authorization.HangfirePlatformStaffFilter(app.Services)],
+    IsReadOnlyFunc = _ => false,
+});
 
 // Maintenance gate. Sits after auth so the middleware can identify
 // admin paths (it short-circuits everything except /api/admin/*,
