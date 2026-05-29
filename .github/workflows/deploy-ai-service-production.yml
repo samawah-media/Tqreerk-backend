@@ -68,8 +68,9 @@ jobs:
             --port=8080
             --memory=2Gi
             --cpu=2
-            --min-instances=1
+            --min-instances=0
             --max-instances=6
+            --no-cpu-throttling
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
@@ -125,7 +126,7 @@ jobs:
             --port=8080
             --memory=2Gi
             --cpu=2
-            --min-instances=1
+            --min-instances=0
             --max-instances=6
             --timeout=900
             --no-cpu-throttling
