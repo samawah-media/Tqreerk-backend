@@ -159,6 +159,7 @@ public static class ServiceExtensions
         services.Configure<GeminiSettings>(config.GetSection(GeminiSettings.Section));
         services.Configure<AdminWorkerSettings>(config.GetSection(AdminWorkerSettings.Section));
         services.Configure<QuotaSettings>(config.GetSection(QuotaSettings.Section));
+        services.Configure<MoyasarSettings>(config.GetSection(MoyasarSettings.Section));
 
         services.AddMemoryCache();
 
@@ -213,6 +214,8 @@ public static class ServiceExtensions
         services.AddScoped<IPointsService, PointsService>();
         services.AddScoped<IMeService, MeService>();
         services.AddScoped<IAnnotationsService, AnnotationsService>();
+        services.AddScoped<IPaymentCheckoutService, PaymentCheckoutService>();
+        services.AddHttpClient<IMoyasarApiClient, MoyasarApiClient>();
 
         // Typed HttpClient for the external Python ai-service. Each call is a
         // long-running RPC (ingest can take minutes); the per-call timeout is

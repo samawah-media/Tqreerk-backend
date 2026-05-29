@@ -4135,6 +4135,100 @@
     ]
   },
   {
+    "ContainingType": "Taqreerk.API.Controllers.PaymentsController",
+    "Method": "CancelAutoRenew",
+    "RelativePath": "api/payments/cancel-auto-renew",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Payments.CancelAutoRenewResultDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.PaymentsController",
+    "Method": "Checkout",
+    "RelativePath": "api/payments/checkout",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "body",
+        "Type": "Taqreerk.Application.DTOs.Payments.CreateCheckoutRequestDto",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Payments.CheckoutSessionDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.PaymentsController",
+    "Method": "Config",
+    "RelativePath": "api/payments/config",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Payments.MoyasarPublicConfigDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.PaymentsController",
+    "Method": "MoyasarWebhook",
+    "RelativePath": "api/payments/moyasar/webhook",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.PaymentsController",
+    "Method": "Verify",
+    "RelativePath": "api/payments/verify",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "body",
+        "Type": "Taqreerk.Application.DTOs.Payments.VerifyPaymentRequestDto",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Payments.VerifyPaymentResultDto",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
     "ContainingType": "Taqreerk.API.Controllers.ReferenceController",
     "Method": "GetPlans",
     "RelativePath": "api/plans",
