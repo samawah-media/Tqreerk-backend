@@ -121,6 +121,15 @@ public class BulkAdvanceItemJob(
             return;
         }
 
+        var hasChunks = await db.ReportChunks
+            .AnyAsync(c => c.ReportId == item.ReportId.Value, ct);
+        if (!hasChunks)
+        {
+            MarkFailed(item, "لا توجد مقاطع نصية للتقرير — يجب إعادة استخراج المحتوى أولاً.");
+            await SaveAndUpdateCountersAsync(item, ct);
+            return;
+        }
+
         var summarizeJobs = await ai.BulkSummarizeAsync(
             new List<Guid> { item.ReportId.Value }, ct);
 
