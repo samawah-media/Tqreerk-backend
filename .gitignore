@@ -20,3 +20,11 @@ artifacts/
 
 # Local file uploads (Feature 3 LocalFileStorage)
 Tqreerk-backend/uploads/
+
+# Secrets — never commit real credentials (use User Secrets / env vars / GCP)
+Tqreerk-backend/appsettings.Development.json
+Tqreerk-backend/appsettings.*.local.json
+Tqreerk-backend/**/appsettings.Development.json
+Tqreerk-backend/taqrrerk-gcs-key.json
+Tqreerk-backend/*-gcs-key.json
+*.gcs-key.json

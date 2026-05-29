@@ -11253,6 +11253,14 @@
           },
           "usage": {
             "$ref": "#/components/schemas/UsageSnapshotDto"
+          },
+          "subscriptionEndDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "isFreePlan": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

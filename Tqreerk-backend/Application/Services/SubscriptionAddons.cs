@@ -5,7 +5,10 @@ namespace Taqreerk.Application.Services;
 /// <summary>Typed helpers for subscription.AddonsJson (no migration).</summary>
 public static class SubscriptionAddons
 {
-    public sealed record State(bool AutoRenew = true, string? MoyasarToken = null);
+    public sealed record State(
+        bool AutoRenew = true,
+        string? MoyasarToken = null,
+        Guid? PendingPlanId = null);
 
     public static State Parse(string? json)
     {
@@ -20,7 +23,15 @@ public static class SubscriptionAddons
             var token = root.TryGetProperty("moyasarToken", out var t) && t.ValueKind == JsonValueKind.String
                 ? t.GetString()
                 : null;
-            return new State(autoRenew, token);
+            Guid? pendingPlanId = null;
+            if (root.TryGetProperty("pendingPlanId", out var pp)
+                && pp.ValueKind == JsonValueKind.String
+                && Guid.TryParse(pp.GetString(), out var parsed))
+            {
+                pendingPlanId = parsed;
+            }
+
+            return new State(autoRenew, token, pendingPlanId);
         }
         catch
         {
@@ -33,5 +44,6 @@ public static class SubscriptionAddons
         {
             autoRenew = state.AutoRenew,
             moyasarToken = state.MoyasarToken,
+            pendingPlanId = state.PendingPlanId,
         });
 }

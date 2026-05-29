@@ -282,7 +282,14 @@ public class MeService : IMeService
                 $"User {userId} has no subscription. Registration should auto-link to a plan.");
         }
 
-        var plan = ctx.Value.Plan;
+        var (sub, plan, _) = ctx.Value;
+        var isFreePlan = plan.TargetType == PlanTargetType.Individual && plan.AnnualPrice <= 0;
+        DateTime? subscriptionEndDate =
+            !isFreePlan
+            && sub.Status == SubscriptionStatus.Active
+            && sub.PaymentStatus == PaymentStatus.Paid
+                ? sub.EndDate
+                : null;
 
         // This-month usage. Same window UsageService uses to enforce
         // the cap — first day of the current UTC month → start of next.
@@ -355,7 +362,9 @@ public class MeService : IMeService
                 periodStartUtc,
                 resetsAt,
                 consumedByAction,
-                readReportIds));
+                readReportIds),
+            subscriptionEndDate,
+            isFreePlan);
     }
 
     /// Prefer an active subscription; otherwise surface the latest org

@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Taqreerk</RootNamespace>
+    <UserSecretsId>taqreerk-backend-local-dev</UserSecretsId>
     <!-- ReadyToRun compiles IL → native code at publish time so the runtime
          skips JIT for hot startup paths. Cuts Cloud Run cold-start by
          ~30-50% on a 1-vCPU instance. Release-only because R2R inflates

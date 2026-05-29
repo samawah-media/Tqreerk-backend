@@ -53,19 +53,29 @@ public class PaymentCheckoutService : IPaymentCheckoutService
 
         var (subscription, isOrg, isFounder) = await ResolveWritableSubscriptionAsync(userId, plan, ct);
 
-        if (subscription.PlanId == planId
-            && subscription.Status == SubscriptionStatus.Active
-            && subscription.PaymentStatus == PaymentStatus.Paid)
-        {
-            throw new InvalidOperationException("أنت مشترك بالفعل في هذه الباقة.");
-        }
-
-        subscription.PlanId = planId;
-        subscription.Status = SubscriptionStatus.Inactive;
-        subscription.PaymentStatus = PaymentStatus.Pending;
-
         var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
-        subscription.AddonsJson = SubscriptionAddons.Serialize(addons with { AutoRenew = true });
+        var hasActivePaid =
+            subscription.Status == SubscriptionStatus.Active
+            && subscription.PaymentStatus == PaymentStatus.Paid;
+
+        if (hasActivePaid && subscription.PlanId == planId)
+            throw new InvalidOperationException("أنت مشترك بالفعل في هذه الباقة.");
+
+        if (hasActivePaid)
+        {
+            // Upgrade: keep current plan/features until Moyasar confirms payment.
+            subscription.AddonsJson = SubscriptionAddons.Serialize(
+                addons with { AutoRenew = true, PendingPlanId = planId });
+        }
+        else
+        {
+            // Org (or other) first activation — not active yet; row tracks checkout target.
+            subscription.PlanId = planId;
+            subscription.Status = SubscriptionStatus.Inactive;
+            subscription.PaymentStatus = PaymentStatus.Pending;
+            subscription.AddonsJson = SubscriptionAddons.Serialize(
+                addons with { AutoRenew = true, PendingPlanId = null });
+        }
 
         var amountHalalas = ToHalalas(plan.AnnualPrice);
         var payment = new Payment
@@ -189,16 +199,24 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             return true;
 
         var subscription = await _db.Subscriptions
-            .Include(s => s.Plan)
             .FirstOrDefaultAsync(s => s.Id == payment.SubscriptionId, ct);
-        if (subscription?.Plan is null)
+        if (subscription is null)
             return false;
 
         if (userId.HasValue && !await UserOwnsSubscriptionAsync(userId.Value, subscription, ct))
             return false;
 
-        var expectedHalalas = ToHalalas(payment.Amount);
+        var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
+        var targetPlanId = addons.PendingPlanId ?? subscription.PlanId;
+        var targetPlan = await _db.Plans
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == targetPlanId && p.IsActive, ct);
+        if (targetPlan is null)
+            return false;
+
+        var expectedHalalas = ToHalalas(targetPlan.AnnualPrice);
         if (remote.Amount != expectedHalalas
+            || payment.Amount != targetPlan.AnnualPrice
             || !string.Equals(remote.Currency, payment.Currency, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("مبلغ الدفع لا يطابق الطلب.");
@@ -209,16 +227,16 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         payment.PaidAt = now;
         payment.MiserPaymentReference = remote.Id;
 
+        subscription.PlanId = targetPlanId;
         subscription.Status = SubscriptionStatus.Active;
         subscription.PaymentStatus = PaymentStatus.Paid;
         subscription.StartDate = now;
         subscription.EndDate = now.AddYears(1);
-
-        var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
         subscription.AddonsJson = SubscriptionAddons.Serialize(
             addons with
             {
                 AutoRenew = true,
+                PendingPlanId = null,
                 MoyasarToken = remote.SourceToken ?? addons.MoyasarToken,
             });
 
@@ -237,9 +255,20 @@ public class PaymentCheckoutService : IPaymentCheckoutService
 
         var sub = await _db.Subscriptions.FirstOrDefaultAsync(
             s => s.Id == payment.SubscriptionId, ct);
-        if (sub is not null && sub.PaymentStatus != PaymentStatus.Paid)
+        if (sub is not null)
         {
-            sub.PaymentStatus = PaymentStatus.Failed;
+            var addons = SubscriptionAddons.Parse(sub.AddonsJson);
+            var wasUpgradePending = addons.PendingPlanId.HasValue;
+
+            if (wasUpgradePending)
+            {
+                sub.AddonsJson = SubscriptionAddons.Serialize(
+                    addons with { PendingPlanId = null });
+            }
+            else if (sub.PaymentStatus != PaymentStatus.Paid)
+            {
+                sub.PaymentStatus = PaymentStatus.Failed;
+            }
         }
 
         await _db.SaveChangesAsync(ct);
