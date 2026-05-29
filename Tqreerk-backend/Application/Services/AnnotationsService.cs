@@ -40,7 +40,7 @@ public class AnnotationsService : IAnnotationsService
     public async Task<IReadOnlyList<AnnotationDto>> ListAsync(
         Guid userId, Guid reportId, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         return await _db.ReportAnnotations
             .AsNoTracking()
@@ -56,7 +56,7 @@ public class AnnotationsService : IAnnotationsService
     public async Task<AnnotationDto> CreateAsync(
         Guid userId, Guid reportId, CreateAnnotationRequest req, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         if (string.IsNullOrWhiteSpace(req.SelectionRect))
             throw new ArgumentException("Selection rect is required.");
@@ -93,7 +93,7 @@ public class AnnotationsService : IAnnotationsService
         Guid userId, Guid reportId, Guid annotationId,
         UpdateAnnotationRequest req, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         var row = await _db.ReportAnnotations
             .FirstOrDefaultAsync(
@@ -116,7 +116,7 @@ public class AnnotationsService : IAnnotationsService
     public async Task DeleteAsync(
         Guid userId, Guid reportId, Guid annotationId, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         var row = await _db.ReportAnnotations
             .FirstOrDefaultAsync(
@@ -130,7 +130,7 @@ public class AnnotationsService : IAnnotationsService
     public async Task<IReadOnlyList<PersonalNoteDto>> ListNotesAsync(
         Guid userId, Guid reportId, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         return await _db.ReportPersonalNotes
             .AsNoTracking()
@@ -143,7 +143,7 @@ public class AnnotationsService : IAnnotationsService
     public async Task<PersonalNoteDto> CreateNoteAsync(
         Guid userId, Guid reportId, CreatePersonalNoteRequest req, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         var body = (req.Body ?? "").Trim();
         if (string.IsNullOrEmpty(body))
@@ -168,7 +168,7 @@ public class AnnotationsService : IAnnotationsService
         Guid userId, Guid reportId, Guid noteId,
         UpdatePersonalNoteRequest req, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         var body = (req.Body ?? "").Trim();
         if (string.IsNullOrEmpty(body))
@@ -190,7 +190,7 @@ public class AnnotationsService : IAnnotationsService
     public async Task DeleteNoteAsync(
         Guid userId, Guid reportId, Guid noteId, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         var row = await _db.ReportPersonalNotes
             .FirstOrDefaultAsync(
@@ -204,7 +204,7 @@ public class AnnotationsService : IAnnotationsService
     public async Task<EditorBootstrapDto> GetEditorBootstrapAsync(
         Guid userId, Guid reportId, CancellationToken ct = default)
     {
-        await EnsureSavedAsync(userId, reportId, ct);
+        await EnsureOpenedForReadAsync(userId, reportId, ct);
 
         // Resolve the slug so we can reuse PublicReportService for the
         // metadata + signed URLs. Cheap one-row lookup; the alternative
@@ -245,17 +245,27 @@ public class AnnotationsService : IAnnotationsService
             Notes: notes);
     }
 
-    /// 404 path for every endpoint here. Editor + annotations are now
-    /// open to any authenticated user on any published report — no
-    /// "must be saved first" gate. We still 404 on missing/unpublished
-    /// reports so callers can't probe for existence.
-    private async Task EnsureSavedAsync(Guid userId, Guid reportId, CancellationToken ct)
+    /// Editor/annotations only for published reports the user has already
+    /// opened via full-access this billing month (within their read quota).
+    private async Task EnsureOpenedForReadAsync(Guid userId, Guid reportId, CancellationToken ct)
     {
         var exists = await _db.Reports
             .AsNoTracking()
             .AnyAsync(r => r.Id == reportId && r.Status == ReportStatus.Published, ct);
         if (!exists)
             throw new KeyNotFoundException("Report not found.");
+
+        var period = new DateOnly(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+        var opened = await _db.UsageTracking
+            .AsNoTracking()
+            .AnyAsync(
+                u => u.UserId == userId
+                  && u.ResourceId == reportId
+                  && u.ActionType == UsageActionType.ReportFullAccess
+                  && u.BillingPeriodStart == period,
+                ct);
+        if (!opened)
+            throw new KeyNotFoundException("Report not found in your saved library.");
     }
 
     private static AnnotationDto ToDto(ReportAnnotation a) =>

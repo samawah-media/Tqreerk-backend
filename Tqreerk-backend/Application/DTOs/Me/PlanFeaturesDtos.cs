@@ -74,4 +74,7 @@ public sealed record PlanTiersDto(
 public sealed record UsageSnapshotDto(
     DateTime PeriodStart,
     DateTime ResetsAt,
-    IReadOnlyDictionary<string, int> ConsumedByAction);
+    IReadOnlyDictionary<string, int> ConsumedByAction,
+    /// <summary>Report ids the user already opened with full-access this month
+    /// (idempotent reads — re-opening these does not consume another slot).</summary>
+    IReadOnlyList<Guid> ReadReportIds);

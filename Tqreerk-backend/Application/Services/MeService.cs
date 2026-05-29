@@ -303,6 +303,16 @@ public class MeService : IMeService
             x => x.Count,
             StringComparer.Ordinal);
 
+        var readReportIds = await _db.UsageTracking
+            .AsNoTracking()
+            .Where(u => u.UserId == userId
+                     && u.BillingPeriodStart == periodStart
+                     && u.ActionType == UsageActionType.ReportFullAccess
+                     && u.ResourceId != null)
+            .Select(u => u.ResourceId!.Value)
+            .Distinct()
+            .ToListAsync(ct);
+
         return new PlanFeaturesDto(
             plan.Id,
             plan.NameAr,
@@ -344,7 +354,8 @@ public class MeService : IMeService
             new UsageSnapshotDto(
                 periodStartUtc,
                 resetsAt,
-                consumedByAction));
+                consumedByAction,
+                readReportIds));
     }
 
     /// Prefer an active subscription; otherwise surface the latest org

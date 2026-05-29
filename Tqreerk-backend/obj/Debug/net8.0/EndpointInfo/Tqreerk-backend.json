@@ -433,6 +433,46 @@
         }
       }
     },
+    "/api/admin/bulk-imports/{id}/cancel": {
+      "post": {
+        "tags": [
+          "AdminBulkImports"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/sectors": {
       "get": {
         "tags": [
@@ -9433,6 +9473,10 @@
             "format": "date-time",
             "nullable": true
           },
+          "accumulatedSeconds": {
+            "type": "integer",
+            "format": "int64"
+          },
           "items": {
             "type": "array",
             "items": {
@@ -9487,6 +9531,20 @@
             "type": "string",
             "format": "date-time",
             "nullable": true
+          },
+          "accumulatedSeconds": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CancelResponse": {
+        "type": "object",
+        "properties": {
+          "cancelledCount": {
+            "type": "integer",
+            "format": "int32"
           }
         },
         "additionalProperties": false
@@ -13885,6 +13943,14 @@
             "additionalProperties": {
               "type": "integer",
               "format": "int32"
+            },
+            "nullable": true
+          },
+          "readReportIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
             },
             "nullable": true
           }
