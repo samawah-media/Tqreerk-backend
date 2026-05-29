@@ -632,7 +632,25 @@ def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSu
         candidate = text[start:end + 1].strip()
         return candidate if candidate.startswith("{") and candidate.endswith("}") else None
 
-    combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
+    # Gemini context window: 1,048,576 tokens. Reserve ~100K for the prompt
+    # and output. At ~4 chars/token that leaves ~3.6M chars for page content.
+    # Walk pages in order and stop before we exceed the budget so that for
+    # oversized reports we summarise as much as fits rather than failing hard.
+    _MAX_CONTENT_CHARS = 3_600_000
+    page_parts: list[str] = []
+    total = 0
+    for i, content in enumerate(pages_content):
+        part = f"[Page {i + 1}]\n{content}"
+        needed = (4 if page_parts else 0) + len(part)  # 4 = len("\n\n")
+        if total + needed > _MAX_CONTENT_CHARS:
+            logger.warning(
+                "summarize_report: content too large, truncated at page %d/%d",
+                i, len(pages_content),
+            )
+            break
+        page_parts.append(part)
+        total += needed
+    combined = "\n\n".join(page_parts)
     prompt_text = prompts.summarize_prompt(combined, language=language)
     response = _call_with_model_fallback(
         operation="summarize_report",
