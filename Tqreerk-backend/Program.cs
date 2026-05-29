@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Hangfire;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
@@ -135,6 +136,15 @@ if ((fileStorage.Provider ?? "local").ToLowerInvariant() != "gcs")
 app.UseCors("DefaultCors");
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Hangfire dashboard — protected by JWT + IsPlatformStaff in all environments.
+// Browser access: navigate to /admin/hangfire?access_token=<jwt>
+// API client: Authorization: Bearer <jwt>
+app.UseHangfireDashboard("/admin/hangfire", new DashboardOptions
+{
+    Authorization = [new Taqreerk.API.Authorization.HangfirePlatformStaffFilter(app.Services)],
+    IsReadOnlyFunc = _ => false,
+});
 
 // Maintenance gate. Sits after auth so the middleware can identify
 // admin paths (it short-circuits everything except /api/admin/*,

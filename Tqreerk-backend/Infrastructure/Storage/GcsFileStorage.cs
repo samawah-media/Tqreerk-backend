@@ -48,6 +48,30 @@ public class GcsFileStorage : IFileStorage
 
         _storage = StorageClient.Create(credential);
 
+        // The Google.Apis HTTP client inside StorageClientImpl has a 100-second
+        // default timeout that fires when the GCS endpoint is slow to respond to
+        // the resumable-upload InitiateSession POST (observed on large PDFs under
+        // network congestion). StorageClientBuilder has no public HttpClientTimeout
+        // property on the REST variant, so we reach the underlying IClientService
+        // via reflection — one-time at startup, not a hot path.
+        try
+        {
+            var svcProp = _storage.GetType().GetProperty(
+                "Service",
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Public);
+            if (svcProp?.GetValue(_storage) is Google.Apis.Services.IClientService svc)
+                svc.HttpClient.Timeout = TimeSpan.FromMinutes(10);
+            else
+                _logger.LogWarning("GCS: could not locate Service property — upload timeout stays at 100 s");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "GCS: reflection-based timeout increase failed; large PDF uploads may time out after 100 s");
+        }
+
         // ServiceAccountCredential carries a private key — sign locally.
         // ComputeCredential (Cloud Run / GCE) has no private key — delegate
         // V4 signing to the IAM Credentials API. The runtime SA must have

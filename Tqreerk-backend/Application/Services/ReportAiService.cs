@@ -409,7 +409,16 @@ public class ReportAiService : IReportAiService
                 {
                     var pages = TryReadIntFromJson(ingest.OutputData, "pages_processed");
                     if (pages is not null) report.PageCount = pages.Value;
-                    summarizeFollowupNeeded = true;
+
+                    // Only auto-summarize reports that entered the pipeline via
+                    // the normal org-approval flow (Status=ProcessingAi). Bulk-
+                    // import reports land at Status=Approved and are owned by
+                    // BulkImportProcessor — letting this worker race against it
+                    // wastes one extra Gemini call per report and blocks this
+                    // sequential loop for 20-30 s per item without advancing
+                    // any BulkImportItem.Stage (only BulkImportProcessor can do
+                    // that). PageCount is still updated above either way.
+                    summarizeFollowupNeeded = report.Status == ReportStatus.ProcessingAi;
                 }
                 else if (ingest.Status == AiJobStatus.Failed && report.Status == ReportStatus.ProcessingAi)
                 {

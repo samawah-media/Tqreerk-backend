@@ -14,7 +14,8 @@ public record BulkImportJobSummaryDto(
     string? SourceFileName,
     string? ErrorMessage,
     DateTime? StartedAt,
-    DateTime? CompletedAt
+    DateTime? CompletedAt,
+    long AccumulatedSeconds
 );
 
 /// Per-row state for the live progress UI. Includes the source-cell
@@ -54,5 +55,6 @@ public record BulkImportJobDetailDto(
     string? ErrorMessage,
     DateTime? StartedAt,
     DateTime? CompletedAt,
+    long AccumulatedSeconds,
     IReadOnlyList<BulkImportItemDto> Items
 );

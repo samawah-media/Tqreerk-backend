@@ -169,6 +169,14 @@ def _is_quota_error(exc: Exception) -> bool:
     return any(m in str(exc).lower() for m in _QUOTA_ERROR_MARKERS)
 
 
+def _is_token_overflow_error(exc: Exception) -> bool:
+    """Detect 400 INVALID_ARGUMENT token-limit errors.
+    These are deterministic — retrying the same content never helps.
+    Surface immediately so the caller can truncate and retry."""
+    s = str(exc)
+    return "400" in s and "INVALID_ARGUMENT" in s and "token" in s.lower() and "exceeds" in s.lower()
+
+
 _CONN_ERROR_MARKERS = (
     "ssl", "eof", "connection reset", "broken pipe",
     "remote end closed", "connection aborted", "max retries",
@@ -216,6 +224,8 @@ def _call_with_retry(operation: str, fn):
             # with a separate quota pool (e.g. Flash → Flash-Lite). Callers
             # that don't use the fallback wrapper see the 429 directly.
             if quota_error:
+                raise
+            if _is_token_overflow_error(exc):
                 raise
             if connection_error:
                 _replace_if_same(client)
@@ -274,26 +284,20 @@ class IndicatorItem(BaseModel):
     context: str | None = None
 
 
-class TrendItem(BaseModel):
-    topic: str
-    direction: str
-    time_span: str | None = None
-    magnitude: str | None = None
-    explanation: str | None = None
-
-
 class ReportSummary(BaseModel):
     """Combined summarization + insights output. One Gemini call populates
     every report_ai_contents column (summary, key_findings, topics,
-    indicators, trends) so the C# finalizer can copy them all in one pass.
+    indicators) so the C# finalizer can copy them all in one pass.
 
-    `summary` is a 3-7 item bullet list, not a paragraph — see the matching
-    SummarizeResponse model in models/ingest.py for the rationale."""
-    summary: list[str] = Field(min_length=3, max_length=7)
-    key_findings: list[str]
-    topics: list[str]
-    indicators: list[IndicatorItem] = []
-    trends: list[TrendItem] = []
+    trends removed: stored in DB but never returned by any API endpoint —
+    was spending tokens/time for nothing.
+
+    maxItems works on list[str] (primitive arrays); not supported on
+    list[object] arrays by Gemini — those are capped via the prompt."""
+    summary:      list[str]           = Field(min_length=5, max_length=7)
+    key_findings: list[str]           = Field(max_length=8)
+    topics:       list[str]           = Field(max_length=10)
+    indicators:   list[IndicatorItem] = Field(default=[])
 
 
 # ── Plain text completion (used by Ragas judge) ─────────────────────────────
@@ -627,19 +631,66 @@ def summarize_report(pages_content: list[str], language: str = "ar") -> ReportSu
     automatically retry with `gemini_summary_model_fallback` (Flash-Lite,
     different Vertex quota pool) before surfacing the error.
     """
-    combined = "\n\n".join(f"[Page {i+1}]\n{c}" for i, c in enumerate(pages_content))
-    prompt_text = prompts.summarize_prompt(combined, language=language)
-    response = _call_with_model_fallback(
-        operation="summarize_report",
-        models=[settings.gemini_summary_model, settings.gemini_summary_model_fallback],
-        build_call=lambda model: lambda client: client.models.generate_content(
-            model=model,
-            contents=prompt_text,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                response_mime_type="application/json",
-                response_schema=prompts.REPORT_SUMMARY_SCHEMA,
-            ),
-        ),
-    )
+    def _extract_json_object(text: str) -> str | None:
+        """Best-effort JSON extraction when extra prose wraps an object."""
+        if not text:
+            return None
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        candidate = text[start:end + 1].strip()
+        return candidate if candidate.startswith("{") and candidate.endswith("}") else None
+
+    # Start with the full content. If Gemini rejects with a 400 token overflow,
+    # halve the char budget and retry — up to 4 halvings before giving up.
+    _MAX_CONTENT_CHARS: int | None = None  # None = no limit on first pass
+    response = None
+    for trunc_pass in range(5):
+        page_parts: list[str] = []
+        total = 0
+        for i, content in enumerate(pages_content):
+            part = f"[Page {i + 1}]\n{content}"
+            needed = (4 if page_parts else 0) + len(part)
+            if _MAX_CONTENT_CHARS is not None and total + needed > _MAX_CONTENT_CHARS:
+                logger.warning(
+                    "summarize_report: truncated at page %d/%d (pass=%d max_chars=%d)",
+                    i, len(pages_content), trunc_pass, _MAX_CONTENT_CHARS,
+                )
+                break
+            page_parts.append(part)
+            total += needed
+        combined = "\n\n".join(page_parts)
+        prompt_text = prompts.summarize_prompt(combined, language=language)
+        try:
+            response = _call_with_model_fallback(
+                operation="summarize_report",
+                models=[settings.gemini_summary_model, settings.gemini_summary_model_fallback],
+                build_call=lambda model: lambda client: client.models.generate_content(
+                    model=model,
+                    contents=prompt_text,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=65535,
+                        response_mime_type="application/json",
+                        response_schema=ReportSummary,
+                    ),
+                ),
+            )
+            break
+        except Exception as exc:
+            if _is_token_overflow_error(exc) and trunc_pass < 4:
+                # Remove 10% of content on each overflow and retry.
+                _MAX_CONTENT_CHARS = int((_MAX_CONTENT_CHARS or total) * 0.9)
+                logger.warning(
+                    "summarize_report: token overflow on pass %d, retrying with max_chars=%d",
+                    trunc_pass, _MAX_CONTENT_CHARS,
+                )
+                continue
+            raise
+    assert response is not None
+    # response.parsed is None when the SDK's internal parsing fails silently.
+    # Fall back to manual parse so the error surface is the same as before.
+    if response.parsed is not None:
+        return response.parsed
     return ReportSummary.model_validate_json(response.text)

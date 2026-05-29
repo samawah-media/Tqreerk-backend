@@ -35,6 +35,11 @@ public class BulkImportJob : BaseEntity
     public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
 
+    /// Cumulative seconds spent processing across all runs (retries).
+    /// The current run's elapsed time is NOT included here — add
+    /// (now − StartedAt) on the client to get the true total.
+    public long AccumulatedSeconds { get; set; }
+
     public User? CreatedByUser { get; set; }
     public Organization? Organization { get; set; }
     public ICollection<BulkImportItem> Items { get; set; } = [];

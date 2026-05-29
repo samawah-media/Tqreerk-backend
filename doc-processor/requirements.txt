@@ -40,16 +40,14 @@ accelerate==1.4.0
 einops==0.8.0
 timm==1.0.11
 
-# Surya OCR — Arabic + English OCR fallback for low-quality / scanned regions.
-# Swapped from EasyOCR 2026-05-12: better Arabic line accuracy and multi-
-# column / RTL handling. PyTorch-native; pulls weights via transformers
-# into HF_HOME so it reuses our existing model cache. NOTE: GPL-3 /
-# commercial dual license — production use above the free tier needs a
-# commercial license from Datalab.
-# 0.13.1 ships the class-based RecognitionPredictor / DetectionPredictor
-# API; it requires torch>=2.5.1 (see torch pin above) and transformers
-# >=4.41,<5 which our 4.50.0 pin satisfies.
-surya-ocr==0.13.1
+# EasyOCR — Arabic + English OCR fallback for low-quality / scanned regions.
+# Swapped from RapidOCR 2026-05-27: RapidOCR has no working Arabic ONNX models
+# available on HuggingFace (SWHL/RapidOCR contains only CJK+English; the
+# claimed multilingual/ subfolder does not exist). EasyOCR is GPU-accelerated
+# (PyTorch CRAFT detector + CRNN recognizer), ships Arabic+English models out
+# of the box, and achieves CER ~0.58 on Arabic benchmarks.
+# Models pre-downloaded at image build time into /app/easyocr_models/.
+easyocr
 
 # sentence-transformers — multilingual text embedding (replaces Vertex AI text-embedding-004).
 # `intfloat/multilingual-e5-base` is 768-dim (matches DB schema), ~1GB VRAM,

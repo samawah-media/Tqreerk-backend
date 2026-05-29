@@ -115,6 +115,7 @@ jobs:
           docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ github.sha }}
           docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:prod-latest
 
+          
       - name: Deploy to Cloud Run (Production)
         id: deploy
         uses: google-github-actions/deploy-cloudrun@v2
@@ -130,11 +131,12 @@ jobs:
           flags: >-
             --allow-unauthenticated
             --port=8080
-            --memory=2Gi
+            --memory=4Gi
             --cpu=1
             --cpu-boost
+            --no-cpu-throttling
             --min-instances=0
-            --max-instances=5
+            --max-instances=6
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}

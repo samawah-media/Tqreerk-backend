@@ -113,7 +113,36 @@ async def insert_job(
     )
     # Wake the worker if it's scaled to zero. Fire-and-forget — a failure here
     # just means the worker stays asleep until its next cold-start trigger.
-    asyncio.create_task(_wake_worker())
+    # _schedule_wake_worker() deduplicates: bulk inserts (e.g. 15 summarize
+    # jobs in one request) produce only one health ping instead of 15.
+    _schedule_wake_worker()
+
+
+_wake_pending: bool = False
+
+
+def _schedule_wake_worker() -> None:
+    """Schedule a single _wake_worker task, deduplicating concurrent calls.
+
+    When a bulk request inserts N jobs in one tick, N asyncio.create_task calls
+    would otherwise fire N simultaneous /health pings. This guard ensures at
+    most one ping is in-flight at a time — subsequent calls while a ping is
+    already running are ignored; the running ping is sufficient to keep the
+    worker alive.
+    """
+    global _wake_pending
+    if _wake_pending:
+        return
+    _wake_pending = True
+
+    async def _run() -> None:
+        global _wake_pending
+        try:
+            await _wake_worker()
+        finally:
+            _wake_pending = False
+
+    asyncio.create_task(_run())
 
 
 async def _wake_worker() -> None:
@@ -264,9 +293,9 @@ async def run_summarize_job(job_id: UUID, report_id: UUID) -> None:
         )
 
         logger.info(
-            "[job %s] summarize done: %d findings, %d topics, %d indicators, %d trends",
+            "[job %s] summarize done: %d findings, %d topics, %d indicators",
             job_id, len(summary.key_findings), len(summary.topics),
-            len(summary.indicators), len(summary.trends),
+            len(summary.indicators),
         )
 
         await mark_completed(job_id, {
@@ -274,7 +303,6 @@ async def run_summarize_job(job_id: UUID, report_id: UUID) -> None:
             "key_findings": summary.key_findings,
             "topics":       summary.topics,
             "indicators":   [i.model_dump(mode="json") for i in summary.indicators],
-            "trends":       [t.model_dump(mode="json") for t in summary.trends],
         })
     except Exception as exc:
         logger.exception("[job %s] summarize FAILED: %s", job_id, exc)
@@ -462,18 +490,17 @@ async def dispatch(job: dict) -> None:
 
 # ── Worker loop ──────────────────────────────────────────────────────────────
 
-async def claim_one_job(conn: AsyncConnection) -> dict | None:
-    """Atomically claim the next Pending job. Uses FOR UPDATE SKIP LOCKED so
-    multiple worker replicas can poll concurrently without dogpiling on a
-    single row.
+async def claim_n_jobs(conn: AsyncConnection, n: int) -> list[dict]:
+    """Atomically claim up to n Pending jobs. Uses FOR UPDATE SKIP LOCKED so
+    multiple worker replicas can poll concurrently without dogpiling on the
+    same rows.
 
-    Returns the claimed row as a dict, or None if no Pending rows exist.
-    The row is left in 'Pending' status — the runner moves it to 'Processing'
-    via mark_processing(); the SKIP LOCKED contract is sufficient because the
-    transaction holding the row lock fences out other workers."""
+    Returns a list of up to n claimed rows (empty list if nothing is pending).
+    Each row is moved to 'Processing' atomically in the same UPDATE so no
+    other worker can claim the same job."""
     cur = await conn.execute(
         """
-        WITH next_job AS (
+        WITH next_jobs AS (
             SELECT "Id"
             FROM ai_jobs
             WHERE "Status" = 'Pending'
@@ -490,26 +517,28 @@ async def claim_one_job(conn: AsyncConnection) -> dict | None:
               AND "JobType" <> 'Ingestion'
             ORDER BY "CreatedAt"
             FOR UPDATE SKIP LOCKED
-            LIMIT 1
+            LIMIT %s
         )
         UPDATE ai_jobs
         SET "Status" = 'Processing', "StartedAt" = now()
-        FROM next_job
-        WHERE ai_jobs."Id" = next_job."Id"
+        FROM next_jobs
+        WHERE ai_jobs."Id" = next_jobs."Id"
         RETURNING ai_jobs."Id", ai_jobs."ReportId", ai_jobs."JobType",
                   ai_jobs."InputData"
         """,
+        [n],
     )
-    row = await cur.fetchone()
+    rows = await cur.fetchall()
     await conn.commit()
-    if not row:
-        return None
-    return {
-        "id": row[0],
-        "report_id": row[1],
-        "job_type": row[2],
-        "input_data": row[3],
-    }
+    return [
+        {
+            "id": row[0],
+            "report_id": row[1],
+            "job_type": row[2],
+            "input_data": row[3],
+        }
+        for row in rows
+    ]
 
 
 async def sweep_stale_jobs() -> int:
@@ -541,25 +570,26 @@ async def sweep_stale_jobs() -> int:
 
 
 async def run_worker_loop(shutdown: asyncio.Event | None = None) -> None:
-    """Main worker entrypoint. Polls ai_jobs forever; runs one job at a time.
+    """Main worker entrypoint. Polls ai_jobs forever; runs up to
+    `worker_concurrency` jobs concurrently per loop iteration.
 
     Concurrency model:
-        • This task runs on its own Cloud Run instance (WORKER_MODE=worker).
-        • One job at a time per instance — keeps Gemini RPM predictable. Scale
-          horizontally by adding instances; each picks a different job thanks
-          to FOR UPDATE SKIP LOCKED.
+        • Claims up to N Pending rows atomically (FOR UPDATE SKIP LOCKED).
+        • Dispatches all N with asyncio.gather — each job runs in a separate
+          thread (asyncio.to_thread) so Gemini calls happen truly in parallel.
+        • Multiple worker replicas stay safe: SKIP LOCKED means each instance
+          claims a disjoint set of rows.
         • Stale-job sweep runs every loop iteration but is cheap (single
           UPDATE that no-ops when nothing is stale).
 
     shutdown: asyncio.Event set by the SIGTERM handler in main.py. When set,
-        the loop finishes the current job (if any) and exits cleanly instead
-        of being killed mid-job.  Passing None falls back to the old
-        "loop forever" behaviour (used in tests / local runs).
+        the loop waits for any in-flight gather to finish, then exits cleanly.
     """
     poll = settings.worker_poll_interval_seconds
+    concurrency = max(1, settings.worker_concurrency)
     logger.info(
-        "worker started (poll_interval=%.1fs, stale_after=%dm)",
-        poll, settings.worker_stale_job_minutes,
+        "worker started (poll_interval=%.1fs, concurrency=%d, stale_after=%dm)",
+        poll, concurrency, settings.worker_stale_job_minutes,
     )
 
     last_sweep = 0.0
@@ -573,9 +603,9 @@ async def run_worker_loop(shutdown: asyncio.Event | None = None) -> None:
 
         try:
             async with conn_ctx() as conn:
-                job = await claim_one_job(conn)
+                jobs = await claim_n_jobs(conn, concurrency)
         except Exception as exc:
-            logger.exception("worker claim_one_job failed: %s", exc)
+            logger.exception("worker claim_n_jobs failed: %s", exc)
             await asyncio.sleep(poll)
             continue
 
@@ -591,34 +621,39 @@ async def run_worker_loop(shutdown: asyncio.Event | None = None) -> None:
             except Exception as exc:
                 logger.exception("worker stale-job sweep failed: %s", exc)
 
-        if job is None:
+        if not jobs:
             if shutdown and shutdown.is_set():
                 logger.info("Worker shutdown event set and queue empty — exiting")
                 return
             await asyncio.sleep(poll)
             continue
 
-        raw = job.get("input_data") or {}
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except Exception:
-                raw = {}
-        step = raw.get("step") or ""
-        logger.info(
-            "worker claimed job=%s type=%s step=%s report=%s",
-            job["id"], job["job_type"], step or "(none)", job["report_id"],
-        )
-        try:
-            await dispatch(job)
-        except Exception as exc:
-            # dispatch should never raise (each runner catches its own
-            # exceptions and marks the row Failed) but if it ever does,
-            # we don't want a single bad job to kill the worker loop.
-            logger.exception(
-                "worker dispatch raised for job %s: %s", job["id"], exc,
+        for job in jobs:
+            raw = job.get("input_data") or {}
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = {}
+            step = raw.get("step") or ""
+            logger.info(
+                "worker claimed job=%s type=%s step=%s report=%s",
+                job["id"], job["job_type"], step or "(none)", job["report_id"],
             )
+
+        async def _safe_dispatch(job: dict) -> None:
             try:
-                await mark_failed(UUID(str(job["id"])), f"Dispatcher crashed: {exc}")
-            except Exception:
-                pass
+                await dispatch(job)
+            except Exception as exc:
+                logger.exception(
+                    "worker dispatch raised for job %s: %s", job["id"], exc,
+                )
+                try:
+                    await mark_failed(UUID(str(job["id"])), f"Dispatcher crashed: {exc}")
+                except Exception:
+                    pass
+
+        # Run all claimed jobs concurrently. Each dispatch call uses
+        # asyncio.to_thread internally (Gemini is a sync blocking call),
+        # so they truly run in parallel OS threads.
+        await asyncio.gather(*(_safe_dispatch(job) for job in jobs))

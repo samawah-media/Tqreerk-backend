@@ -1,12 +1,14 @@
 using System.Globalization;
 using System.Text;
 using ClosedXML.Excel;
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Taqreerk.Application.Common;
 using Taqreerk.Application.DTOs.Admin;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
+using Taqreerk.Infrastructure.AI.Jobs;
 using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.Application.Services;
@@ -20,7 +22,7 @@ namespace Taqreerk.Application.Services;
 public class BulkImportService : IBulkImportService
 {
     /// <summary>Hard cap per Excel — matches the stated requirement.</summary>
-    public const int MaxRowsPerJob = 1000;
+    public const int MaxRowsPerJob = 5000;
 
     /// <summary>
     /// Column headers the parser expects (exactly, case-sensitive). The
@@ -43,11 +45,16 @@ public class BulkImportService : IBulkImportService
     };
 
     private readonly TaqreerkDbContext _db;
+    private readonly IBackgroundJobClient _jobClient;
     private readonly ILogger<BulkImportService> _logger;
 
-    public BulkImportService(TaqreerkDbContext db, ILogger<BulkImportService> logger)
+    public BulkImportService(
+        TaqreerkDbContext db,
+        IBackgroundJobClient jobClient,
+        ILogger<BulkImportService> logger)
     {
         _db = db;
+        _jobClient = jobClient;
         _logger = logger;
     }
 
@@ -110,16 +117,42 @@ public class BulkImportService : IBulkImportService
         }
 
         // Pre-populate counters — rows that failed validation up-front
-        // already count as Failed; the processor decrements later transitions
-        // from there.
+        // already count as Failed; Hangfire jobs increment the rest as they
+        // complete.
         job.FailedCount = job.Items.Count(i => i.Stage == BulkImportItemStage.Failed);
+
+        var pendingItems = job.Items
+            .Where(i => i.Stage == BulkImportItemStage.Pending)
+            .ToList();
+
+        // Mark job as Processing immediately — no need to wait for the first
+        // Hangfire tick to flip it. If all items failed validation, mark it
+        // Completed right away so the job doesn't sit in Processing forever.
+        if (pendingItems.Count == 0)
+        {
+            job.Status      = BulkImportStatus.Completed;
+            job.StartedAt   = DateTime.UtcNow;
+            job.CompletedAt = DateTime.UtcNow;
+        }
+        else
+        {
+            job.Status    = BulkImportStatus.Processing;
+            job.StartedAt = DateTime.UtcNow;
+        }
 
         _db.BulkImportJobs.Add(job);
         await _db.SaveChangesAsync(ct);
 
+        // Enqueue one Hangfire job per Pending item. Hangfire persists the
+        // job in its own PostgreSQL tables, so items survive worker restarts
+        // and Cloud Run scale events without needing the stuck-upload recovery
+        // logic that the old BackgroundService required.
+        foreach (var item in pendingItems)
+            _jobClient.Enqueue<BulkUploadItemJob>(j => j.ExecuteAsync(item.Id, CancellationToken.None));
+
         _logger.LogInformation(
-            "[bulk-import] queued job={JobId} admin={AdminId} rows={Total} failed_validation={FailedAtParse}",
-            job.Id, adminUserId, job.TotalCount, job.FailedCount);
+            "[bulk-import] queued job={JobId} admin={AdminId} rows={Total} failed_validation={FailedAtParse} enqueued={Enqueued}",
+            job.Id, adminUserId, job.TotalCount, job.FailedCount, pendingItems.Count);
 
         return job.Id;
     }
@@ -141,6 +174,7 @@ public class BulkImportService : IBulkImportService
                 j.ErrorMessage,
                 j.StartedAt,
                 j.CompletedAt,
+                j.AccumulatedSeconds,
                 Items = j.Items.OrderBy(i => i.RowIndex).Select(i => new
                 {
                     i.Id, i.RowIndex, i.Stage,
@@ -208,6 +242,7 @@ public class BulkImportService : IBulkImportService
             job.TotalCount, job.CompletedCount, job.FailedCount,
             job.SourceFileName, job.ErrorMessage,
             job.StartedAt, job.CompletedAt,
+            job.AccumulatedSeconds,
             items);
     }
 
@@ -224,7 +259,8 @@ public class BulkImportService : IBulkImportService
                 j.Id, j.CreatedAt, j.Status.ToString(),
                 j.TotalCount, j.CompletedCount, j.FailedCount,
                 j.SourceFileName, j.ErrorMessage,
-                j.StartedAt, j.CompletedAt))
+                j.StartedAt, j.CompletedAt,
+                j.AccumulatedSeconds))
             .ToListAsync(ct);
     }
 
@@ -276,7 +312,17 @@ public class BulkImportService : IBulkImportService
             .FirstOrDefaultAsync(j => j.Id == jobId, ct)
             ?? throw new KeyNotFoundException("Bulk import job not found.");
 
-        var failed = job.Items.Where(i => i.Stage == BulkImportItemStage.Failed).ToList();
+        // Include items stuck in active stages (Uploading/Ingesting/Summarizing)
+        // for longer than 30 min — these are orphaned by a crashed worker and
+        // will not self-recover until Hangfire's invisibility timeout expires.
+        // Resetting them here re-enqueues immediately instead of waiting.
+        var stuckThreshold = DateTime.UtcNow.AddMinutes(-30);
+        var failed = job.Items.Where(i =>
+            i.Stage == BulkImportItemStage.Failed ||
+            ((i.Stage == BulkImportItemStage.Uploading ||
+              i.Stage == BulkImportItemStage.Ingesting ||
+              i.Stage == BulkImportItemStage.Summarizing) &&
+             i.StartedAt < stuckThreshold)).ToList();
         if (failed.Count == 0) return 0;
 
         foreach (var item in failed)
@@ -316,25 +362,67 @@ public class BulkImportService : IBulkImportService
         // we're rolling state backward.
         job.FailedCount = Math.Max(0, job.FailedCount - failed.Count);
 
-        // Flip the job back into Processing so the worker tick picks it
-        // up; the FinaliseJobIfDone pass on the processor will move it
-        // back to Completed once every item lands in a terminal stage
-        // again.
+        // Bank the elapsed time from the current (ending) run before resetting
+        // the clock so the UI can show cumulative total across all retries.
+        if (job.StartedAt is { } ranSince)
+            job.AccumulatedSeconds += (long)(DateTime.UtcNow - ranSince).TotalSeconds;
+
+        job.StartedAt    = DateTime.UtcNow;
+        job.CompletedAt  = null;
+        job.ErrorMessage = null;
         if (job.Status == BulkImportStatus.Completed
             || job.Status == BulkImportStatus.Failed)
         {
             job.Status = BulkImportStatus.Processing;
-            job.CompletedAt = null;
-            // ErrorMessage is the batch-level fatal-error slot; clearing
-            // it on retry matches the "we're trying again" UX.
-            job.ErrorMessage = null;
         }
 
         await _db.SaveChangesAsync(ct);
+
+        // Enqueue a fresh Hangfire upload job for each reset item. The
+        // job handles resume paths (ReportId already set, chunks present,
+        // etc.) so retries start at the right stage automatically.
+        foreach (var item in failed)
+            _jobClient.Enqueue<BulkUploadItemJob>(j => j.ExecuteAsync(item.Id, CancellationToken.None));
+
         _logger.LogInformation(
-            "[bulk-import] retry job={JobId} reset {Count} failed item(s) to Pending",
+            "[bulk-import] retry job={JobId} reset {Count} failed item(s) to Pending and enqueued",
             jobId, failed.Count);
         return failed.Count;
+    }
+
+    public async Task<int> CancelJobAsync(Guid jobId, CancellationToken ct = default)
+    {
+        var job = await _db.BulkImportJobs
+            .FirstOrDefaultAsync(j => j.Id == jobId, ct)
+            ?? throw new KeyNotFoundException("Bulk import job not found.");
+
+        if (job.Status is BulkImportStatus.Completed or BulkImportStatus.Failed)
+            return 0;
+
+        // Atomically fail every item still in an active stage. ExecuteUpdateAsync
+        // goes straight to the DB — no need to load 5000 rows into memory.
+        var cancelled = await _db.BulkImportItems
+            .Where(i => i.JobId == jobId
+                     && i.Stage != BulkImportItemStage.Completed
+                     && i.Stage != BulkImportItemStage.Failed)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.Stage, BulkImportItemStage.Failed)
+                .SetProperty(i => i.ErrorMessage, "تم إلغاء المهمة")
+                .SetProperty(i => i.CompletedAt, DateTime.UtcNow), ct);
+
+        // Recalculate counters from DB truth rather than guessing deltas.
+        job.CompletedCount = await _db.BulkImportItems
+            .CountAsync(i => i.JobId == jobId && i.Stage == BulkImportItemStage.Completed, ct);
+        job.FailedCount = await _db.BulkImportItems
+            .CountAsync(i => i.JobId == jobId && i.Stage == BulkImportItemStage.Failed, ct);
+        job.Status = BulkImportStatus.Failed;
+        job.CompletedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "[bulk-import] cancel job={JobId} stopped {Count} active item(s)",
+            jobId, cancelled);
+        return cancelled;
     }
 
     // ── Excel parsing ──────────────────────────────────────────────────────

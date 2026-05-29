@@ -1,5 +1,7 @@
 using System.IO.Compression;
 using System.Text;
+using Hangfire;
+using Hangfire.PostgreSql;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.ResponseCompression;
@@ -13,6 +15,7 @@ using Taqreerk.Application.Services;
 using Taqreerk.Application.Settings;
 using Taqreerk.Infrastructure.Admin;
 using Taqreerk.Infrastructure.AI;
+using Taqreerk.Infrastructure.AI.Jobs;
 using Taqreerk.Infrastructure.Data;
 using Taqreerk.Infrastructure.Storage;
 
@@ -34,9 +37,9 @@ public static class ServiceExtensions
             ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is required.");
         var builder = new NpgsqlConnectionStringBuilder(raw);
         if (!builder.ContainsKey("Pooling")) builder.Pooling = true;
-        if (!builder.ContainsKey("Minimum Pool Size")) builder.MinPoolSize = 5;
-        if (!builder.ContainsKey("Maximum Pool Size")) builder.MaxPoolSize = 20;
-        if (!builder.ContainsKey("Connection Idle Lifetime")) builder.ConnectionIdleLifetime = 60;
+        if (!builder.ContainsKey("Minimum Pool Size")) builder.MinPoolSize = 0;
+        if (!builder.ContainsKey("Maximum Pool Size")) builder.MaxPoolSize = 5;
+        if (!builder.ContainsKey("Connection Idle Lifetime")) builder.ConnectionIdleLifetime = 30;
 
         services.AddDbContext<TaqreerkDbContext>(options =>
             options.UseNpgsql(
@@ -225,30 +228,74 @@ public static class ServiceExtensions
         services.AddHttpClient<IGeminiTextTranslator, GeminiTextTranslator>();
 
         // Bulk-import (admin Excel-driven third-party report ingestion).
-        // The service handles parse + queue; the processor pumps rows
-        // through fetch/upload/AI in the background.
+        // The service handles parse + queue; Hangfire jobs pump rows through
+        // fetch/upload/AI in the background with per-item retry and
+        // crash-safe persistence.
         services.AddScoped<IBulkImportService, BulkImportService>();
-        // Named HttpClient used by BulkImportProcessor when fetching
-        // arbitrary third-party PDFs from the URLs in the uploaded
-        // Excel. We override the global 100 s default because admin
-        // URLs can sit behind slow CDNs or large multi-MB downloads —
-        // 5 min is generous enough to ride out worst-case TLS
-        // handshakes + redirects without ever hanging the worker
-        // pipeline forever.
-        services.AddHttpClient(BulkImportProcessor.HttpClientName, client =>
+        // Named HttpClient used by BulkUploadItemJob when fetching
+        // arbitrary third-party PDFs from URLs in the uploaded Excel.
+        // 5-min timeout rides out worst-case slow CDNs / large PDFs
+        // without hanging the Hangfire worker indefinitely.
+        services.AddHttpClient(BulkUploadItemJob.HttpClientName, client =>
         {
             client.Timeout = TimeSpan.FromMinutes(5);
-            // Polite UA so origin servers (and especially Cloudflare /
-            // bot-walls) treat us as a real browser-grade client rather
-            // than an anonymous bot. The header is purely informational
-            // — request bodies / auth come from `Authorization`.
             client.DefaultRequestHeaders.UserAgent.ParseAdd(
                 "TaqreerkBulkImporter/1.0 (+https://taqreerk.com)");
         });
-        services.AddHostedService<BulkImportProcessor>();
+
+        // ── Hangfire ──────────────────────────────────────────────────────
+        // Use a separate Npgsql pool for Hangfire so its polling connections
+        // don't compete with EF Core queries on the MaxPoolSize=5 app pool.
+        // Pool math per instance: 5 (EF Core) + 2 (Hangfire) = 7;
+        // × 6 max-instances = 42 — within Cloud SQL's 50-connection cap.
+        var hangfireConnStr = new NpgsqlConnectionStringBuilder(
+            config.GetConnectionString("DefaultConnection")!)
+        {
+            MaxPoolSize = 2,
+            ConnectionIdleLifetime = 30,
+        }.ConnectionString;
+
+        services.AddHangfire((sp, cfg) =>
+            cfg.SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+               .UseSimpleAssemblyNameTypeSerializer()
+               .UseRecommendedSerializerSettings()
+               .UsePostgreSqlStorage(
+                   o => o.UseNpgsqlConnection(hangfireConnStr),
+                   new Hangfire.PostgreSql.PostgreSqlStorageOptions
+                   {
+                       // Default is 30 min — too long after an OOM kill (SIGKILL).
+                       // 5 min means stuck jobs resume within one poll cycle after
+                       // a hard crash instead of blocking the queue for half an hour.
+                       InvisibilityTimeout = TimeSpan.FromMinutes(5),
+                       // Multiple Cloud Run instances each run a Hangfire server and
+                       // compete for the DelayedJobScheduler lock. The default timeout
+                       // is too short — instances that lose the race log an error and
+                       // stop promoting scheduled jobs for up to 70 s. 30 s gives the
+                       // lock holder enough time to finish its cycle before contenders
+                       // give up and retry.
+                       DistributedLockTimeout = TimeSpan.FromSeconds(30),
+                   })
+               // BulkJobFailedFilter marks items Failed when all Hangfire
+               // retries are exhausted. Registered globally so it fires for
+               // both bulk-upload and bulk-advance queues without needing
+               // a per-class [BulkJobFailedFilter] attribute.
+               .UseFilter(new BulkJobFailedFilter(sp)));
+
+        // Two dedicated queues keep fast advance ticks (DB polls + short
+        // AI calls) from queueing behind slow PDF downloads. WorkerCount=4
+        // caps per-instance DB connection use to within the 5-slot EF pool.
+        services.AddHangfireServer(opts =>
+        {
+            opts.Queues      = new[] { "bulk-upload", "bulk-advance", "default" };
+            opts.WorkerCount = 4;
+        });
 
         // Background worker that drains the ai_jobs queue. Single instance —
         // see ReportProcessingWorker.cs for scaling notes.
+        // BulkImportProcessor (BackgroundService) is replaced by Hangfire
+        // jobs (BulkUploadItemJob / BulkAdvanceItemJob). It is intentionally
+        // NOT registered here — the Hangfire server above owns the pipeline.
+
         services.AddHostedService<ReportProcessingWorker>();
 
         // Background worker that releases stale review claims (>N min idle).

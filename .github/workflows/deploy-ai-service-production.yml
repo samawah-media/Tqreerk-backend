@@ -69,7 +69,8 @@ jobs:
             --memory=2Gi
             --cpu=2
             --min-instances=0
-            --max-instances=3
+            --max-instances=6
+            --no-cpu-throttling
             --timeout=300
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ secrets.GCP_CLOUDSQL_CONNECTION_NAME }}
@@ -89,7 +90,7 @@ jobs:
             LANGFUSE_TRACE_SAMPLE_RATE=0.5
             EVAL_SAMPLE_RATE=0.2
             QUOTA_ENABLED=false
-            DOC_PROCESSOR_MAX_CONCURRENCY=3
+            DOC_PROCESSOR_MAX_CONCURRENCY=6
 
       - name: Verify deployment
         run: |
@@ -126,7 +127,7 @@ jobs:
             --memory=2Gi
             --cpu=2
             --min-instances=0
-            --max-instances=3
+            --max-instances=6
             --timeout=900
             --no-cpu-throttling
             --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -149,3 +150,4 @@ jobs:
             QUOTA_ENABLED=false
             GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
             DOC_PROCESSOR_MAX_CONCURRENCY=3
+            WORKER_CONCURRENCY=3

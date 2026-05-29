@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using PDFtoImage;
 using Taqreerk.Application.Common;
 using Taqreerk.Application.Interfaces;
@@ -44,6 +45,32 @@ public class BulkImportProcessor : BackgroundService
     /// ReportsController (200 MB).</summary>
     private const long MaxFetchBytes = 200L * 1024 * 1024;
 
+    /// <summary>Upload pipeline flush size. After every N successful uploads
+    /// we immediately dispatch /bulk/ingest for that mini-batch so GPU
+    /// processing begins while the remaining PDFs are still being fetched
+    /// and uploaded — overlapping upload and AI stages rather than waiting
+    /// for all uploads to finish first.
+    /// Matches the number of GPU instances (6) so each flush saturates the
+    /// full GPU fleet in one /bulk/ingest call.</summary>
+    private const int IngestFlushSize = 6;
+
+    /// <summary>Maximum number of upload batches to process in a single tick.
+    /// Each batch = <see cref="IngestFlushSize"/> items uploaded in parallel.
+    /// Kept at 1 to cap per-instance memory: 1 × 6 items × ~40 MB each = ~240 MB.
+    /// At 5 the system OOM'd (5 × 6 × 40 MB = 1.2 GB per instance × N instances).
+    /// Throughput is maintained by multiple Cloud Run instances each taking one
+    /// batch; raise this only after profiling memory headroom per instance.</summary>
+    private const int MaxPendingBatchesPerTick = 1;
+
+    /// <summary>Global cap on simultaneous Uploading items across ALL backend
+    /// instances. Before claiming a new batch, the processor counts items
+    /// currently in Uploading; if the count is at or above this limit it skips
+    /// the tick entirely. This prevents N Cloud Run instances from each
+    /// claiming IngestFlushSize items and flooding memory/connections when the
+    /// API scales out under load. 24 = 4 instances × 6 items; raise if
+    /// throughput is too slow once GPU concurrency is also at 6.</summary>
+    private const int MaxGlobalUploading = 40;
+
     /// Named client key registered in ServiceExtensions; we resolve via
     /// the factory each time we fetch so HttpMessageHandler lifetime
     /// rotation works correctly for this long-running BackgroundService
@@ -70,39 +97,132 @@ public class BulkImportProcessor : BackgroundService
             "BulkImportProcessor started — polling every {Seconds}s",
             PollInterval.TotalSeconds);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await TickAsync(stoppingToken);
-            }
-            catch (Exception ex)
-            {
-                // Worker MUST never die — a single bad tick is logged and we
-                // sleep until the next interval.
-                _logger.LogError(ex, "BulkImportProcessor tick failed");
-            }
-
-            try { await Task.Delay(PollInterval, stoppingToken); }
-            catch (OperationCanceledException) { break; }
-        }
+        // Two independent loops so the fast "advance" path (Ingesting →
+        // Summarizing → Completed, just DB reads + short HTTP calls to the AI
+        // service) is NEVER blocked by the slow "upload" path (PDF downloads
+        // from external servers, GCS writes — can take 5-25 min per batch).
+        //
+        // Before this split, AdvanceInFlightJobAsync ran in the same tick as
+        // ProcessPendingItemsAsync. Because ProcessPendingItemsAsync was awaited
+        // first and could block for up to 25 minutes (MaxPendingBatchesPerTick=5
+        // × 3 items × 5-min per-item timeout), completed GPU ingest jobs sat in
+        // Ingesting with no summarize dispatched for the entire upload duration.
+        // That's why summarization stopped while ingest kept running.
+        await Task.WhenAll(
+            RunAdvanceLoopAsync(stoppingToken),
+            RunUploadLoopAsync(stoppingToken)
+        );
 
         _logger.LogInformation("BulkImportProcessor stopped");
     }
 
     /// <summary>
-    /// One full sweep. We split the work by stage and process them serially
-    /// per-job — Pending → Ingesting → Summarizing — so each tick advances
-    /// the job by one stage at most. Cheap; the admin UI polls fast enough
-    /// that the user-perceived time-to-progress is bounded by the AI side.
+    /// Fast loop: advances in-flight jobs through Ingesting → Summarizing →
+    /// Completed. Fires every <see cref="PollInterval"/> (10 s) without
+    /// exception — PDF download speed never delays it.
     /// </summary>
-    private async Task TickAsync(CancellationToken ct)
+    private async Task RunAdvanceLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await AdvanceTickAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BulkImportProcessor advance-tick failed");
+            }
+
+            try { await Task.Delay(PollInterval, ct); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// <summary>
+    /// Slow loop: downloads PDFs, uploads to GCS, and dispatches /bulk/ingest.
+    /// Each tick can take 5-25 min for large batches; that never delays the
+    /// advance loop because the two loops run via <see cref="Task.WhenAll"/>.
+    /// </summary>
+    private async Task RunUploadLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await UploadTickAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BulkImportProcessor upload-tick failed");
+            }
+
+            try { await Task.Delay(PollInterval, ct); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// <summary>
+    /// Advance tick: for every Processing job, polls ai_jobs for completed
+    /// Ingestion/Summarization work and advances items to the next stage.
+    /// Fast — only indexed DB reads and short HTTP calls; no file I/O.
+    /// </summary>
+    private async Task AdvanceTickAsync(CancellationToken ct)
+    {
+        using var scope = _services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
+        var ai = scope.ServiceProvider.GetRequiredService<IAiServiceClient>();
+
+        var inFlightJobs = await db.BulkImportJobs
+            .Where(j => j.Status == BulkImportStatus.Processing)
+            .Include(j => j.Items)
+            .ToListAsync(ct);
+
+        foreach (var job in inFlightJobs)
+        {
+            await AdvanceInFlightJobAsync(db, ai, job, ct);
+        }
+    }
+
+    /// <summary>How long an item may stay in Uploading before it is considered
+    /// orphaned and reset to Pending. Items get stuck in Uploading when the
+    /// worker restarts mid-download (Cloud Run deploy, scale event, OOM).
+    /// The new instance's upload tick only looks at Pending rows, so without
+    /// this reset the orphaned row would stay stuck forever.
+    /// 15 min is comfortably above the per-item 5-min body-read timeout plus
+    /// the GCS write time for the largest PDFs we handle (≤ 200 MB).</summary>
+    private static readonly TimeSpan StuckUploadTimeout = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// Upload tick: processes newly-queued jobs and retry-driven Pending items
+    /// inside already-Processing jobs. Slow — fetches PDFs and writes to GCS.
+    /// </summary>
+    private async Task UploadTickAsync(CancellationToken ct)
     {
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
         var files = scope.ServiceProvider.GetRequiredService<IFileStorage>();
         var ai = scope.ServiceProvider.GetRequiredService<IAiServiceClient>();
         var storageOpts = scope.ServiceProvider.GetRequiredService<IOptions<FileStorageSettings>>().Value;
+
+        // 0. Stuck-upload recovery. When the worker restarts mid-download the
+        //    item stays in Uploading forever because ProcessPendingItemsAsync
+        //    only queries Pending rows. Mark stuck items Failed (not Pending) so
+        //    they don't loop: the same slow-server URL would be retried
+        //    indefinitely, filling the global cap and blocking all progress.
+        //    The admin's retry-failed endpoint handles intentional retries.
+        var stuckCutoff = DateTime.UtcNow - StuckUploadTimeout;
+        var stuckCount = await db.BulkImportItems
+            .Where(i => i.Stage == BulkImportItemStage.Uploading
+                     && i.StartedAt < stuckCutoff)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(i => i.Stage, BulkImportItemStage.Failed)
+                .SetProperty(i => i.ErrorMessage, "انتهت مهلة رفع الملف — استخدم إعادة المحاولة.")
+                .SetProperty(i => i.CompletedAt, DateTime.UtcNow), ct);
+        if (stuckCount > 0)
+            _logger.LogWarning(
+                "[bulk-import] failed {Count} stuck-Uploading item(s) (StartedAt < {Cutoff:u})",
+                stuckCount, stuckCutoff);
 
         // 1. Newly-queued jobs — kick off the upload stage for each pending item.
         var pendingJobs = await db.BulkImportJobs
@@ -114,26 +234,23 @@ public class BulkImportProcessor : BackgroundService
             await ProcessPendingJobAsync(db, files, ai, storageOpts, job, ct);
         }
 
-        // 2. In-flight jobs — advance Ingesting → Summarizing → Completed
-        //    as their respective ai_jobs rows reach terminal state. Also
-        //    pick up any Pending items inside a Processing job; the only
-        //    way to land in that state is via the retry endpoint, which
-        //    rolls Failed items back to Pending without flipping the job.
-        var inFlightJobs = await db.BulkImportJobs
-            .Where(j => j.Status == BulkImportStatus.Processing)
+        // Global cap: if too many items are already uploading across all
+        // instances, skip this tick entirely. Prevents N Cloud Run instances
+        // from each claiming IngestFlushSize items simultaneously and OOMing.
+        var currentlyUploading = await db.BulkImportItems
+            .CountAsync(i => i.Stage == BulkImportItemStage.Uploading, ct);
+        if (currentlyUploading >= MaxGlobalUploading) return;
+
+        // 2. Retry-driven Pending items inside already-Processing jobs. Process
+        //    ONE job per tick so total in-flight = MaxGlobalUploading regardless
+        //    of how many backend instances are running.
+        var jobWithPending = await db.BulkImportJobs
+            .Where(j => j.Status == BulkImportStatus.Processing
+                     && j.Items.Any(i => i.Stage == BulkImportItemStage.Pending))
             .Include(j => j.Items)
-            .ToListAsync(ct);
-        foreach (var job in inFlightJobs)
-        {
-            // Retry-driven Pending items first — they can then move into
-            // Ingesting in the same tick so the admin's progress UI shows
-            // the row advancing immediately.
-            if (job.Items.Any(i => i.Stage == BulkImportItemStage.Pending))
-            {
-                await ProcessPendingItemsAsync(db, files, ai, storageOpts, job, ct);
-            }
-            await AdvanceInFlightJobAsync(db, ai, job, ct);
-        }
+            .FirstOrDefaultAsync(ct);
+        if (jobWithPending is not null)
+            await ProcessPendingItemsAsync(db, files, ai, storageOpts, jobWithPending, ct);
     }
 
     // ── Stage 1: Pending → Uploading → Ingesting ────────────────────────────
@@ -159,8 +276,13 @@ public class BulkImportProcessor : BackgroundService
     /// between the initial Pending-job kickoff and the retry path (which
     /// can put items back into Pending while the job itself is already
     /// Processing). Items that already have a <c>ReportId</c> skip the
-    /// upload step and go straight to ingest — that's the case where the
-    /// row failed mid-pipeline and we don't want to re-fetch the PDF.
+    /// upload step and go straight to ingest.
+    ///
+    /// Pipelined: every <see cref="IngestFlushSize"/> successful uploads we
+    /// immediately call /bulk/ingest for that mini-batch so GPU processing
+    /// starts while the remaining PDFs are still being downloaded and
+    /// uploaded — upload and AI stages overlap instead of running fully
+    /// sequential.
     /// </summary>
     private async Task ProcessPendingItemsAsync(
         TaqreerkDbContext db,
@@ -170,61 +292,94 @@ public class BulkImportProcessor : BackgroundService
         BulkImportJob job,
         CancellationToken ct)
     {
-        var pendingItems = job.Items
-            .Where(i => i.Stage == BulkImportItemStage.Pending)
-            .OrderBy(i => i.RowIndex)
-            .ToList();
-        if (pendingItems.Count == 0) return;
+        // Atomically claim pending items — prevents duplicate processing when
+        // multiple backend instances run concurrently (Cloud Run autoscaling).
+        // FOR UPDATE SKIP LOCKED makes this a work-queue: each row is claimed
+        // by exactly one instance; other instances skip it and move on.
+        var limit = MaxPendingBatchesPerTick * IngestFlushSize;
+        var claimedItems = await db.BulkImportItems
+            .FromSqlInterpolated($@"
+                UPDATE bulk_import_items
+                SET ""Stage"" = 'Uploading', ""StartedAt"" = NOW()
+                WHERE ""Id"" IN (
+                    SELECT ""Id"" FROM bulk_import_items
+                    WHERE ""JobId"" = {job.Id}
+                      AND ""Stage"" = 'Pending'
+                    ORDER BY ""RowIndex""
+                    LIMIT {limit}
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING *")
+            .AsNoTracking()
+            .ToListAsync(ct);
 
-        foreach (var item in pendingItems)
+        if (claimedItems.Count == 0) return;
+
+        foreach (var item in claimedItems)
+            db.Entry(item).State = EntityState.Detached;
+
+        await Task.WhenAll(claimedItems.Select(item =>
+            UploadItemInNewScopeAsync(item, job.OrganizationId, job.CreatedByUserId, ct)));
+
+        // Re-query all items fresh — each upload committed in its own scope.
+        var allIds = claimedItems.Select(i => i.Id).ToHashSet();
+        var freshItems = await db.BulkImportItems
+            .Where(i => allIds.Contains(i.Id))
+            .Include(i => i.Report)
+            .ToListAsync(ct);
+
+        int newlyFailed = 0;
+        foreach (var fresh in freshItems)
         {
-            ct.ThrowIfCancellationRequested();
-
-            // Retry path: the item already has a Report row from a prior
-            // attempt. Skip re-fetching the PDF and just flip the stage so
-            // the bulk-ingest dispatch below picks it up.
-            if (item.ReportId.HasValue)
-            {
-                item.Stage = BulkImportItemStage.Uploading;
-                item.StartedAt = DateTime.UtcNow;
-                continue;
-            }
-
-            try
-            {
-                await UploadItemAsync(db, files, item, job.OrganizationId, job.CreatedByUserId, ct);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "[bulk-import] item={ItemId} upload failed: {Msg}",
-                    item.Id, ex.Message);
-                MarkItemFailed(item, ex.Message);
-                job.FailedCount++;
-                await db.SaveChangesAsync(ct);
-            }
+            var mem = job.Items.FirstOrDefault(i => i.Id == fresh.Id);
+            if (mem == null) continue;
+            mem.Stage        = fresh.Stage;
+            mem.ReportId     = fresh.ReportId;
+            mem.Report       = fresh.Report;
+            mem.ErrorMessage = fresh.ErrorMessage;
+            mem.StartedAt    = fresh.StartedAt;
+            mem.CompletedAt  = fresh.CompletedAt;
+            if (fresh.Stage == BulkImportItemStage.Failed) newlyFailed++;
         }
-        await db.SaveChangesAsync(ct);
 
-        // Now batch-call /bulk/ingest with every item that successfully
-        // reached the Uploading stage. Doing it in one network round-trip
-        // is cheaper than per-item /ingest calls and matches what the
-        // Python service expects.
-        var uploaded = job.Items
-            .Where(i => i.Stage == BulkImportItemStage.Uploading && i.ReportId.HasValue)
-            .ToList();
-        if (uploaded.Count == 0)
+        await db.Entry(job).ReloadAsync(ct);
+        if (newlyFailed > 0)
         {
-            // Everything failed at upload — flip the job to Completed
-            // (per-item failures are real outcomes, not job-level errors).
-            await FinaliseJobIfDoneAsync(db, job, ct);
-            return;
+            job.FailedCount += newlyFailed;
+            await db.SaveChangesAsync(ct);
         }
 
-        // Make sure every uploaded row has its Report nav loaded — the
-        // retry path skips UploadItemAsync, which is what normally hydrates
-        // it, so we lazy-fill any missing ones here.
-        var missingReport = uploaded.Where(i => i.Report is null).ToList();
+        // Dispatch all successfully uploaded items to the GPU in one call.
+        // The AI service's module-level Semaphore(6) ensures at most 6 concurrent
+        // trigger_ingest connections — excess triggers queue and fire as slots free up.
+        var uploadedItems = freshItems
+            .Where(i => i.Stage == BulkImportItemStage.Uploading)
+            .ToList();
+        if (uploadedItems.Count > 0)
+            await FlushBatchToIngestAsync(db, ai, storage, job, uploadedItems, ct);
+
+        await FinaliseJobIfDoneAsync(db, job, ct);
+    }
+
+    /// <summary>
+    /// Dispatch /bulk/ingest for a mini-batch of successfully uploaded items
+    /// and advance them to Ingesting. Called mid-loop as a pipeline flush and
+    /// again for any tail items at the end of <see cref="ProcessPendingItemsAsync"/>.
+    /// </summary>
+    private async Task FlushBatchToIngestAsync(
+        TaqreerkDbContext db,
+        IAiServiceClient ai,
+        FileStorageSettings storage,
+        BulkImportJob job,
+        List<BulkImportItem> batch,
+        CancellationToken ct)
+    {
+        if (batch.Count == 0) return;
+
+        // Make sure every row has its Report nav loaded — the retry path
+        // (item.ReportId already set) skips UploadItemAsync, which normally
+        // hydrates it, so we lazy-fill any missing ones here.
+        var missingReport = batch.Where(i => i.Report is null).ToList();
         if (missingReport.Count > 0)
         {
             var ids = missingReport.Select(i => i.ReportId!.Value).ToList();
@@ -241,17 +396,20 @@ public class BulkImportProcessor : BackgroundService
 
         try
         {
-            var ingestItems = uploaded
+            var ingestItems = batch
+                .Where(i => i.ReportId.HasValue)
                 .Select(i => new BulkIngestItem(
                     i.ReportId!.Value,
                     ToGcsUri(i.Report?.FileUrl, storage)))
                 .ToList();
+            if (ingestItems.Count == 0) return;
+
             var jobs = await ai.BulkIngestAsync(ingestItems, ct);
 
             // Map AI-side job_id back onto our items. The AI side returns
             // entries keyed by report_id, so we match on that.
             var byReport = jobs.ToDictionary(j => j.ReportId, j => j.JobId);
-            foreach (var item in uploaded)
+            foreach (var item in batch)
             {
                 if (item.ReportId is { } rid && byReport.TryGetValue(rid, out var ingestJobId))
                 {
@@ -264,21 +422,22 @@ public class BulkImportProcessor : BackgroundService
                     job.FailedCount++;
                 }
             }
-            await db.SaveChangesAsync(ct);
         }
         catch (Exception ex)
         {
-            // Whole-batch failure on the AI side — fail every uploaded item
-            // so the admin doesn't end up with rows stuck in Uploading.
-            _logger.LogError(ex, "[bulk-import] /bulk/ingest failed for job={JobId}", job.Id);
-            foreach (var item in uploaded)
+            // Whole mini-batch failure on the AI side — fail every item so
+            // nothing stays stuck in Uploading.
+            _logger.LogError(ex,
+                "[bulk-import] /bulk/ingest batch ({Count} items) failed for job={JobId}",
+                batch.Count, job.Id);
+            foreach (var item in batch)
             {
                 MarkItemFailed(item, $"تعذّر بدء معالجة الذكاء الاصطناعي: {ex.Message}");
                 job.FailedCount++;
             }
-            await db.SaveChangesAsync(ct);
-            await FinaliseJobIfDoneAsync(db, job, ct);
         }
+
+        await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -294,31 +453,26 @@ public class BulkImportProcessor : BackgroundService
         Guid uploaderUserId,
         CancellationToken ct)
     {
-        // Resume-from-existing gate. Scoped to the platform org because
-        // bulk-imports only ever land there — a report with the same
-        // title under a real organisation is the org's own work and
-        // doesn't conflict. Case-insensitive + trimmed so trailing
-        // whitespace or capitalisation in the Excel doesn't slip a
-        // duplicate past us. Soft-deleted rows are intentionally NOT
-        // counted (the global query filter on Reports already drops
-        // them) so re-uploading after an admin deletion works.
-        //
-        // Instead of failing the row outright, we attach it to the
-        // existing Report and resume the AI pipeline from whichever
-        // stage that report stalled at. The processor's later stages
-        // pick the row up from there exactly as if a fresh upload
-        // produced it.
+        // Deduplication: same title AND same Source → reuse the existing Report.
+        // We search across all BulkImportItems (every job) for a non-Failed row
+        // that already received a ReportId for this title+source combination.
+        // This handles re-uploading the same Excel: the second run finds the
+        // first run's completed rows and skips download + AI work entirely.
         var normalisedTitle = (item.Title ?? string.Empty).Trim();
-        if (normalisedTitle.Length > 0)
+        var normalisedSource = (item.Source ?? string.Empty).Trim();
+        if (normalisedTitle.Length > 0 && normalisedSource.Length > 0)
         {
-            var existing = await db.Reports
-                .Where(r => r.OrganizationId == orgId
-                         && r.TitleAr.ToLower() == normalisedTitle.ToLower())
-                .Select(r => new { r.Id, r.Status })
+            var existingReportId = await db.BulkImportItems
+                .Where(i => i.Id != item.Id
+                         && i.ReportId != null
+                         && i.Source == normalisedSource
+                         && i.Title.ToLower() == normalisedTitle.ToLower()
+                         && i.Stage != BulkImportItemStage.Failed)
+                .Select(i => i.ReportId)
                 .FirstOrDefaultAsync(ct);
-            if (existing is not null)
+            if (existingReportId is not null)
             {
-                await ResumeExistingReportAsync(db, item, existing.Id, ct);
+                await ResumeExistingReportAsync(db, item, existingReportId.Value, ct);
                 return;
             }
         }
@@ -335,8 +489,18 @@ public class BulkImportProcessor : BackgroundService
         string contentType;
         try
         {
+            // Per-item body-read timeout (5 min). HttpClient.Timeout covers only
+            // the header phase when ResponseHeadersRead is used — after headers
+            // arrive the body stream is otherwise unbounded. Some Saudi charity
+            // servers stream at < 100 KB/s, so a 35 MB PDF takes 5-11 minutes and
+            // a 70 MB PDF can drop the connection mid-stream. Without this cap the
+            // whole batch stalls for the duration of the slowest item.
+            using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            downloadCts.CancelAfter(TimeSpan.FromMinutes(5));
+            var dlToken = downloadCts.Token;
+
             using var http = _httpFactory.CreateClient(HttpClientName);
-            using var resp = await http.GetAsync(item.FileUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var resp = await http.GetAsync(item.FileUrl, HttpCompletionOption.ResponseHeadersRead, dlToken);
             if (!resp.IsSuccessStatusCode)
                 throw new InvalidOperationException(
                     $"تعذّر تحميل الملف من الرابط (HTTP {(int)resp.StatusCode}).");
@@ -348,12 +512,12 @@ public class BulkImportProcessor : BackgroundService
                 throw new InvalidOperationException(
                     $"حجم الملف ({declaredLength / 1024 / 1024} MB) يتجاوز الحد المسموح به.");
 
-            await using var src = await resp.Content.ReadAsStreamAsync(ct);
+            await using var src = await resp.Content.ReadAsStreamAsync(dlToken);
             using var ms = new MemoryStream();
             var buffer = new byte[64 * 1024];
             int read;
             long total = 0;
-            while ((read = await src.ReadAsync(buffer.AsMemory(), ct)) > 0)
+            while ((read = await src.ReadAsync(buffer.AsMemory(), dlToken)) > 0)
             {
                 total += read;
                 if (total > MaxFetchBytes)
@@ -363,6 +527,12 @@ public class BulkImportProcessor : BackgroundService
             }
             pdfBytes = ms.ToArray();
             contentType = resp.Content.Headers.ContentType?.MediaType ?? "application/pdf";
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Body-read timeout fired (downloadCts), not a shutdown signal.
+            throw new InvalidOperationException(
+                "انتهت مهلة تحميل الملف (5 دقائق) — الخادم بطيء جداً أو الاتصال متقطع.");
         }
         catch (HttpRequestException ex)
         {
@@ -487,6 +657,87 @@ public class BulkImportProcessor : BackgroundService
     }
 
     /// <summary>
+    /// Upload a single pending item in its own DI scope + DbContext so
+    /// <see cref="ProcessPendingItemsAsync"/> can run a full batch concurrently
+    /// with <see cref="Task.WhenAll"/> without sharing a non-thread-safe
+    /// <see cref="TaqreerkDbContext"/>.
+    ///
+    /// All state changes (Stage, ReportId, ErrorMessage) are persisted inside
+    /// this scope's transaction. The caller re-queries the outer db after
+    /// <see cref="Task.WhenAll"/> completes to get fresh item + job values.
+    /// </summary>
+    private async Task UploadItemInNewScopeAsync(
+        BulkImportItem item,
+        Guid orgId,
+        Guid uploaderUserId,
+        CancellationToken ct)
+    {
+        using var scope = _services.CreateScope();
+        var scopeDb    = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
+        var scopeFiles = scope.ServiceProvider.GetRequiredService<IFileStorage>();
+
+        // Resume path: item already has a Report row from a prior attempt.
+        // Check whether report_chunks exist to decide where to resume:
+        //   • chunks exist → ingest already succeeded; go straight to summarize
+        //     (sets Stage=Ingesting with no IngestJobId so AdvanceInFlightJobAsync
+        //     dispatches /bulk/summarize on the next tick — skips GPU re-ingest)
+        //   • no chunks → ingest never finished; re-run it (Stage=Uploading)
+        if (item.ReportId.HasValue)
+        {
+            var hasChunks = await scopeDb.ReportChunks
+                .AnyAsync(c => c.ReportId == item.ReportId.Value, ct);
+
+            if (hasChunks)
+            {
+                // Chunks are fine — only summarization failed. Park at Ingesting
+                // (no IngestJobId) so the processor skips GPU and re-summarizes.
+                _logger.LogInformation(
+                    "[bulk-import] item={ItemId} report={ReportId} has chunks — resuming at summarize",
+                    item.Id, item.ReportId);
+                await scopeDb.BulkImportItems
+                    .Where(i => i.Id == item.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(i => i.Stage, BulkImportItemStage.Ingesting)
+                        .SetProperty(i => i.IngestJobId, (Guid?)null)
+                        .SetProperty(i => i.SummarizeJobId, (Guid?)null)
+                        .SetProperty(i => i.ErrorMessage, (string?)null)
+                        .SetProperty(i => i.StartedAt, DateTime.UtcNow), ct);
+            }
+            else
+            {
+                // No chunks — ingest never finished. Re-run GPU pipeline.
+                await scopeDb.BulkImportItems
+                    .Where(i => i.Id == item.Id)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(i => i.Stage, BulkImportItemStage.Uploading)
+                        .SetProperty(i => i.StartedAt, DateTime.UtcNow), ct);
+            }
+            return;
+        }
+
+        try
+        {
+            // Reload the item in this scope so EF can track it cleanly.
+            var trackedItem = await scopeDb.BulkImportItems
+                .FirstAsync(i => i.Id == item.Id, ct);
+            await UploadItemAsync(scopeDb, scopeFiles, trackedItem, orgId, uploaderUserId, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "[bulk-import] item={ItemId} upload failed: {Msg}", item.Id, ex.Message);
+            var msg = (ex.Message ?? string.Empty) is { Length: > 4000 } m
+                ? m[..4000] : ex.Message ?? string.Empty;
+            await scopeDb.BulkImportItems
+                .Where(i => i.Id == item.Id)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(i => i.Stage, BulkImportItemStage.Failed)
+                    .SetProperty(i => i.ErrorMessage, msg)
+                    .SetProperty(i => i.CompletedAt, DateTime.UtcNow), ct);
+        }
+    }
+
+    /// <summary>
     /// Render the first PDF page and upload three WebP variants (thumb /
     /// medium / full) under <c>public/covers/{coverId}</c>. PDFtoImage uses
     /// PDFium under the hood — works on Linux Cloud Run without extra
@@ -599,6 +850,13 @@ public class BulkImportProcessor : BackgroundService
                 }
             }
 
+            // Persist Failed states immediately — before the BulkSummarizeAsync
+            // HTTP call below. Without this early save, a transient network or
+            // DB error on the summarize call rolls back BOTH the Failed states
+            // AND the SummarizeJobIds in one lost SaveChanges, leaving all items
+            // stuck in Ingesting forever.
+            await db.SaveChangesAsync(ct);
+
             // Resume path: chunks already exist, so we just need to fire
             // /bulk/summarize for these reports without waiting on an
             // ingest poll. They join the same queue as freshly-completed
@@ -607,22 +865,41 @@ public class BulkImportProcessor : BackgroundService
 
             if (readyForSummarize.Count > 0)
             {
+                // Group by ReportId before dispatching: two items can share a
+                // ReportId when the resume-from-retry path and a freshly-
+                // completed ingest path both land in readyForSummarize on the
+                // same tick. Sending duplicate IDs to BulkSummarizeAsync makes
+                // the AI service return two rows for the same report, causing
+                // ToDictionary to throw "same key already added". Send each
+                // ReportId once; assign the returned SummarizeJobId to ALL items
+                // that share that report so none get left behind.
+                var byReportId = readyForSummarize
+                    .Where(i => i.ReportId.HasValue)
+                    .GroupBy(i => i.ReportId!.Value)
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
                 try
                 {
-                    var ids = readyForSummarize.Select(i => i.ReportId!.Value).ToList();
+                    var ids = byReportId.Keys.ToList();
                     var summarizeJobs = await ai.BulkSummarizeAsync(ids, ct);
-                    var byReport = summarizeJobs.ToDictionary(j => j.ReportId, j => j.JobId);
-                    foreach (var item in readyForSummarize)
+                    var jobByReport = summarizeJobs.ToDictionary(j => j.ReportId, j => j.JobId);
+                    foreach (var (reportId, items) in byReportId)
                     {
-                        if (byReport.TryGetValue(item.ReportId!.Value, out var sjId))
+                        if (jobByReport.TryGetValue(reportId, out var sjId))
                         {
-                            item.SummarizeJobId = sjId;
-                            item.Stage = BulkImportItemStage.Summarizing;
+                            foreach (var item in items)
+                            {
+                                item.SummarizeJobId = sjId;
+                                item.Stage = BulkImportItemStage.Summarizing;
+                            }
                         }
                         else
                         {
-                            MarkItemFailed(item, "AI service did not accept the summarize request.");
-                            job.FailedCount++;
+                            foreach (var item in items)
+                            {
+                                MarkItemFailed(item, "AI service did not accept the summarize request.");
+                                job.FailedCount++;
+                            }
                         }
                     }
                 }
@@ -648,13 +925,25 @@ public class BulkImportProcessor : BackgroundService
             .ToList();
         if (summarizing.Count > 0)
         {
-            var summarizeIds = summarizing.Select(i => i.SummarizeJobId!.Value).ToList();
+            var summarizeIds = summarizing.Select(i => i.SummarizeJobId!.Value).Distinct().ToList();
             var statuses = await db.AiJobs
                 .Where(j => summarizeIds.Contains(j.Id))
                 .Select(j => new { j.Id, j.Status, j.ErrorMessage, j.OutputData })
                 .ToListAsync(ct);
 
             var statusById = statuses.ToDictionary(s => s.Id);
+            // Guard against duplicate INSERTs into report_ai_contents when
+            // multiple BulkImportItems share the same ReportId+SummarizeJobId
+            // (resume-from-retry path, or parallel uploads dispatching the same
+            // report twice). CopySummaryToContentAsync checks DB for an existing
+            // row, but the check happens before SaveChanges so a second call
+            // within the same tick also sees null → two INSERTs → 23505 unique
+            // constraint violation → SaveChanges rolls back → report stays
+            // unpublished. Tracking which ReportIds we've already copied in this
+            // pass means CopySummaryToContentAsync is called at most once per
+            // report per tick; all items sharing that report still get their
+            // stage/counter updated correctly.
+            var copiedReportIds = new HashSet<Guid>();
             foreach (var item in summarizing)
             {
                 if (!statusById.TryGetValue(item.SummarizeJobId!.Value, out var st)) continue;
@@ -668,9 +957,10 @@ public class BulkImportProcessor : BackgroundService
                         job.FailedCount++;
                         continue;
                     }
-                    await CopySummaryToContentAsync(db, report, item.SummarizeJobId.Value, st.OutputData, ct);
+                    if (copiedReportIds.Add(rid))
+                        await CopySummaryToContentAsync(db, report, item.SummarizeJobId.Value, st.OutputData, ct);
                     report.Status = ReportStatus.Published;
-                    report.PublishedAt = DateTime.UtcNow;
+                    report.PublishedAt ??= DateTime.UtcNow;
 
                     item.Stage = BulkImportItemStage.Completed;
                     item.CompletedAt = DateTime.UtcNow;
@@ -682,7 +972,24 @@ public class BulkImportProcessor : BackgroundService
                     job.FailedCount++;
                 }
             }
-            await db.SaveChangesAsync(ct);
+
+            // Two instances can race here: both see existing=null for the same
+            // ReportId+Language, both queue an INSERT, second one hits 23505.
+            // On conflict: detach the new ReportAiContent entries (the other
+            // instance already persisted them) and re-save so item stages and
+            // report status still commit.
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex)
+                when (ex.InnerException is PostgresException { SqlState: "23505", ConstraintName: "IX_report_ai_contents_ReportId_Language" })
+            {
+                foreach (var entry in db.ChangeTracker.Entries<ReportAiContent>()
+                             .Where(e => e.State == EntityState.Added).ToList())
+                    entry.State = EntityState.Detached;
+                await db.SaveChangesAsync(ct);
+            }
         }
 
         await FinaliseJobIfDoneAsync(db, job, ct);
@@ -763,9 +1070,14 @@ public class BulkImportProcessor : BackgroundService
             item.Stage = BulkImportItemStage.Completed;
             item.CompletedAt = DateTime.UtcNow;
             item.ErrorMessage = null;
-            // Bump the job's success counter — we won't pass through any
-            // later branch that would normally increment it.
-            item.Job.CompletedCount++;
+            // Bump the job's success counter atomically in the DB — we won't
+            // pass through any later branch that would normally increment it.
+            // ExecuteUpdateAsync works whether the Job nav-property is loaded
+            // or not (parallel upload tasks don't eagerly load it).
+            await db.BulkImportJobs
+                .Where(j => j.Id == item.JobId)
+                .ExecuteUpdateAsync(s => s.SetProperty(
+                    j => j.CompletedCount, j => j.CompletedCount + 1), ct);
             _logger.LogInformation(
                 "[bulk-import] item={ItemId} reused existing complete report={ReportId}",
                 item.Id, existingReportId);
@@ -902,7 +1214,6 @@ public class BulkImportProcessor : BackgroundService
             var keyFindings = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "key_findings"));
             var topics      = JsonSerializer.Serialize(ExtractStringArray(doc.RootElement, "topics"));
             var indicators  = ExtractRawJsonArray(doc.RootElement, "indicators");
-            var trends      = ExtractRawJsonArray(doc.RootElement, "trends");
 
             var lang = string.IsNullOrWhiteSpace(report.OriginalLanguage) ? "ar" : report.OriginalLanguage;
             var existing = await db.ReportAiContents
@@ -919,7 +1230,6 @@ public class BulkImportProcessor : BackgroundService
                     KeyFindings = keyFindings,
                     Topics      = topics,
                     Indicators  = indicators,
-                    Trends      = trends,
                     GeneratedAt = DateTime.UtcNow,
                 });
             }
@@ -929,7 +1239,6 @@ public class BulkImportProcessor : BackgroundService
                 existing.KeyFindings = keyFindings;
                 existing.Topics      = topics;
                 existing.Indicators  = indicators;
-                existing.Trends      = trends;
                 existing.GeneratedAt = DateTime.UtcNow;
                 existing.AiJobId     = jobId;
             }

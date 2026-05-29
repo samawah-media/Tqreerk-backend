@@ -21,8 +21,8 @@ namespace Taqreerk.API.Controllers;
 [RequirePlatformStaff]
 public class AdminBulkImportsController : ControllerBase
 {
-    /// <summary>200 MB headroom — a 1000-row bulk-import sheet with text-only
-    /// columns is typically under 5 MB, but Excel files balloon with embedded
+    /// <summary>200 MB headroom — a 5000-row bulk-import sheet with text-only
+    /// columns is typically under 25 MB, but Excel files balloon with embedded
     /// styles/RTL formatting so we keep a generous buffer. Raised from 50 MB
     /// to accommodate larger sheets (e.g. 101 MB uploads).</summary>
     private const long MaxExcelBytes = 200L * 1024 * 1024;
@@ -34,7 +34,7 @@ public class AdminBulkImportsController : ControllerBase
         _bulk = bulk;
     }
 
-    /// <summary>Upload an Excel sheet describing up to 1000 third-party
+    /// <summary>Upload an Excel sheet describing up to 5000 third-party
     /// reports. The endpoint parses + validates synchronously, then hands
     /// off to the background processor; clients poll
     /// <c>GET /api/admin/bulk-imports/{id}</c> for live progress.</summary>
@@ -126,6 +126,27 @@ public class AdminBulkImportsController : ControllerBase
         }
     }
 
+    /// <summary>Stop a running job: all items still in an active stage
+    /// (Pending / Uploading / Ingesting / Summarizing) are flipped to Failed
+    /// and the job is marked Failed. Items that already Completed are kept
+    /// as-is — their reports remain Published. Returns the number of items
+    /// that were actively cancelled (zero = job was already terminal).</summary>
+    [HttpPost("{id:guid}/cancel")]
+    [ProducesResponseType(typeof(CancelResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Cancel(Guid id, CancellationToken ct)
+    {
+        try
+        {
+            var count = await _bulk.CancelJobAsync(id, ct);
+            return Ok(new CancelResponse(count));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         var sub = User.FindFirstValue("sub") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -138,4 +159,8 @@ public class AdminBulkImportsController : ControllerBase
     /// uses this to decide between a "بدأت إعادة المحاولة لـ N صف" toast
     /// and a "لا توجد صفوف فاشلة" hint when the count is zero.</summary>
     public record RetryResponse(int RetriedCount);
+
+    /// <summary>Number of items that were actively stopped. Zero means the
+    /// job was already in a terminal state.</summary>
+    public record CancelResponse(int CancelledCount);
 }

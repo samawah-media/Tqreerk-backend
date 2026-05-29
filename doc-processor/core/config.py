@@ -68,10 +68,13 @@ class Settings(BaseSettings):
     # chat / summary share. Override per-deploy via GEMINI_VISION_MODEL.
     gemini_vision_model: str = "gemini-2.5-flash-lite"
 
-    # Surya OCR language hint (CSV). Surya can auto-detect script per line,
-    # but passing the expected languages gives a small accuracy bump on mixed
-    # AR/EN reports. Set to "" to let Surya auto-detect. Weights live in
-    # HF_HOME and are pre-baked into the image — no per-language download tax.
+    # Drop recognition results whose confidence falls below this threshold.
+    # RapidOCR's detection model already prevents hallucination on non-text
+    # crops; this threshold removes borderline reads on degraded scan regions.
+    ocr_min_confidence: float = 0.5
+
+    # Kept for backwards compatibility — not used at runtime (EasyOCR language
+    # selection is baked into the Reader(['ar','en']) constructor call).
     ocr_languages: str = "ar,en"
 
     # Multilingual sentence-transformer for /v1/embed.
@@ -149,10 +152,10 @@ class Settings(BaseSettings):
 
     # ── /v1/ingest_full chunk cap ────────────────────────────────────────────
     # Safety ceiling so a malformed PDF can't produce a 50 MB embedding payload.
-    # 1000 chunks ≈ 3 MB of vectors + ~3 MB of text — well under any worker
-    # memory limit. Calls that would exceed are rejected with HTTP 413; caller
+    # 5000 chunks ≈ 15 MB of vectors + ~15 MB of text — still well under worker
+    # memory limits. Calls that would exceed are rejected with HTTP 413; caller
     # falls back to per-page mode.
-    ingest_full_max_chunks: int = 1000
+    ingest_full_max_chunks: int = 5000
 
     # ── Markdown export upload (Stage 1.5) ──────────────────────────────────
     # When enabled, /v1/ingest uploads the Docling markdown export to the

@@ -387,7 +387,7 @@ def run_ingest(
             for i, p in enumerate(pending):
                 vec = np.array(vectors[i], dtype=np.float32)
                 metadata = {
-                    "section_title": p["section_title"],
+                    "section_title": (p["section_title"] or "").replace("\x00", ""),
                     "block_types":   p["block_types"],
                     "bboxes":        p.get("bboxes") or [],
                     "language":      language,
@@ -404,7 +404,7 @@ def run_ingest(
                         report_id,
                         p["page_number"],
                         p["chunk_index"],
-                        p["content"],
+                        p["content"].replace("\x00", ""),
                         vec,
                         json.dumps(metadata),
                     ],

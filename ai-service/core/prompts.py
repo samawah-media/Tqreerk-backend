@@ -77,37 +77,28 @@ def _language_name(code: str | None) -> str:
 
 
 def summarize_prompt(combined_text: str, language: str = "ar") -> str:
-    """Combined summary + insights prompt — one Gemini call returns all 5 fields:
-    summary, key_findings, topics, indicators, trends. Replaces the previous
-    two-call design (summarize + extract_insights) so a single ingest job
-    populates every report_ai_contents column.
+    """Combined summary + insights prompt — one Gemini call returns 4 fields:
+    summary, key_findings, topics, indicators.
 
     `language` is the report's OriginalLanguage (ISO code) — used to pin
     the output language with a hard directive instead of trusting Gemini's
     own language detection on mixed text."""
     lang_name = _language_name(language)
     return (
-        f"You are analyzing a research report. The output language is {lang_name}.\n"
-        "Based on the full text below, produce a JSON object with these fields:\n"
-        "\n"
-        "- summary: a list of 3 to 7 concise bullet points capturing the report's "
-        "main takeaways. Each item is a single self-contained sentence (or short "
-        "paragraph at most). Use 3 only for very short reports; use 7 only when "
-        "the material genuinely needs that breadth — do not pad.\n"
-        "- key_findings: 5-10 most important findings as a list of strings.\n"
-        "- topics: main topics/sectors covered as a list of strings.\n"
-        "- indicators: concrete quantitative figures present in the report. Each item must include: "
-        "name, value, unit (if any), time_period (if any), context (country/sector/scope if any).\n"
-        "- trends: qualitative directional patterns over time. Each item must include: "
-        "topic, direction (one of: increasing/decreasing/stable/volatile/mixed), time_span, "
-        "magnitude (e.g. 'from 5% to 2%'), and a 1-2 sentence explanation.\n"
-        "\n"
-        f"CRITICAL — output language: every string value in the JSON (summary "
-        f"entries, key_findings entries, topics entries, indicator names/units/"
-        f"time_period/context, and trend topic/time_span/magnitude/explanation) "
-        f"MUST be written in {lang_name}. Do not mix languages. Numeric values "
-        f"stay numeric; only the surrounding prose and labels are translated. "
-        f"Output JSON only — no commentary.\n\n"
+        f"You are a senior analyst summarizing a research report. "
+        f"Output language: {lang_name}. Be highly selective and concise — "
+        f"you are curating the most critical information only, not cataloguing everything.\n\n"
+        "Return a JSON object with exactly these fields:\n\n"
+        "- summary: exactly 5 bullet points (7 only if truly necessary). "
+        "One short sentence each, max 20 words.\n"
+        "- key_findings: the 5 most important findings. One sentence each, max 25 words.\n"
+        "- topics: 5 to 8 short topic labels. Max 4 words each.\n"
+        "- indicators: the 8 single most headline-worthy numbers in the entire report. "
+        "Ignore table rows, granular breakdowns, and repetitive series. "
+        "For each: name (max 8 words), value, unit, time_period, context.\n\n"
+        f"CRITICAL: Every string value MUST be in {lang_name}. "
+        "Numeric values stay numeric. "
+        "Output JSON only — no markdown, no commentary, no explanation.\n\n"
         f"REPORT TEXT:\n{combined_text}"
     )
 
@@ -118,7 +109,7 @@ REPORT_SUMMARY_SCHEMA = {
         "summary": {
             "type": "array",
             "items": {"type": "string"},
-            "minItems": 3,
+            "minItems": 5,
             "maxItems": 7,
         },
         "key_findings": {"type": "array", "items": {"type": "string"}},
@@ -137,22 +128,8 @@ REPORT_SUMMARY_SCHEMA = {
                 "required": ["name", "value"],
             },
         },
-        "trends": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "topic":       {"type": "string"},
-                    "direction":   {"type": "string"},
-                    "time_span":   {"type": "string"},
-                    "magnitude":   {"type": "string"},
-                    "explanation": {"type": "string"},
-                },
-                "required": ["topic", "direction"],
-            },
-        },
     },
-    "required": ["summary", "key_findings", "topics", "indicators", "trends"],
+    "required": ["summary", "key_findings", "topics", "indicators"],
 }
 
 
