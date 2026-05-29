@@ -149,5 +149,5 @@ jobs:
             EVAL_SAMPLE_RATE=0.2
             QUOTA_ENABLED=false
             GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
-            DOC_PROCESSOR_MAX_CONCURRENCY=6
-            WORKER_CONCURRENCY=6
+            DOC_PROCESSOR_MAX_CONCURRENCY=3
+            WORKER_CONCURRENCY=3

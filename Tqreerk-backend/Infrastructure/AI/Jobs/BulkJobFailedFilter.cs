@@ -20,7 +20,7 @@ public sealed class BulkJobFailedFilter(IServiceProvider services)
 {
     public void OnStateElection(ElectStateContext context)
     {
-        if (context.CandidateState is not DeletedState) return;
+        if (context.CandidateState is not DeletedState and not FailedState) return;
 
         Guid? itemId = null;
 

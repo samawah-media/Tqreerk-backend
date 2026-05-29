@@ -174,6 +174,7 @@ public class BulkImportService : IBulkImportService
                 j.ErrorMessage,
                 j.StartedAt,
                 j.CompletedAt,
+                j.AccumulatedSeconds,
                 Items = j.Items.OrderBy(i => i.RowIndex).Select(i => new
                 {
                     i.Id, i.RowIndex, i.Stage,
@@ -241,6 +242,7 @@ public class BulkImportService : IBulkImportService
             job.TotalCount, job.CompletedCount, job.FailedCount,
             job.SourceFileName, job.ErrorMessage,
             job.StartedAt, job.CompletedAt,
+            job.AccumulatedSeconds,
             items);
     }
 
@@ -257,7 +259,8 @@ public class BulkImportService : IBulkImportService
                 j.Id, j.CreatedAt, j.Status.ToString(),
                 j.TotalCount, j.CompletedCount, j.FailedCount,
                 j.SourceFileName, j.ErrorMessage,
-                j.StartedAt, j.CompletedAt))
+                j.StartedAt, j.CompletedAt,
+                j.AccumulatedSeconds))
             .ToListAsync(ct);
     }
 
@@ -359,12 +362,18 @@ public class BulkImportService : IBulkImportService
         // we're rolling state backward.
         job.FailedCount = Math.Max(0, job.FailedCount - failed.Count);
 
+        // Bank the elapsed time from the current (ending) run before resetting
+        // the clock so the UI can show cumulative total across all retries.
+        if (job.StartedAt is { } ranSince)
+            job.AccumulatedSeconds += (long)(DateTime.UtcNow - ranSince).TotalSeconds;
+
+        job.StartedAt    = DateTime.UtcNow;
+        job.CompletedAt  = null;
+        job.ErrorMessage = null;
         if (job.Status == BulkImportStatus.Completed
             || job.Status == BulkImportStatus.Failed)
         {
-            job.Status      = BulkImportStatus.Processing;
-            job.CompletedAt = null;
-            job.ErrorMessage = null;
+            job.Status = BulkImportStatus.Processing;
         }
 
         await _db.SaveChangesAsync(ct);
