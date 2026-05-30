@@ -17,17 +17,20 @@ public class PaymentCheckoutService : IPaymentCheckoutService
     private readonly TaqreerkDbContext _db;
     private readonly IMoyasarApiClient _moyasar;
     private readonly ISubscriptionProvisioningService _provisioning;
+    private readonly PaymentReceiptNotifier _receipts;
     private readonly MoyasarSettings _settings;
 
     public PaymentCheckoutService(
         TaqreerkDbContext db,
         IMoyasarApiClient moyasar,
         ISubscriptionProvisioningService provisioning,
+        PaymentReceiptNotifier receipts,
         IOptions<MoyasarSettings> settings)
     {
         _db = db;
         _moyasar = moyasar;
         _provisioning = provisioning;
+        _receipts = receipts;
         _settings = settings.Value;
     }
 
@@ -241,6 +244,8 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             });
 
         await _db.SaveChangesAsync(ct);
+
+        await _receipts.TrySendAsync(payment, subscription, targetPlan, userId, ct);
         return true;
     }
 

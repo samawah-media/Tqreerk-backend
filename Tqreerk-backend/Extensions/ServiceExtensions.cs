@@ -214,6 +214,7 @@ public static class ServiceExtensions
         services.AddScoped<IPointsService, PointsService>();
         services.AddScoped<IMeService, MeService>();
         services.AddScoped<IAnnotationsService, AnnotationsService>();
+        services.AddScoped<PaymentReceiptNotifier>();
         services.AddScoped<IPaymentCheckoutService, PaymentCheckoutService>();
         services.AddHttpClient<IMoyasarApiClient, MoyasarApiClient>();
 

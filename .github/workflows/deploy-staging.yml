@@ -179,6 +179,7 @@ jobs:
             EmailSettings__GraphClientId=7ff093ca-2a8d-4930-9feb-7b107c4e9613
             EmailSettings__GraphClientSecret=${{ secrets.GRAPH_CLIENT_SECRET }}
             EmailSettings__GraphSenderEmail=taqrerk@samawah1.sa
+            EmailSettings__AppBaseUrl=https://user-app-staging-bo6ogywxvq-ww.a.run.app
             Moyasar__PublishableKey=${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
             Moyasar__SecretKey=${{ secrets.MOYASAR_SECRET_KEY }}
             Moyasar__WebhookSecret=${{ secrets.MOYASAR_WEBHOOK_SECRET }}
