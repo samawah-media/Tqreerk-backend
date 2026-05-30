@@ -138,9 +138,9 @@ app.UseCors("DefaultCors");
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Hangfire dashboard — protected by JWT + IsPlatformStaff in all environments.
-// Browser access: navigate to /admin/hangfire?access_token=<jwt>
-// API client: Authorization: Bearer <jwt>
+// Hangfire dashboard — JWT + IsPlatformStaff. Browser: open once with
+// /admin/hangfire?access_token=<staff-jwt> (sets hangfire_auth cookie);
+// then use Recurring jobs / links normally. API: Authorization: Bearer <jwt>
 app.UseHangfireDashboard("/admin/hangfire", new DashboardOptions
 {
     Authorization = [new Taqreerk.API.Authorization.HangfirePlatformStaffFilter(app.Services)],

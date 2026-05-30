@@ -24,6 +24,7 @@ public class MaintenanceMiddleware
         "/healthz",             // platform health probe
         "/swagger",             // dev tooling
         "/uploads",             // local-storage assets — keep working in dev
+        "/admin/hangfire",      // staff job dashboard (JWT/cookie auth inside Hangfire)
     ];
 
     private readonly RequestDelegate _next;
