@@ -153,7 +153,13 @@ public sealed class SubscriptionRenewalService
             payment.Status = PaymentStatus.Failed;
             await _db.SaveChangesAsync(ct);
             await _receipts.TrySendFailedAsync(
-                payment, subscription, plan, wasUpgradeAttempt: false, isRenewalAttempt: true, ct: ct);
+                payment,
+                subscription,
+                plan,
+                wasUpgradeAttempt: false,
+                isRenewalAttempt: true,
+                payerUserId: null,
+                ct: ct);
             return;
         }
 

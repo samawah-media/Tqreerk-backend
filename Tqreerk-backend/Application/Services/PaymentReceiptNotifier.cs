@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Settings;
 using Taqreerk.Domain.Entities;
+using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.Application.Services;
@@ -47,31 +48,49 @@ public sealed class PaymentReceiptNotifier
         CancellationToken ct = default)
         => TrySendSuccessAsync(payment, subscription, plan, payerUserId, ct);
 
-    public async Task TrySendSuccessAsync(
+    /// <summary>
+    /// Creates the invoice row for a paid payment (always), then sends the receipt email when possible.
+    /// </summary>
+    public async Task<Invoice?> EnsureInvoiceAndTrySendReceiptAsync(
         Payment payment,
         Subscription subscription,
         Plan plan,
         Guid? payerUserId,
         CancellationToken ct = default)
     {
+        if (payment.Status != PaymentStatus.Paid)
+        {
+            _logger.LogWarning(
+                "Skipped invoice for payment {PaymentId}: status is {Status}, expected Paid.",
+                payment.Id,
+                payment.Status);
+            return null;
+        }
+
         try
         {
+            var invoice = await EnsureInvoiceAsync(payment, subscription, ct);
+            _logger.LogInformation(
+                "Invoice {InvoiceNumber} ensured for payment {PaymentId}.",
+                invoice.InvoiceNumber,
+                payment.Id);
+
+            if (string.Equals(invoice.PdfUrl, ReceiptEmailSentMarker, StringComparison.Ordinal))
+            {
+                _logger.LogDebug(
+                    "Receipt email already sent for payment {PaymentId}.",
+                    payment.Id);
+                return invoice;
+            }
+
             var payer = await ResolvePayerAsync(subscription, payerUserId, ct);
             if (payer is null || string.IsNullOrWhiteSpace(payer.Email))
             {
                 _logger.LogWarning(
-                    "Payment {PaymentId} paid but no payer email for success receipt.",
+                    "Invoice {InvoiceNumber} created for payment {PaymentId} but no payer email — receipt not sent.",
+                    invoice.InvoiceNumber,
                     payment.Id);
-                return;
-            }
-
-            var invoice = await EnsureInvoiceAsync(payment, subscription, ct);
-            if (string.Equals(invoice.PdfUrl, ReceiptEmailSentMarker, StringComparison.Ordinal))
-            {
-                _logger.LogDebug(
-                    "Success receipt already sent for payment {PaymentId}.",
-                    payment.Id);
-                return;
+                return invoice;
             }
 
             var (orgNameAr, orgNameEn) = await ResolveOrgNamesAsync(subscription, ct);
@@ -92,15 +111,29 @@ public sealed class PaymentReceiptNotifier
             await _db.SaveChangesAsync(ct);
 
             _logger.LogInformation(
-                "Sent payment success email for payment {PaymentId} to {Email}.",
+                "Sent payment receipt for {PaymentId} to {Email} (invoice {InvoiceNumber}).",
                 payment.Id,
-                payer.Email);
+                payer.Email,
+                invoice.InvoiceNumber);
+            return invoice;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send payment success email for {PaymentId}", payment.Id);
+            _logger.LogError(
+                ex,
+                "Invoice/receipt failed for payment {PaymentId}",
+                payment.Id);
+            return null;
         }
     }
+
+    public Task TrySendSuccessAsync(
+        Payment payment,
+        Subscription subscription,
+        Plan plan,
+        Guid? payerUserId,
+        CancellationToken ct = default)
+        => EnsureInvoiceAndTrySendReceiptAsync(payment, subscription, plan, payerUserId, ct);
 
     /// <summary>Failure: payment declined / not completed (idempotent per payment).</summary>
     public async Task TrySendFailedAsync(
@@ -114,7 +147,12 @@ public sealed class PaymentReceiptNotifier
     {
         var cacheKey = $"payment-failed-email:{payment.Id}";
         if (_cache.TryGetValue(cacheKey, out _))
+        {
+            _logger.LogDebug(
+                "Failure email already sent for payment {PaymentId}.",
+                payment.Id);
             return;
+        }
 
         try
         {
@@ -122,8 +160,10 @@ public sealed class PaymentReceiptNotifier
             if (payer is null || string.IsNullOrWhiteSpace(payer.Email))
             {
                 _logger.LogWarning(
-                    "Payment {PaymentId} failed but no payer email to notify.",
-                    payment.Id);
+                    "Payment {PaymentId} failed but no payer email — failure notice not sent (userId={UserId}, org={OrgId}).",
+                    payment.Id,
+                    payerUserId,
+                    subscription.OrganizationId);
                 return;
             }
 
@@ -205,11 +245,24 @@ public sealed class PaymentReceiptNotifier
                 .FirstOrDefaultAsync(ct);
         }
 
-        if (!founderId.HasValue)
-            return null;
+        if (founderId.HasValue)
+        {
+            var founder = await _db.Users.AsNoTracking()
+                .FirstOrDefaultAsync(u => u.Id == founderId.Value, ct);
+            if (founder is not null && !string.IsNullOrWhiteSpace(founder.Email))
+                return founder;
+        }
 
-        return await _db.Users.AsNoTracking()
-            .FirstOrDefaultAsync(u => u.Id == founderId.Value, ct);
+        return await _db.OrganizationMembers.AsNoTracking()
+            .Where(m => m.OrganizationId == subscription.OrganizationId && m.IsActive)
+            .Join(
+                _db.Users.AsNoTracking(),
+                m => m.UserId,
+                u => u.Id,
+                (_, u) => u)
+            .Where(u => u.Email != null && u.Email != "")
+            .OrderBy(u => u.CreatedAt)
+            .FirstOrDefaultAsync(ct);
     }
 
     private async Task<Invoice> EnsureInvoiceAsync(

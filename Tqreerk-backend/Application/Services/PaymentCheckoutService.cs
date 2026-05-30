@@ -160,6 +160,17 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         var remote = await FetchPaymentWithTokenRetriesAsync(moyasarPaymentId, ct)
             ?? throw new InvalidOperationException("تعذّر التحقق من الدفع.");
 
+        if (IsMoyasarFailedStatus(remote.Status))
+        {
+            await MarkPaymentFailedAsync(remote, userId, ct);
+            return new VerifyPaymentResultDto(
+                Success: false,
+                Status: remote.Status,
+                SubscriptionId: null,
+                PlanNameAr: null,
+                CardTokenSaved: false);
+        }
+
         var fulfilled = await TryFulfillAsync(userId, remote, clientSourceToken, ct);
         string? planNameAr = null;
         if (fulfilled)
@@ -188,7 +199,7 @@ public class PaymentCheckoutService : IPaymentCheckoutService
                     SubscriptionAddons.Parse(json).MoyasarToken);
             }
         }
-
+        
         return new VerifyPaymentResultDto(
             Success: fulfilled,
             Status: remote.Status,
@@ -207,9 +218,9 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             return false;
         }
 
-        if (IsFailedWebhookEvent(eventType))
+        if (IsFailedWebhookEvent(eventType) || IsMoyasarFailedStatus(payment.Status))
         {
-            await MarkPaymentFailedAsync(payment, ct);
+            await MarkPaymentFailedAsync(payment, userId: null, ct);
             return true;
         }
 
@@ -310,7 +321,7 @@ public class PaymentCheckoutService : IPaymentCheckoutService
                 .FirstOrDefaultAsync(p => p.Id == paidPlanId && p.IsActive, ct);
             if (paidPlan is not null)
             {
-                await _receipts.TrySendSuccessAsync(
+                await _receipts.EnsureInvoiceAndTrySendReceiptAsync(
                     payment, subscription, paidPlan, userId, ct);
             }
 
@@ -365,7 +376,8 @@ public class PaymentCheckoutService : IPaymentCheckoutService
 
         await _db.SaveChangesAsync(ct);
 
-        await _receipts.TrySendSuccessAsync(payment, subscription, targetPlan, userId, ct);
+        await _receipts.EnsureInvoiceAndTrySendReceiptAsync(
+            payment, subscription, targetPlan, userId, ct);
         return true;
     }
 
@@ -405,7 +417,8 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             });
 
         await _db.SaveChangesAsync(ct);
-        await _receipts.TrySendSuccessAsync(payment, subscription, plan, userId, ct);
+        await _receipts.EnsureInvoiceAndTrySendReceiptAsync(
+            payment, subscription, plan, userId, ct);
         return true;
     }
 
@@ -471,14 +484,29 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             paymentId);
     }
 
-    private async Task MarkPaymentFailedAsync(MoyasarPaymentDto remote, CancellationToken ct)
+    private async Task MarkPaymentFailedAsync(
+        MoyasarPaymentDto remote,
+        Guid? userId,
+        CancellationToken ct)
     {
         var payment = await ResolvePaymentFromMetadataAsync(remote, ct);
-        if (payment is null || payment.Status == PaymentStatus.Paid)
+        if (payment is null)
+        {
+            _logger.LogWarning(
+                "Moyasar payment {MoyasarId} failed but no matching Payment row (metadata/reference).",
+                remote.Id);
+            return;
+        }
+
+        if (payment.Status == PaymentStatus.Paid)
             return;
 
-        payment.Status = PaymentStatus.Failed;
-        payment.MiserPaymentReference = remote.Id;
+        var isNewFailure = payment.Status != PaymentStatus.Failed;
+        if (isNewFailure)
+        {
+            payment.Status = PaymentStatus.Failed;
+            payment.MiserPaymentReference = remote.Id;
+        }
 
         var sub = await _db.Subscriptions.FirstOrDefaultAsync(
             s => s.Id == payment.SubscriptionId, ct);
@@ -494,23 +522,27 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             failedPlan = await _db.Plans.AsNoTracking()
                 .FirstOrDefaultAsync(p => p.Id == failedPlanId && p.IsActive, ct);
 
-            if (isRenewal)
+            if (isNewFailure)
             {
-                sub.AddonsJson = SubscriptionAddons.Serialize(
-                    addons with { LastRenewalAttemptUtc = DateTime.UtcNow });
-            }
-            else if (wasUpgradePending)
-            {
-                sub.AddonsJson = SubscriptionAddons.Serialize(
-                    addons with { PendingPlanId = null });
-            }
-            else if (sub.PaymentStatus != PaymentStatus.Paid)
-            {
-                sub.PaymentStatus = PaymentStatus.Failed;
+                if (isRenewal)
+                {
+                    sub.AddonsJson = SubscriptionAddons.Serialize(
+                        addons with { LastRenewalAttemptUtc = DateTime.UtcNow });
+                }
+                else if (wasUpgradePending)
+                {
+                    sub.AddonsJson = SubscriptionAddons.Serialize(
+                        addons with { PendingPlanId = null });
+                }
+                else if (sub.PaymentStatus != PaymentStatus.Paid)
+                {
+                    sub.PaymentStatus = PaymentStatus.Failed;
+                }
             }
         }
 
-        await _db.SaveChangesAsync(ct);
+        if (isNewFailure)
+            await _db.SaveChangesAsync(ct);
 
         if (sub is not null && failedPlan is not null)
         {
@@ -520,8 +552,14 @@ public class PaymentCheckoutService : IPaymentCheckoutService
                 failedPlan,
                 wasUpgradePending,
                 isRenewalAttempt: isRenewal,
-                payerUserId: null,
+                payerUserId: userId,
                 ct);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Payment {PaymentId} failed — could not resolve subscription/plan for failure email.",
+                payment.Id);
         }
     }
 
@@ -674,6 +712,9 @@ public class PaymentCheckoutService : IPaymentCheckoutService
 
         return uri.GetLeftPart(UriPartial.Path);
     }
+
+    private static bool IsMoyasarFailedStatus(string? status)
+        => string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsPaidWebhookEvent(string eventType)
         => string.Equals(eventType, "payment_paid", StringComparison.OrdinalIgnoreCase);
