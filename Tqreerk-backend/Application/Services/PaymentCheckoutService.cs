@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Taqreerk.Application.DTOs.Payments;
 using Taqreerk.Application.Interfaces;
@@ -19,24 +20,28 @@ public class PaymentCheckoutService : IPaymentCheckoutService
     private readonly ISubscriptionProvisioningService _provisioning;
     private readonly PaymentReceiptNotifier _receipts;
     private readonly MoyasarSettings _settings;
+    private readonly ILogger<PaymentCheckoutService> _logger;
 
     public PaymentCheckoutService(
         TaqreerkDbContext db,
         IMoyasarApiClient moyasar,
         ISubscriptionProvisioningService provisioning,
         PaymentReceiptNotifier receipts,
-        IOptions<MoyasarSettings> settings)
+        IOptions<MoyasarSettings> settings,
+        ILogger<PaymentCheckoutService> logger)
     {
         _db = db;
         _moyasar = moyasar;
         _provisioning = provisioning;
         _receipts = receipts;
         _settings = settings.Value;
+        _logger = logger;
     }
 
     public async Task<CheckoutSessionDto> CreateCheckoutAsync(
         Guid userId,
         Guid planId,
+        string? callbackUrl = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(_settings.PublishableKey)
@@ -106,18 +111,56 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             Currency: "SAR",
             Description: description,
             PublishableKey: _settings.PublishableKey,
-            CallbackUrl: _settings.FrontendCallbackUrl);
+            CallbackUrl: ResolveCallbackUrl(callbackUrl));
+    }
+
+    public async Task<bool> RegisterCardTokenAsync(
+        Guid userId,
+        Guid paymentId,
+        string moyasarPaymentId,
+        string sourceToken,
+        CancellationToken ct = default)
+    {
+        var token = FirstNonEmpty(sourceToken);
+        if (token is null)
+            return false;
+
+        var payment = await _db.Payments
+            .FirstOrDefaultAsync(p => p.Id == paymentId, ct);
+        if (payment is null)
+            return false;
+
+        var subscription = await _db.Subscriptions
+            .FirstOrDefaultAsync(s => s.Id == payment.SubscriptionId, ct);
+        if (subscription is null
+            || !await UserOwnsSubscriptionAsync(userId, subscription, ct))
+        {
+            return false;
+        }
+
+        var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
+        subscription.AddonsJson = SubscriptionAddons.Serialize(
+            addons with { MoyasarToken = token });
+        payment.MiserPaymentReference = moyasarPaymentId;
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Registered moyasarToken for payment {PaymentId} (Moyasar {MoyasarId}).",
+            paymentId,
+            moyasarPaymentId);
+        return true;
     }
 
     public async Task<VerifyPaymentResultDto> VerifyAndFulfillAsync(
         Guid userId,
         string moyasarPaymentId,
+        string? clientSourceToken = null,
         CancellationToken ct = default)
     {
-        var remote = await _moyasar.GetPaymentAsync(moyasarPaymentId, ct)
+        var remote = await FetchPaymentWithTokenRetriesAsync(moyasarPaymentId, ct)
             ?? throw new InvalidOperationException("تعذّر التحقق من الدفع.");
 
-        var fulfilled = await TryFulfillAsync(userId, remote, ct);
+        var fulfilled = await TryFulfillAsync(userId, remote, clientSourceToken, ct);
         string? planNameAr = null;
         if (fulfilled)
         {
@@ -131,11 +174,27 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             }
         }
 
+        var cardTokenSaved = false;
+        if (fulfilled)
+        {
+            var subId = await GetSubscriptionIdForUserAsync(userId, ct);
+            if (subId.HasValue)
+            {
+                var json = await _db.Subscriptions.AsNoTracking()
+                    .Where(s => s.Id == subId.Value)
+                    .Select(s => s.AddonsJson)
+                    .FirstOrDefaultAsync(ct);
+                cardTokenSaved = !string.IsNullOrWhiteSpace(
+                    SubscriptionAddons.Parse(json).MoyasarToken);
+            }
+        }
+
         return new VerifyPaymentResultDto(
             Success: fulfilled,
             Status: remote.Status,
             SubscriptionId: fulfilled ? await GetSubscriptionIdForUserAsync(userId, ct) : null,
-            PlanNameAr: planNameAr);
+            PlanNameAr: planNameAr,
+            CardTokenSaved: cardTokenSaved);
     }
 
     public async Task<bool> HandleWebhookAsync(
@@ -143,19 +202,42 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         MoyasarPaymentDto payment,
         CancellationToken ct = default)
     {
-        if (!string.Equals(eventType, "payment_paid", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(eventType, "payment_failed", StringComparison.OrdinalIgnoreCase))
+        if (!IsPaidWebhookEvent(eventType) && !IsFailedWebhookEvent(eventType))
         {
             return false;
         }
 
-        if (string.Equals(eventType, "payment_failed", StringComparison.OrdinalIgnoreCase))
+        if (IsFailedWebhookEvent(eventType))
         {
             await MarkPaymentFailedAsync(payment, ct);
             return true;
         }
 
-        return await TryFulfillAsync(userId: null, payment, ct);
+        return await TryFulfillAsync(userId: null, payment, clientSourceToken: null, ct);
+    }
+
+    private async Task<MoyasarPaymentDto?> FetchPaymentWithTokenRetriesAsync(
+        string moyasarPaymentId,
+        CancellationToken ct)
+    {
+        MoyasarPaymentDto? last = null;
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            last = await _moyasar.GetPaymentAsync(moyasarPaymentId, ct);
+            if (last is null)
+                return null;
+
+            if (!string.IsNullOrWhiteSpace(last.SourceToken)
+                || !string.Equals(last.Status, "paid", StringComparison.OrdinalIgnoreCase))
+            {
+                return last;
+            }
+
+            if (attempt < 3)
+                await Task.Delay(400 * (attempt + 1), ct);
+        }
+
+        return last;
     }
 
     public async Task<CancelAutoRenewResultDto> CancelAutoRenewAsync(
@@ -189,6 +271,7 @@ public class PaymentCheckoutService : IPaymentCheckoutService
     private async Task<bool> TryFulfillAsync(
         Guid? userId,
         MoyasarPaymentDto remote,
+        string? clientSourceToken,
         CancellationToken ct)
     {
         if (!string.Equals(remote.Status, "paid", StringComparison.OrdinalIgnoreCase))
@@ -197,9 +280,6 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         var payment = await ResolvePaymentFromMetadataAsync(remote, ct);
         if (payment is null)
             return false;
-
-        if (payment.Status == PaymentStatus.Paid)
-            return true;
 
         var subscription = await _db.Subscriptions
             .FirstOrDefaultAsync(s => s.Id == payment.SubscriptionId, ct);
@@ -210,6 +290,17 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             return false;
 
         var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
+
+        if (payment.Status == PaymentStatus.Paid)
+        {
+            return await TryPersistCardTokenAsync(
+                subscription,
+                addons,
+                remote,
+                clientSourceToken,
+                payment.Id,
+                ct);
+        }
         var targetPlanId = addons.PendingPlanId ?? subscription.PlanId;
         var targetPlan = await _db.Plans
             .AsNoTracking()
@@ -235,18 +326,78 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         subscription.PaymentStatus = PaymentStatus.Paid;
         subscription.StartDate = now;
         subscription.EndDate = now.AddYears(1);
+        var cardToken = ResolveCardToken(remote, clientSourceToken, addons.MoyasarToken);
+        LogMissingCardTokenIfNeeded(payment.Id, cardToken);
+
         subscription.AddonsJson = SubscriptionAddons.Serialize(
             addons with
             {
                 AutoRenew = true,
                 PendingPlanId = null,
-                MoyasarToken = remote.SourceToken ?? addons.MoyasarToken,
+                MoyasarToken = cardToken,
             });
 
         await _db.SaveChangesAsync(ct);
 
         await _receipts.TrySendAsync(payment, subscription, targetPlan, userId, ct);
         return true;
+    }
+
+    private async Task<bool> TryPersistCardTokenAsync(
+        Subscription subscription,
+        SubscriptionAddons.State addons,
+        MoyasarPaymentDto remote,
+        string? clientSourceToken,
+        Guid paymentId,
+        CancellationToken ct)
+    {
+        var cardToken = ResolveCardToken(remote, clientSourceToken, addons.MoyasarToken);
+        if (string.IsNullOrWhiteSpace(cardToken)
+            || string.Equals(cardToken, addons.MoyasarToken, StringComparison.Ordinal))
+        {
+            LogMissingCardTokenIfNeeded(paymentId, cardToken ?? addons.MoyasarToken);
+            return true;
+        }
+
+        subscription.AddonsJson = SubscriptionAddons.Serialize(
+            addons with { MoyasarToken = cardToken });
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "Updated moyasarToken on subscription {SubscriptionId} after payment {PaymentId}.",
+            subscription.Id,
+            paymentId);
+        return true;
+    }
+
+    private static string? ResolveCardToken(
+        MoyasarPaymentDto remote,
+        string? clientSourceToken,
+        string? existingToken)
+        => FirstNonEmpty(remote.SourceToken, clientSourceToken, existingToken);
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (string.IsNullOrWhiteSpace(v))
+                continue;
+
+            var trimmed = v.Trim();
+            if (trimmed.StartsWith("token_", StringComparison.Ordinal))
+                return trimmed;
+        }
+
+        return null;
+    }
+
+    private void LogMissingCardTokenIfNeeded(Guid paymentId, string? cardToken)
+    {
+        if (!string.IsNullOrWhiteSpace(cardToken))
+            return;
+
+        _logger.LogWarning(
+            "Payment {PaymentId} fulfilled without moyasarToken. Pay with card (not STC), use save_card on the form, and enable Tokenization on the Moyasar merchant account.",
+            paymentId);
     }
 
     private async Task MarkPaymentFailedAsync(MoyasarPaymentDto remote, CancellationToken ct)
@@ -407,4 +558,32 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
+
+    private string ResolveCallbackUrl(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested))
+            return _settings.FrontendCallbackUrl;
+
+        if (!Uri.TryCreate(requested.Trim(), UriKind.Absolute, out var uri))
+            return _settings.FrontendCallbackUrl;
+
+        var isLocal = uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase);
+        var isHttps = uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase);
+        var isLocalHttp = isLocal && uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase);
+        if (!isHttps && !isLocalHttp)
+            return _settings.FrontendCallbackUrl;
+
+        if (!uri.AbsolutePath.Contains("payment/callback", StringComparison.OrdinalIgnoreCase))
+            return _settings.FrontendCallbackUrl;
+
+        return uri.GetLeftPart(UriPartial.Path);
+    }
+
+    private static bool IsPaidWebhookEvent(string eventType)
+        => string.Equals(eventType, "payment_paid", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsFailedWebhookEvent(string eventType)
+        => string.Equals(eventType, "payment_failed", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(eventType, "payment_faild", StringComparison.OrdinalIgnoreCase);
 }

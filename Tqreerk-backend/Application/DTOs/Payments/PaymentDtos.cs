@@ -1,6 +1,14 @@
 namespace Taqreerk.Application.DTOs.Payments;
 
-public record CreateCheckoutRequestDto(Guid PlanId);
+public record CreateCheckoutRequestDto(
+    Guid PlanId,
+    /// <summary>SPA callback after 3DS, e.g. {origin}/plans/payment/callback</summary>
+    string? CallbackUrl = null);
+
+public record RegisterCardTokenRequestDto(
+    Guid PaymentId,
+    string MoyasarPaymentId,
+    string SourceToken);
 
 public record CheckoutSessionDto(
     Guid PaymentId,
@@ -14,13 +22,18 @@ public record CheckoutSessionDto(
     string PublishableKey,
     string CallbackUrl);
 
-public record VerifyPaymentRequestDto(string MoyasarPaymentId);
+public record VerifyPaymentRequestDto(
+    string MoyasarPaymentId,
+    /// <summary>From Moyasar form on_completed (source.token). Optional fallback when API omits token.</summary>
+    string? SourceToken = null);
 
 public record VerifyPaymentResultDto(
     bool Success,
     string Status,
     Guid? SubscriptionId,
-    string? PlanNameAr);
+    string? PlanNameAr,
+    /// <summary>True when moyasarToken is stored on the subscription after this call.</summary>
+    bool CardTokenSaved);
 
 public record MoyasarPublicConfigDto(string PublishableKey, bool IsConfigured);
 

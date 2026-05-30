@@ -68,13 +68,58 @@ public class MoyasarApiClient : IMoyasarApiClient
             }
         }
 
-        string? token = null;
-        if (root.TryGetProperty("source", out var source) && source.ValueKind == JsonValueKind.Object)
+        var sourceToken = ExtractSourceToken(root);
+
+        return new MoyasarPaymentDto(id, status, amount, currency, metadata, sourceToken);
+    }
+
+    /// <summary>
+    /// Card token for recurring charges (token_xxx). Present when the payment form
+    /// used credit_card.save_card and tokenization is enabled on the Moyasar account.
+    /// STC Pay payments do not produce a card token.
+    /// </summary>
+    internal static string? ExtractSourceToken(JsonElement root)
+    {
+        if (!root.TryGetProperty("source", out var source) || source.ValueKind != JsonValueKind.Object)
+            return null;
+
+        var fromTokenField = ReadTokenString(source, "token");
+        if (fromTokenField is not null)
+            return fromTokenField;
+
+        var sourceType = source.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String
+            ? typeEl.GetString()
+            : null;
+
+        // Recurring charge source: { type: "token", token: "token_xxx" } or id holds token_xxx.
+        if (string.Equals(sourceType, "token", StringComparison.OrdinalIgnoreCase))
         {
-            if (source.TryGetProperty("token", out var tok) && tok.ValueKind == JsonValueKind.String)
-                token = tok.GetString();
+            var nested = ReadTokenString(source, "id");
+            if (nested is not null)
+                return nested;
         }
 
-        return new MoyasarPaymentDto(id, status, amount, currency, metadata, token);
+        // After save_card on creditcard payment, token may appear only on source.id.
+        if (string.Equals(sourceType, "creditcard", StringComparison.OrdinalIgnoreCase))
+        {
+            var idAsToken = ReadTokenString(source, "id");
+            if (idAsToken is not null)
+                return idAsToken;
+        }
+
+        return null;
     }
+
+    private static string? ReadTokenString(JsonElement source, string propertyName)
+    {
+        if (!source.TryGetProperty(propertyName, out var el) || el.ValueKind != JsonValueKind.String)
+            return null;
+
+        var value = el.GetString();
+        return IsMoyasarCardToken(value) ? value : null;
+    }
+
+    private static bool IsMoyasarCardToken(string? value)
+        => !string.IsNullOrWhiteSpace(value)
+           && value.StartsWith("token_", StringComparison.Ordinal);
 }

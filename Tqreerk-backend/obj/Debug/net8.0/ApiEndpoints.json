@@ -2721,6 +2721,95 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.AuthController",
+    "Method": "ResendPasswordResetOtp",
+    "RelativePath": "api/auth/otp/password-reset/resend",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Auth.SendEmailOtpRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 202
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 409
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AuthController",
+    "Method": "SendPasswordResetOtp",
+    "RelativePath": "api/auth/otp/password-reset/send",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Auth.SendEmailOtpRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 202
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 409
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AuthController",
+    "Method": "VerifyPasswordResetOtp",
+    "RelativePath": "api/auth/otp/password-reset/verify",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "req",
+        "Type": "Taqreerk.Application.DTOs.Auth.VerifyPasswordResetOtpRequest",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "Taqreerk.Application.DTOs.Auth.VerifyPasswordResetOtpResponse",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 200
+      },
+      {
+        "Type": "Microsoft.AspNetCore.Mvc.ProblemDetails",
+        "MediaTypes": [
+          "application/json"
+        ],
+        "StatusCode": 401
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.AuthController",
     "Method": "Refresh",
     "RelativePath": "api/auth/refresh",
     "HttpMethod": "POST",

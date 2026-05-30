@@ -4,11 +4,23 @@ namespace Taqreerk.Application.Interfaces;
 
 public interface IPaymentCheckoutService
 {
-    Task<CheckoutSessionDto> CreateCheckoutAsync(Guid userId, Guid planId, CancellationToken ct = default);
+    Task<CheckoutSessionDto> CreateCheckoutAsync(
+        Guid userId,
+        Guid planId,
+        string? callbackUrl = null,
+        CancellationToken ct = default);
+
+    Task<bool> RegisterCardTokenAsync(
+        Guid userId,
+        Guid paymentId,
+        string moyasarPaymentId,
+        string sourceToken,
+        CancellationToken ct = default);
 
     Task<VerifyPaymentResultDto> VerifyAndFulfillAsync(
         Guid userId,
         string moyasarPaymentId,
+        string? clientSourceToken = null,
         CancellationToken ct = default);
 
     /// <summary>Idempotent fulfillment from Moyasar webhook payload.</summary>

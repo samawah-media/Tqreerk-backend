@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "kKp2jhiLkr0=",
+  "dgSpecHash": "MB0bA2u9Urc=",
   "success": true,
-  "projectFilePath": "c:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
+  "projectFilePath": "C:\\Users\\Abdalrahman Seria\\Desktop\\proSol\\Tqreerk-backend\\Tqreerk-backend\\Tqreerk-backend.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\azure.core\\1.44.1\\azure.core.1.44.1.nupkg.sha512",
     "C:\\Users\\Abdalrahman Seria\\.nuget\\packages\\azure.identity\\1.13.1\\azure.identity.1.13.1.nupkg.sha512",
