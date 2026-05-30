@@ -251,8 +251,11 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         var addons = SubscriptionAddons.Parse(sub.AddonsJson);
         sub.AddonsJson = SubscriptionAddons.Serialize(addons with { AutoRenew = false });
         await _db.SaveChangesAsync(ct);
-        return new CancelAutoRenewResultDto(false);
+        return new CancelAutoRenewResultDto(false, sub.EndDate);
     }
+
+    public Task<bool> FulfillMoyasarPaymentAsync(MoyasarPaymentDto remote, CancellationToken ct = default)
+        => TryFulfillAsync(userId: null, remote, clientSourceToken: null, ct);
 
     public bool TryVerifyWebhookSignature(string rawBody, string? signatureHeader)
     {
@@ -293,13 +296,25 @@ public class PaymentCheckoutService : IPaymentCheckoutService
 
         if (payment.Status == PaymentStatus.Paid)
         {
-            return await TryPersistCardTokenAsync(
+            await TryPersistCardTokenAsync(
                 subscription,
                 addons,
                 remote,
                 clientSourceToken,
                 payment.Id,
                 ct);
+
+            // Webhook may fulfill before SPA verify — still send receipt once.
+            var paidPlanId = addons.PendingPlanId ?? subscription.PlanId;
+            var paidPlan = await _db.Plans.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == paidPlanId && p.IsActive, ct);
+            if (paidPlan is not null)
+            {
+                await _receipts.TrySendSuccessAsync(
+                    payment, subscription, paidPlan, userId, ct);
+            }
+
+            return true;
         }
         var targetPlanId = addons.PendingPlanId ?? subscription.PlanId;
         var targetPlan = await _db.Plans
@@ -315,6 +330,17 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         {
             throw new InvalidOperationException("مبلغ الدفع لا يطابق الطلب.");
         }
+
+        if (IsRenewalPayment(remote))
+            return await FulfillRenewalAsync(
+                payment,
+                subscription,
+                addons,
+                remote,
+                clientSourceToken,
+                targetPlan,
+                userId,
+                ct);
 
         var now = DateTime.UtcNow;
         payment.Status = PaymentStatus.Paid;
@@ -339,9 +365,54 @@ public class PaymentCheckoutService : IPaymentCheckoutService
 
         await _db.SaveChangesAsync(ct);
 
-        await _receipts.TrySendAsync(payment, subscription, targetPlan, userId, ct);
+        await _receipts.TrySendSuccessAsync(payment, subscription, targetPlan, userId, ct);
         return true;
     }
+
+    private async Task<bool> FulfillRenewalAsync(
+        Payment payment,
+        Subscription subscription,
+        SubscriptionAddons.State addons,
+        MoyasarPaymentDto remote,
+        string? clientSourceToken,
+        Plan plan,
+        Guid? userId,
+        CancellationToken ct)
+    {
+        if (subscription.Status != SubscriptionStatus.Active
+            || subscription.PaymentStatus != PaymentStatus.Paid)
+        {
+            throw new InvalidOperationException("تجديد غير صالح لهذا الاشتراك.");
+        }
+
+        var now = DateTime.UtcNow;
+        payment.Status = PaymentStatus.Paid;
+        payment.PaidAt = now;
+        payment.MiserPaymentReference = remote.Id;
+
+        var cardToken = ResolveCardToken(remote, clientSourceToken, addons.MoyasarToken);
+        LogMissingCardTokenIfNeeded(payment.Id, cardToken);
+
+        var periodBase = subscription.EndDate > now ? subscription.EndDate : now;
+        subscription.EndDate = periodBase.AddYears(1);
+        subscription.AddonsJson = SubscriptionAddons.Serialize(
+            addons with
+            {
+                AutoRenew = true,
+                PendingPlanId = null,
+                MoyasarToken = cardToken,
+                LastRenewalAttemptUtc = now,
+            });
+
+        await _db.SaveChangesAsync(ct);
+        await _receipts.TrySendSuccessAsync(payment, subscription, plan, userId, ct);
+        return true;
+    }
+
+    private static bool IsRenewalPayment(MoyasarPaymentDto remote)
+        => remote.Metadata is not null
+           && remote.Metadata.TryGetValue("renewal", out var flag)
+           && string.Equals(flag, "true", StringComparison.OrdinalIgnoreCase);
 
     private async Task<bool> TryPersistCardTokenAsync(
         Subscription subscription,
@@ -411,12 +482,24 @@ public class PaymentCheckoutService : IPaymentCheckoutService
 
         var sub = await _db.Subscriptions.FirstOrDefaultAsync(
             s => s.Id == payment.SubscriptionId, ct);
+        var wasUpgradePending = false;
+        var isRenewal = IsRenewalPayment(remote);
+        Plan? failedPlan = null;
+
         if (sub is not null)
         {
             var addons = SubscriptionAddons.Parse(sub.AddonsJson);
-            var wasUpgradePending = addons.PendingPlanId.HasValue;
+            wasUpgradePending = addons.PendingPlanId.HasValue;
+            var failedPlanId = addons.PendingPlanId ?? sub.PlanId;
+            failedPlan = await _db.Plans.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == failedPlanId && p.IsActive, ct);
 
-            if (wasUpgradePending)
+            if (isRenewal)
+            {
+                sub.AddonsJson = SubscriptionAddons.Serialize(
+                    addons with { LastRenewalAttemptUtc = DateTime.UtcNow });
+            }
+            else if (wasUpgradePending)
             {
                 sub.AddonsJson = SubscriptionAddons.Serialize(
                     addons with { PendingPlanId = null });
@@ -428,6 +511,18 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         }
 
         await _db.SaveChangesAsync(ct);
+
+        if (sub is not null && failedPlan is not null)
+        {
+            await _receipts.TrySendFailedAsync(
+                payment,
+                sub,
+                failedPlan,
+                wasUpgradePending,
+                isRenewalAttempt: isRenewal,
+                payerUserId: null,
+                ct);
+        }
     }
 
     private async Task<Payment?> ResolvePaymentFromMetadataAsync(

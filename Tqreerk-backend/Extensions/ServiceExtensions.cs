@@ -216,6 +216,7 @@ public static class ServiceExtensions
         services.AddScoped<IAnnotationsService, AnnotationsService>();
         services.AddScoped<PaymentReceiptNotifier>();
         services.AddScoped<IPaymentCheckoutService, PaymentCheckoutService>();
+        services.AddScoped<SubscriptionRenewalService>();
         services.AddHttpClient<IMoyasarApiClient, MoyasarApiClient>();
 
         // Typed HttpClient for the external Python ai-service. Each call is a

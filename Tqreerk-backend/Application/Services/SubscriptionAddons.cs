@@ -8,7 +8,8 @@ public static class SubscriptionAddons
     public sealed record State(
         bool AutoRenew = true,
         string? MoyasarToken = null,
-        Guid? PendingPlanId = null);
+        Guid? PendingPlanId = null,
+        DateTime? LastRenewalAttemptUtc = null);
 
     public static State Parse(string? json)
     {
@@ -31,7 +32,15 @@ public static class SubscriptionAddons
                 pendingPlanId = parsed;
             }
 
-            return new State(autoRenew, token, pendingPlanId);
+            DateTime? lastAttempt = null;
+            if (root.TryGetProperty("lastRenewalAttemptUtc", out var la)
+                && la.ValueKind == JsonValueKind.String
+                && DateTime.TryParse(la.GetString(), out var parsedAt))
+            {
+                lastAttempt = DateTime.SpecifyKind(parsedAt, DateTimeKind.Utc);
+            }
+
+            return new State(autoRenew, token, pendingPlanId, lastAttempt);
         }
         catch
         {
@@ -45,5 +54,6 @@ public static class SubscriptionAddons
             autoRenew = state.AutoRenew,
             moyasarToken = state.MoyasarToken,
             pendingPlanId = state.PendingPlanId,
+            lastRenewalAttemptUtc = state.LastRenewalAttemptUtc,
         });
 }

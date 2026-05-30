@@ -4295,6 +4295,28 @@
   },
   {
     "ContainingType": "Taqreerk.API.Controllers.PaymentsController",
+    "Method": "RegisterCardToken",
+    "RelativePath": "api/payments/register-card-token",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "body",
+        "Type": "Taqreerk.Application.DTOs.Payments.RegisterCardTokenRequestDto",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": [
+      {
+        "Type": "System.Void",
+        "MediaTypes": [],
+        "StatusCode": 200
+      }
+    ]
+  },
+  {
+    "ContainingType": "Taqreerk.API.Controllers.PaymentsController",
     "Method": "Verify",
     "RelativePath": "api/payments/verify",
     "HttpMethod": "POST",

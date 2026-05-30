@@ -18,4 +18,10 @@ public class MoyasarSettings
     /// Example: http://localhost:5173/plans/payment/callback
     /// </summary>
     public string FrontendCallbackUrl { get; set; } = "http://localhost:5173/plans/payment/callback";
+
+    /// <summary>Start auto-renewal this many days before EndDate (UTC).</summary>
+    public int RenewalLeadDays { get; set; } = 14;
+
+    /// <summary>Retry failed renewals for this many days after EndDate.</summary>
+    public int RenewalGraceDaysAfterExpiry { get; set; } = 30;
 }

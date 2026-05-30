@@ -26,6 +26,9 @@ public interface IPaymentCheckoutService
     /// <summary>Idempotent fulfillment from Moyasar webhook payload.</summary>
     Task<bool> HandleWebhookAsync(string eventType, MoyasarPaymentDto payment, CancellationToken ct = default);
 
+    /// <summary>Webhook / renewal job — fulfill a Moyasar payment already marked paid.</summary>
+    Task<bool> FulfillMoyasarPaymentAsync(MoyasarPaymentDto remote, CancellationToken ct = default);
+
     Task<CancelAutoRenewResultDto> CancelAutoRenewAsync(Guid userId, CancellationToken ct = default);
 
     bool TryVerifyWebhookSignature(string rawBody, string? signatureHeader);

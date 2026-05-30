@@ -5794,6 +5794,37 @@
         }
       }
     },
+    "/api/payments/register-card-token": {
+      "post": {
+        "tags": [
+          "Payments"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterCardTokenRequestDto"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterCardTokenRequestDto"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterCardTokenRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/payments/verify": {
       "post": {
         "tags": [
@@ -9800,6 +9831,10 @@
         "properties": {
           "autoRenew": {
             "type": "boolean"
+          },
+          "subscriptionEndDate": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "additionalProperties": false
@@ -10093,6 +10128,10 @@
           "planId": {
             "type": "string",
             "format": "uuid"
+          },
+          "callbackUrl": {
+            "type": "string",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -10909,6 +10948,12 @@
           "endDate": {
             "type": "string",
             "format": "date-time"
+          },
+          "autoRenew": {
+            "type": "boolean"
+          },
+          "hasPaymentToken": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -12061,6 +12106,24 @@
         "type": "object",
         "properties": {
           "refreshToken": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegisterCardTokenRequestDto": {
+        "type": "object",
+        "properties": {
+          "paymentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "moyasarPaymentId": {
+            "type": "string",
+            "nullable": true
+          },
+          "sourceToken": {
             "type": "string",
             "nullable": true
           }
@@ -14548,6 +14611,9 @@
           "planNameAr": {
             "type": "string",
             "nullable": true
+          },
+          "cardTokenSaved": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

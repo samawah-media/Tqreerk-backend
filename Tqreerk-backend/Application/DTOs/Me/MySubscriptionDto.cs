@@ -15,4 +15,6 @@ public sealed record MySubscriptionDto(
     bool IsOrganizationSubscription,
     Guid? OrganizationId,
     DateTime StartDate,
-    DateTime EndDate);
+    DateTime EndDate,
+    bool AutoRenew,
+    bool HasPaymentToken);

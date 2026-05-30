@@ -412,7 +412,10 @@ public class MeService : IMeService
     private static MySubscriptionDto ToSubscriptionDto(
         Subscription sub, Plan plan, bool awaitingPayment)
     {
-        var isActive = sub.Status == SubscriptionStatus.Active;
+        var addons = SubscriptionAddons.Parse(sub.AddonsJson);
+        var now = DateTime.UtcNow;
+        var isActive = sub.Status == SubscriptionStatus.Active
+            && (plan.AnnualPrice <= 0 || sub.EndDate > now);
         return new MySubscriptionDto(
             SubscriptionId: sub.Id,
             PlanId: plan.Id,
@@ -426,6 +429,8 @@ public class MeService : IMeService
             IsOrganizationSubscription: sub.OrganizationId.HasValue,
             OrganizationId: sub.OrganizationId,
             StartDate: sub.StartDate,
-            EndDate: sub.EndDate);
+            EndDate: sub.EndDate,
+            AutoRenew: addons.AutoRenew,
+            HasPaymentToken: !string.IsNullOrWhiteSpace(addons.MoyasarToken));
     }
 }

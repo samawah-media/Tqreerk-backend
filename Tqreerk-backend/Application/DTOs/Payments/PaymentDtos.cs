@@ -37,4 +37,4 @@ public record VerifyPaymentResultDto(
 
 public record MoyasarPublicConfigDto(string PublishableKey, bool IsConfigured);
 
-public record CancelAutoRenewResultDto(bool AutoRenew);
+public record CancelAutoRenewResultDto(bool AutoRenew, DateTime SubscriptionEndDate);

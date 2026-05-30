@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Taqreerk.Application.Interfaces;
@@ -28,6 +29,55 @@ public class MoyasarApiClient : IMoyasarApiClient
             "Basic",
             Convert.ToBase64String(
                 System.Text.Encoding.UTF8.GetBytes($"{_settings.SecretKey}:")));
+
+        using var res = await _http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode)
+            return null;
+
+        await using var stream = await res.Content.ReadAsStreamAsync(ct);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        return ParsePayment(doc.RootElement);
+    }
+
+    public async Task<MoyasarPaymentDto?> CreateTokenPaymentAsync(
+        Guid paymentId,
+        int amountHalalas,
+        string currency,
+        string description,
+        string callbackUrl,
+        string cardToken,
+        IReadOnlyDictionary<string, string> metadata,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(_settings.SecretKey))
+            return null;
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["given_id"] = paymentId.ToString(),
+            ["amount"] = amountHalalas,
+            ["currency"] = currency,
+            ["description"] = description,
+            ["callback_url"] = callbackUrl,
+            ["source"] = new Dictionary<string, string>
+            {
+                ["type"] = "token",
+                ["token"] = cardToken,
+            },
+            ["metadata"] = metadata,
+        };
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, "payments")
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(payload),
+                Encoding.UTF8,
+                "application/json"),
+        };
+        req.Headers.Authorization = new AuthenticationHeaderValue(
+            "Basic",
+            Convert.ToBase64String(
+                Encoding.UTF8.GetBytes($"{_settings.SecretKey}:")));
 
         using var res = await _http.SendAsync(req, ct);
         if (!res.IsSuccessStatusCode)

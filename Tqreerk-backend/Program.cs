@@ -7,6 +7,7 @@ using Taqreerk.API.Middleware;
 using Taqreerk.Application.Settings;
 using Taqreerk.Extensions;
 using Taqreerk.Infrastructure.Data;
+using Taqreerk.Infrastructure.Jobs;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -183,5 +184,11 @@ app.MapGet("/healthz", async (TaqreerkDbContext db) =>
 
 
 app.MapControllers();
+
+// Annual auto-renewal: charge saved Moyasar tokens before EndDate (UTC 03:00 daily).
+RecurringJob.AddOrUpdate<SubscriptionRenewalJob>(
+    "subscription-auto-renewal",
+    job => job.ExecuteAsync(CancellationToken.None),
+    Cron.Daily(3));
 
 app.Run();

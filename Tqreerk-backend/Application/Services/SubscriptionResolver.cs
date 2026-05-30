@@ -14,10 +14,13 @@ public static class SubscriptionResolver
     public static async Task<(Subscription Subscription, Plan Plan)?> TryGetActiveForUserAsync(
         TaqreerkDbContext db, Guid userId, CancellationToken ct = default)
     {
+        var now = DateTime.UtcNow;
         var userSub = await db.Subscriptions
             .AsNoTracking()
             .Include(s => s.Plan)
-            .Where(s => s.UserId == userId && s.Status == SubscriptionStatus.Active)
+            .Where(s => s.UserId == userId
+                        && s.Status == SubscriptionStatus.Active
+                        && (s.Plan.AnnualPrice <= 0 || s.EndDate > now))
             .OrderByDescending(s => s.CreatedAt)
             .FirstOrDefaultAsync(ct);
 
@@ -36,7 +39,9 @@ public static class SubscriptionResolver
         var orgSub = await db.Subscriptions
             .AsNoTracking()
             .Include(s => s.Plan)
-            .Where(s => s.OrganizationId == orgId && s.Status == SubscriptionStatus.Active)
+            .Where(s => s.OrganizationId == orgId
+                        && s.Status == SubscriptionStatus.Active
+                        && (s.Plan.AnnualPrice <= 0 || s.EndDate > now))
             .OrderByDescending(s => s.CreatedAt)
             .FirstOrDefaultAsync(ct);
 
