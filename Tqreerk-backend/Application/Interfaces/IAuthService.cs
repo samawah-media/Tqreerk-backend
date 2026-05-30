@@ -35,6 +35,8 @@ public interface IAuthService
         CancellationToken ct = default);
 
     Task RequestPasswordResetAsync(string email, string? ipAddress, CancellationToken ct = default);
+    Task SendPasswordResetOtpAsync(string email, string? ipAddress, CancellationToken ct = default);
+    Task<string> VerifyPasswordResetOtpAsync(string email, string code, CancellationToken ct = default);
     Task ResetPasswordAsync(string token, string newPassword, CancellationToken ct = default);
 
     Task<IReadOnlyList<SessionDto>> GetActiveSessionsAsync(Guid userId, string? currentRefreshToken, CancellationToken ct = default);

@@ -670,6 +670,91 @@ public class AuthService : IAuthService
 
     // ── Password reset ──────────────────────────────────────────────────────
 
+    public async Task SendPasswordResetOtpAsync(string email, string? ipAddress, CancellationToken ct = default)
+    {
+        var normalized = email.ToLowerInvariant().Trim();
+        var user = await _db.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Email == normalized && u.EmailVerified, ct);
+
+        // Silent success — don't reveal whether the email exists or is verified.
+        if (user is null) return;
+
+        var latest = await _db.PasswordResetTokens
+            .Where(t => t.UserId == user.Id && t.UsedAt == null)
+            .OrderByDescending(t => t.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+
+        if (latest is not null && DateTime.UtcNow - latest.CreatedAt < OtpResendCooldown)
+        {
+            var wait = (int)Math.Ceiling((OtpResendCooldown - (DateTime.UtcNow - latest.CreatedAt)).TotalSeconds);
+            throw new InvalidOperationException($"Please wait {wait} seconds before requesting a new code.");
+        }
+
+        var existing = await _db.PasswordResetTokens
+            .Where(t => t.UserId == user.Id && t.UsedAt == null)
+            .ToListAsync(ct);
+        foreach (var t in existing) t.UsedAt = DateTime.UtcNow;
+
+        var code = GenerateNumericCode(OtpCodeLength);
+        _db.PasswordResetTokens.Add(new PasswordResetToken
+        {
+            UserId = user.Id,
+            TokenHash = HashToken(code),
+            IpAddress = ipAddress,
+            ExpiresAt = DateTime.UtcNow.Add(OtpLifetime),
+        });
+
+        await _db.SaveChangesAsync(ct);
+
+        var minutes = (int)OtpLifetime.TotalMinutes;
+        var body = $"<p>Hello {System.Net.WebUtility.HtmlEncode(user.FullName)},</p>" +
+                   $"<p>Your Taqreerk password reset code is:</p>" +
+                   $"<p style=\"font-size:24px;font-weight:bold;letter-spacing:4px\">{code}</p>" +
+                   $"<p>This code expires in {minutes} minutes.</p>" +
+                   "<p>If you did not request a password reset, you can safely ignore this email.</p>";
+
+        await _email.SendEmailAsync(user.Email, "Reset your Taqreerk password", body, ct);
+    }
+
+    public async Task<string> VerifyPasswordResetOtpAsync(string email, string code, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(code) || code.Length != OtpCodeLength || !code.All(char.IsDigit))
+            throw new ArgumentException("Invalid verification code.");
+
+        var normalized = email.ToLowerInvariant().Trim();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == normalized && u.EmailVerified, ct)
+            ?? throw new UnauthorizedAccessException("Invalid verification code.");
+
+        var hash = HashToken(code);
+        var otpRecord = await _db.PasswordResetTokens
+            .Where(t => t.UserId == user.Id && t.TokenHash == hash)
+            .OrderByDescending(t => t.CreatedAt)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new UnauthorizedAccessException("Invalid verification code.");
+
+        if (otpRecord.UsedAt is not null)
+            throw new UnauthorizedAccessException("Verification code has already been used.");
+
+        if (otpRecord.ExpiresAt < DateTime.UtcNow)
+            throw new UnauthorizedAccessException("Verification code has expired.");
+
+        otpRecord.UsedAt = DateTime.UtcNow;
+
+        // Issue a longer-lived reset token for the password form — same table,
+        // different lifetime than the 6-digit OTP row we just consumed.
+        var rawToken = GenerateToken();
+        _db.PasswordResetTokens.Add(new PasswordResetToken
+        {
+            UserId = user.Id,
+            TokenHash = HashToken(rawToken),
+            ExpiresAt = DateTime.UtcNow.AddMinutes(_emailSettings.PasswordResetTokenMinutesValid),
+        });
+
+        await _db.SaveChangesAsync(ct);
+        return rawToken;
+    }
+
     public async Task RequestPasswordResetAsync(string email, string? ipAddress, CancellationToken ct = default)
     {
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email.ToLowerInvariant(), ct);

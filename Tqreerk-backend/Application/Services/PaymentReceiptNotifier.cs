@@ -51,17 +51,24 @@ public sealed class PaymentReceiptNotifier
             }
 
             var invoice = await EnsureInvoiceAsync(payment, subscription, ct);
-            var orgName = subscription.OrganizationId.HasValue
-                ? await _db.Organizations.AsNoTracking()
+            string? orgNameAr = null;
+            string? orgNameEn = null;
+            if (subscription.OrganizationId.HasValue)
+            {
+                var org = await _db.Organizations.AsNoTracking()
                     .Where(o => o.Id == subscription.OrganizationId)
-                    .Select(o => o.NameAr)
-                    .FirstOrDefaultAsync(ct)
-                : null;
+                    .Select(o => new { o.NameAr, o.NameEn })
+                    .FirstOrDefaultAsync(ct);
+                orgNameAr = org?.NameAr;
+                orgNameEn = org?.NameEn;
+            }
 
-            var subject = $"تأكيد اشتراك تقرير — فاتورة {invoice.InvoiceNumber}";
+            var subject =
+                $"تأكيد اشتراك تقرير | Taqreerk subscription confirmed — {invoice.InvoiceNumber}";
             var body = BuildHtmlBody(
                 payer.FullName,
-                orgName,
+                orgNameAr,
+                orgNameEn,
                 plan,
                 payment,
                 invoice,
@@ -152,40 +159,75 @@ public sealed class PaymentReceiptNotifier
     private string BuildHtmlBody(
         string fullName,
         string? organizationNameAr,
+        string? organizationNameEn,
         Plan plan,
         Payment payment,
         Invoice invoice,
         Subscription subscription)
     {
         var safeName = WebUtility.HtmlEncode(fullName);
-        var planName = WebUtility.HtmlEncode(plan.NameAr);
-        var orgLine = string.IsNullOrWhiteSpace(organizationNameAr)
-            ? ""
-            : $"<p><strong>الجهة:</strong> {WebUtility.HtmlEncode(organizationNameAr)}</p>";
-        var refLine = string.IsNullOrWhiteSpace(payment.MiserPaymentReference)
-            ? ""
-            : $"<p><strong>مرجع الدفع:</strong> {WebUtility.HtmlEncode(payment.MiserPaymentReference)}</p>";
+        var planNameAr = WebUtility.HtmlEncode(plan.NameAr);
+        var planNameEn = WebUtility.HtmlEncode(
+            string.IsNullOrWhiteSpace(plan.NameEn) ? plan.NameAr : plan.NameEn);
+        var invoiceNo = WebUtility.HtmlEncode(invoice.InvoiceNumber);
+        var currency = WebUtility.HtmlEncode(payment.Currency);
+        var amount = payment.Amount.ToString("N2");
+        var paymentRef = WebUtility.HtmlEncode(payment.MiserPaymentReference ?? "");
         var paidAt = (payment.PaidAt ?? invoice.IssuedAt).ToString("yyyy-MM-dd HH:mm") + " UTC";
         var start = subscription.StartDate.ToString("yyyy-MM-dd");
         var end = subscription.EndDate.ToString("yyyy-MM-dd");
-        var dashboardUrl = $"{_emailSettings.AppBaseUrl.TrimEnd('/')}/dashboard";
+        var dashboardUrl = WebUtility.HtmlEncode($"{_emailSettings.AppBaseUrl.TrimEnd('/')}/dashboard");
+
+        var orgLineAr = string.IsNullOrWhiteSpace(organizationNameAr)
+            ? ""
+            : $"<p><strong>الجهة:</strong> {WebUtility.HtmlEncode(organizationNameAr)}</p>";
+        var orgLineEn = string.IsNullOrWhiteSpace(organizationNameEn)
+            ? (string.IsNullOrWhiteSpace(organizationNameAr)
+                ? ""
+                : $"<p><strong>Organization:</strong> {WebUtility.HtmlEncode(organizationNameAr)}</p>")
+            : $"<p><strong>Organization:</strong> {WebUtility.HtmlEncode(organizationNameEn)}</p>";
+        var refLineAr = string.IsNullOrWhiteSpace(payment.MiserPaymentReference)
+            ? ""
+            : $"<p><strong>مرجع الدفع:</strong> {paymentRef}</p>";
+        var refLineEn = string.IsNullOrWhiteSpace(payment.MiserPaymentReference)
+            ? ""
+            : $"<p><strong>Payment reference:</strong> {paymentRef}</p>";
 
         return $"""
-            <div dir="rtl" style="font-family:Segoe UI,Tahoma,sans-serif;line-height:1.6;color:#0A3034">
-              <p>مرحباً {safeName}،</p>
-              <p>تم استلام دفعتك وتفعيل اشتراكك بنجاح على منصة <strong>تقرير</strong>.</p>
-              <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0" />
-              <h2 style="color:#28C8A2;margin:0 0 12px">تفاصيل الفاتورة</h2>
-              <p><strong>رقم الفاتورة:</strong> {WebUtility.HtmlEncode(invoice.InvoiceNumber)}</p>
-              <p><strong>الباقة:</strong> {planName}</p>
-              {orgLine}
-              <p><strong>المبلغ:</strong> {payment.Amount:N2} {WebUtility.HtmlEncode(payment.Currency)}</p>
-              <p><strong>تاريخ الدفع:</strong> {paidAt}</p>
-              {refLine}
-              <p><strong>فترة الاشتراك:</strong> من {start} إلى {end}</p>
-              <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0" />
-              <p>يمكنك إدارة اشتراكك من <a href="{WebUtility.HtmlEncode(dashboardUrl)}">مساحة العمل</a>.</p>
-              <p style="color:#666;font-size:12px">هذه رسالة تأكيد تلقائية — لا حاجة للرد عليها.</p>
+            <div style="font-family:Segoe UI,Tahoma,sans-serif;line-height:1.6;color:#0A3034;max-width:560px">
+              <div dir="rtl" style="margin-bottom:28px">
+                <p>مرحباً {safeName}،</p>
+                <p>تم استلام دفعتك وتفعيل اشتراكك بنجاح على منصة <strong>تقرير</strong>.</p>
+                <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0" />
+                <h2 style="color:#28C8A2;margin:0 0 12px">تفاصيل الفاتورة</h2>
+                <p><strong>رقم الفاتورة:</strong> {invoiceNo}</p>
+                <p><strong>الباقة:</strong> {planNameAr}</p>
+                {orgLineAr}
+                <p><strong>المبلغ:</strong> {amount} {currency}</p>
+                <p><strong>تاريخ الدفع:</strong> {paidAt}</p>
+                {refLineAr}
+                <p><strong>فترة الاشتراك:</strong> من {start} إلى {end}</p>
+                <p>يمكنك إدارة اشتراكك من <a href="{dashboardUrl}">مساحة العمل</a>.</p>
+              </div>
+              <hr style="border:none;border-top:2px solid #28C8A2;margin:24px 0" />
+              <div dir="ltr" style="margin-top:28px">
+                <p>Hello {safeName},</p>
+                <p>Your payment has been received and your <strong>Taqreerk</strong> subscription is now active.</p>
+                <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0" />
+                <h2 style="color:#28C8A2;margin:0 0 12px">Invoice details</h2>
+                <p><strong>Invoice number:</strong> {invoiceNo}</p>
+                <p><strong>Plan:</strong> {planNameEn}</p>
+                {orgLineEn}
+                <p><strong>Amount:</strong> {amount} {currency}</p>
+                <p><strong>Paid at:</strong> {paidAt}</p>
+                {refLineEn}
+                <p><strong>Subscription period:</strong> {start} to {end}</p>
+                <p>Manage your subscription from your <a href="{dashboardUrl}">workspace</a>.</p>
+              </div>
+              <p dir="ltr" style="color:#666;font-size:12px;margin-top:24px">
+                This is an automated confirmation — please do not reply.<br />
+                <span dir="rtl">هذه رسالة تأكيد تلقائية — لا حاجة للرد عليها.</span>
+              </p>
             </div>
             """;
     }
