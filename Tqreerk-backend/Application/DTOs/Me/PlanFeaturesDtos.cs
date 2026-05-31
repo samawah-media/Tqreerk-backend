@@ -20,7 +20,13 @@ public sealed record PlanFeaturesDto(
     PlanLimitsDto Limits,
     PlanFlagsDto Flags,
     PlanTiersDto Tiers,
-    UsageSnapshotDto Usage);
+    UsageSnapshotDto Usage,
+
+    /// <summary>UTC end of the paid subscription period (annual renewal date).
+    /// Null for free individual tier.</summary>
+    DateTime? SubscriptionEndDate,
+
+    bool IsFreePlan);
 
 /// Per-action monthly caps. Each field maps 1:1 to a column on `plans`.
 public sealed record PlanLimitsDto(
@@ -74,4 +80,7 @@ public sealed record PlanTiersDto(
 public sealed record UsageSnapshotDto(
     DateTime PeriodStart,
     DateTime ResetsAt,
-    IReadOnlyDictionary<string, int> ConsumedByAction);
+    IReadOnlyDictionary<string, int> ConsumedByAction,
+    /// <summary>Report ids the user already opened with full-access this month
+    /// (idempotent reads — re-opening these does not consume another slot).</summary>
+    IReadOnlyList<Guid> ReadReportIds);

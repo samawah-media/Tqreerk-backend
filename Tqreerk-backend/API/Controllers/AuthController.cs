@@ -177,6 +177,37 @@ public class AuthController : ControllerBase
         return Accepted();
     }
 
+    /// <summary>Send a 6-digit OTP to reset the password for a verified account.
+    /// Always returns 202 for unknown emails — no enumeration.</summary>
+    [HttpPost("otp/password-reset/send")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> SendPasswordResetOtp([FromBody] SendEmailOtpRequest req, CancellationToken ct)
+    {
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        await _auth.SendPasswordResetOtpAsync(req.Email, ip, ct);
+        return Accepted();
+    }
+
+    [HttpPost("otp/password-reset/resend")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public Task<IActionResult> ResendPasswordResetOtp([FromBody] SendEmailOtpRequest req, CancellationToken ct)
+        => SendPasswordResetOtp(req, ct);
+
+    /// <summary>Verify the password-reset OTP and return a short-lived reset token
+    /// for <c>POST /auth/reset-password</c>.</summary>
+    [HttpPost("otp/password-reset/verify")]
+    [ProducesResponseType(typeof(VerifyPasswordResetOtpResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> VerifyPasswordResetOtp(
+        [FromBody] VerifyPasswordResetOtpRequest req,
+        CancellationToken ct)
+    {
+        var resetToken = await _auth.VerifyPasswordResetOtpAsync(req.Email, req.Code, ct);
+        return Ok(new VerifyPasswordResetOtpResponse(resetToken));
+    }
+
     /// <summary>Complete a password reset using the token from the email. Revokes all existing sessions.</summary>
     [HttpPost("reset-password")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]

@@ -7,6 +7,7 @@ using Taqreerk.API.Middleware;
 using Taqreerk.Application.Settings;
 using Taqreerk.Extensions;
 using Taqreerk.Infrastructure.Data;
+using Taqreerk.Infrastructure.Jobs;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -137,9 +138,9 @@ app.UseCors("DefaultCors");
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Hangfire dashboard — protected by JWT + IsPlatformStaff in all environments.
-// Browser access: navigate to /admin/hangfire?access_token=<jwt>
-// API client: Authorization: Bearer <jwt>
+// Hangfire dashboard — JWT + IsPlatformStaff. Browser: open once with
+// /admin/hangfire?access_token=<staff-jwt> (sets hangfire_auth cookie);
+// then use Recurring jobs / links normally. API: Authorization: Bearer <jwt>
 app.UseHangfireDashboard("/admin/hangfire", new DashboardOptions
 {
     Authorization = [new Taqreerk.API.Authorization.HangfirePlatformStaffFilter(app.Services)],
@@ -183,5 +184,17 @@ app.MapGet("/healthz", async (TaqreerkDbContext db) =>
 
 
 app.MapControllers();
+
+// Annual auto-renewal: charge saved Moyasar tokens before EndDate (UTC 03:00 daily).
+RecurringJob.AddOrUpdate<SubscriptionRenewalJob>(
+    "subscription-auto-renewal",
+    job => job.ExecuteAsync(CancellationToken.None),
+    Cron.Daily(3));
+
+// Expire/downgrade subscriptions when EndDate passes (hourly, no grace period).
+RecurringJob.AddOrUpdate<SubscriptionExpirationJob>(
+    "subscription-expiration",
+    job => job.ExecuteAsync(CancellationToken.None),
+    Cron.Hourly());
 
 app.Run();

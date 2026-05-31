@@ -3,6 +3,7 @@ using Taqreerk.Application.Interfaces;
 using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
+using static Taqreerk.Application.Services.SubscriptionLifecycleService;
 
 namespace Taqreerk.Application.Services;
 
@@ -14,10 +15,13 @@ public static class SubscriptionResolver
     public static async Task<(Subscription Subscription, Plan Plan)?> TryGetActiveForUserAsync(
         TaqreerkDbContext db, Guid userId, CancellationToken ct = default)
     {
+        var now = DateTime.UtcNow;
         var userSub = await db.Subscriptions
             .AsNoTracking()
             .Include(s => s.Plan)
-            .Where(s => s.UserId == userId && s.Status == SubscriptionStatus.Active)
+            .Where(s => s.UserId == userId
+                        && s.Status == SubscriptionStatus.Active
+                        && (s.Plan.AnnualPrice <= 0 || s.EndDate > now))
             .OrderByDescending(s => s.CreatedAt)
             .FirstOrDefaultAsync(ct);
 
@@ -36,7 +40,9 @@ public static class SubscriptionResolver
         var orgSub = await db.Subscriptions
             .AsNoTracking()
             .Include(s => s.Plan)
-            .Where(s => s.OrganizationId == orgId && s.Status == SubscriptionStatus.Active)
+            .Where(s => s.OrganizationId == orgId
+                        && s.Status == SubscriptionStatus.Active
+                        && (s.Plan.AnnualPrice <= 0 || s.EndDate > now))
             .OrderByDescending(s => s.CreatedAt)
             .FirstOrDefaultAsync(ct);
 
@@ -49,6 +55,8 @@ public static class SubscriptionResolver
     public static async Task<(Subscription Subscription, Plan Plan)> GetActiveForUserAsync(
         TaqreerkDbContext db, Guid userId, CancellationToken ct = default)
     {
+        await ApplyExpirationTransitionsForUserAsync(db, userId, ct);
+
         var resolved = await TryGetActiveForUserAsync(db, userId, ct);
         if (resolved is not null)
             return resolved.Value;
@@ -65,13 +73,29 @@ public static class SubscriptionResolver
                 .AsNoTracking()
                 .AnyAsync(
                     s => s.OrganizationId == orgId
-                      && s.Status == SubscriptionStatus.Inactive
-                      && s.PaymentStatus == PaymentStatus.Pending,
+                      && OrganizationAwaitingCheckout(s),
                     ct);
             if (awaitingPayment)
             {
                 throw new SubscriptionInactiveException(
                     "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+            }
+
+            var latestOrg = await db.Subscriptions
+                .AsNoTracking()
+                .Include(s => s.Plan)
+                .Where(s => s.OrganizationId == orgId)
+                .OrderByDescending(s => s.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            if (latestOrg?.Plan is not null
+                && RequiresOrganizationRenewal(
+                    latestOrg,
+                    latestOrg.Plan,
+                    isActive: false))
+            {
+                throw new SubscriptionInactiveException(
+                    "انتهى اشتراك المؤسسة. أكمل الدفع لتجديد الباقة واستعادة المميزات.");
             }
         }
 

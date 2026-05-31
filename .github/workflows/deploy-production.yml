@@ -166,7 +166,17 @@ jobs:
             Quota__DailyIngestPerOrg=50
             Quota__DailyTranslatePerOrg=25
             Quota__DailyChatPerUser=300
-
+            EmailSettings__FromAddress=taqrerk@samawah1.sa
+            EmailSettings__FromName=Taqreerk
+            EmailSettings__GraphTenantId=2037de8e-f16b-4a64-8a97-81ba663bf0da
+            EmailSettings__GraphClientId=7ff093ca-2a8d-4930-9feb-7b107c4e9613
+            EmailSettings__GraphClientSecret=${{ secrets.GRAPH_CLIENT_SECRET }}
+            EmailSettings__GraphSenderEmail=taqrerk@samawah1.sa
+            EmailSettings__AppBaseUrl=https://user-app-production-912038409401.me-central1.run.app
+            Moyasar__PublishableKey=${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
+            Moyasar__SecretKey=${{ secrets.MOYASAR_SECRET_KEY }}
+            Moyasar__WebhookSecret=${{ secrets.MOYASAR_WEBHOOK_SECRET }}
+            Moyasar__FrontendCallbackUrl=https://user-app-production-912038409401.me-central1.run.app/plans/payment/callback
       - name: Show production URL
         run: echo "Production deployed → ${{ steps.deploy.outputs.url }}"
 

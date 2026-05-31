@@ -80,13 +80,14 @@ public class ExceptionHandlingMiddleware
             });
         }
 
-        if (ex is SubscriptionInactiveException)
+        if (ex is SubscriptionInactiveException inactive)
         {
             return WriteJson(context, HttpStatusCode.Forbidden, isDevelopment, ex, new
             {
                 status = (int)HttpStatusCode.Forbidden,
                 title = ex.Message,
                 code = "SUBSCRIPTION_INACTIVE",
+                canRenew = inactive.CanRenew,
                 traceId = context.TraceIdentifier,
             });
         }

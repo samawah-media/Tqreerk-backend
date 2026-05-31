@@ -15,4 +15,10 @@ public sealed record MySubscriptionDto(
     bool IsOrganizationSubscription,
     Guid? OrganizationId,
     DateTime StartDate,
-    DateTime EndDate);
+    DateTime EndDate,
+    bool AutoRenew,
+    bool HasPaymentToken,
+    /// <summary>Org paid period ended — user must renew via checkout.</summary>
+    bool RequiresRenewal,
+    /// <summary>Org subscription terminated via refund — no self-serve renewal.</summary>
+    bool IsRevoked);

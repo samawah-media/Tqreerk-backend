@@ -12,11 +12,16 @@ public class MeService : IMeService
 {
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
+    private readonly SubscriptionExpirationService _expiration;
 
-    public MeService(TaqreerkDbContext db, IFileStorage files)
+    public MeService(
+        TaqreerkDbContext db,
+        IFileStorage files,
+        SubscriptionExpirationService expiration)
     {
         _db = db;
         _files = files;
+        _expiration = expiration;
     }
 
     public async Task<IReadOnlyList<MySavedReportDto>> ListSavedReportsAsync(
@@ -266,6 +271,7 @@ public class MeService : IMeService
     public async Task<MySubscriptionDto?> GetSubscriptionAsync(
         Guid userId, CancellationToken ct = default)
     {
+        await _expiration.ApplyForUserAsync(userId, ct);
         var ctx = await ResolveSubscriptionContextAsync(userId, ct);
         if (ctx is null) return null;
 
@@ -275,14 +281,45 @@ public class MeService : IMeService
 
     public async Task<PlanFeaturesDto> GetPlanFeaturesAsync(Guid userId, CancellationToken ct = default)
     {
-        var ctx = await ResolveSubscriptionContextAsync(userId, ct);
-        if (ctx is null)
+        await _expiration.ApplyForUserAsync(userId, ct);
+
+        var active = await SubscriptionResolver.TryGetActiveForUserAsync(_db, userId, ct);
+        if (active is null)
         {
+            var orgId = await _db.OrganizationMembers
+                .AsNoTracking()
+                .Where(m => m.UserId == userId && m.IsActive)
+                .Select(m => (Guid?)m.OrganizationId)
+                .FirstOrDefaultAsync(ct);
+
+            if (orgId.HasValue)
+            {
+                var awaiting = await _db.Subscriptions.AsNoTracking().AnyAsync(
+                    s => s.OrganizationId == orgId
+                         && SubscriptionLifecycleService.OrganizationAwaitingCheckout(s),
+                    ct);
+                if (awaiting)
+                {
+                    throw new SubscriptionInactiveException(
+                        "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+                }
+
+                throw new SubscriptionInactiveException(
+                    "انتهى اشتراك المؤسسة. أكمل الدفع لتجديد الباقة واستعادة المميزات.");
+            }
+
             throw new InvalidOperationException(
                 $"User {userId} has no subscription. Registration should auto-link to a plan.");
         }
 
-        var plan = ctx.Value.Plan;
+        var (sub, plan) = active.Value;
+        var isFreePlan = plan.TargetType == PlanTargetType.Individual && plan.AnnualPrice <= 0;
+        DateTime? subscriptionEndDate =
+            !isFreePlan
+            && sub.Status == SubscriptionStatus.Active
+            && sub.PaymentStatus == PaymentStatus.Paid
+                ? sub.EndDate
+                : null;
 
         // This-month usage. Same window UsageService uses to enforce
         // the cap — first day of the current UTC month → start of next.
@@ -302,6 +339,16 @@ public class MeService : IMeService
             x => x.ActionType.ToString(),
             x => x.Count,
             StringComparer.Ordinal);
+
+        var readReportIds = await _db.UsageTracking
+            .AsNoTracking()
+            .Where(u => u.UserId == userId
+                     && u.BillingPeriodStart == periodStart
+                     && u.ActionType == UsageActionType.ReportFullAccess
+                     && u.ResourceId != null)
+            .Select(u => u.ResourceId!.Value)
+            .Distinct()
+            .ToListAsync(ct);
 
         return new PlanFeaturesDto(
             plan.Id,
@@ -344,7 +391,10 @@ public class MeService : IMeService
             new UsageSnapshotDto(
                 periodStartUtc,
                 resetsAt,
-                consumedByAction));
+                consumedByAction,
+                readReportIds),
+            subscriptionEndDate,
+            isFreePlan);
     }
 
     /// Prefer an active subscription; otherwise surface the latest org
@@ -384,15 +434,20 @@ public class MeService : IMeService
 
         if (sub?.Plan is null) return null;
 
-        var awaiting = sub.Status != SubscriptionStatus.Active
-            && sub.PaymentStatus == PaymentStatus.Pending;
+        var awaiting = SubscriptionLifecycleService.OrganizationAwaitingCheckout(sub)
+            || (sub.UserId.HasValue
+                && sub.Status != SubscriptionStatus.Active
+                && sub.PaymentStatus == PaymentStatus.Pending);
         return (sub, sub.Plan, awaiting);
     }
 
     private static MySubscriptionDto ToSubscriptionDto(
         Subscription sub, Plan plan, bool awaitingPayment)
     {
-        var isActive = sub.Status == SubscriptionStatus.Active;
+        var addons = SubscriptionAddons.Parse(sub.AddonsJson);
+        var now = DateTime.UtcNow;
+        var isActive = sub.Status == SubscriptionStatus.Active
+            && (plan.AnnualPrice <= 0 || sub.EndDate > now);
         return new MySubscriptionDto(
             SubscriptionId: sub.Id,
             PlanId: plan.Id,
@@ -402,10 +457,17 @@ public class MeService : IMeService
             Status: sub.Status.ToString(),
             PaymentStatus: sub.PaymentStatus.ToString(),
             IsActive: isActive,
-            AwaitingPayment: awaitingPayment || (!isActive && sub.PaymentStatus == PaymentStatus.Pending),
+            AwaitingPayment: awaitingPayment
+                || SubscriptionLifecycleService.OrganizationAwaitingCheckout(sub)
+                || (!isActive && sub.PaymentStatus == PaymentStatus.Pending),
             IsOrganizationSubscription: sub.OrganizationId.HasValue,
             OrganizationId: sub.OrganizationId,
             StartDate: sub.StartDate,
-            EndDate: sub.EndDate);
+            EndDate: sub.EndDate,
+            AutoRenew: addons.AutoRenew,
+            HasPaymentToken: !string.IsNullOrWhiteSpace(addons.MoyasarToken),
+            RequiresRenewal: SubscriptionLifecycleService.RequiresOrganizationRenewal(
+                sub, plan, isActive),
+            IsRevoked: false);
     }
 }
