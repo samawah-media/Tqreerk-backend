@@ -19,4 +19,6 @@ public sealed record MySubscriptionDto(
     bool AutoRenew,
     bool HasPaymentToken,
     /// <summary>Org paid period ended — user must renew via checkout.</summary>
-    bool RequiresRenewal);
+    bool RequiresRenewal,
+    /// <summary>Org subscription terminated via refund — no self-serve renewal.</summary>
+    bool IsRevoked);

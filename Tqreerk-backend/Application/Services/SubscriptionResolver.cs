@@ -73,8 +73,7 @@ public static class SubscriptionResolver
                 .AsNoTracking()
                 .AnyAsync(
                     s => s.OrganizationId == orgId
-                      && s.Status == SubscriptionStatus.Inactive
-                      && s.PaymentStatus == PaymentStatus.Pending,
+                      && OrganizationAwaitingCheckout(s),
                     ct);
             if (awaitingPayment)
             {
@@ -82,17 +81,17 @@ public static class SubscriptionResolver
                     "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
             }
 
-            var expiredOrg = await db.Subscriptions
+            var latestOrg = await db.Subscriptions
                 .AsNoTracking()
                 .Include(s => s.Plan)
                 .Where(s => s.OrganizationId == orgId)
                 .OrderByDescending(s => s.CreatedAt)
                 .FirstOrDefaultAsync(ct);
 
-            if (expiredOrg?.Plan is not null
+            if (latestOrg?.Plan is not null
                 && RequiresOrganizationRenewal(
-                    expiredOrg,
-                    expiredOrg.Plan,
+                    latestOrg,
+                    latestOrg.Plan,
                     isActive: false))
             {
                 throw new SubscriptionInactiveException(

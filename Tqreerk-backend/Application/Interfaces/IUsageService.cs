@@ -124,7 +124,14 @@ public sealed class UsageLimitExceededException : Exception
 /// code = SUBSCRIPTION_INACTIVE so the SPA can route to checkout.
 public sealed class SubscriptionInactiveException : Exception
 {
-    public SubscriptionInactiveException(string message) : base(message) { }
+    /// <summary>False when the org subscription was terminated via refund — no self-serve checkout.</summary>
+    public bool CanRenew { get; }
+
+    public SubscriptionInactiveException(string message, bool canRenew = true)
+        : base(message)
+    {
+        CanRenew = canRenew;
+    }
 }
 
 public sealed class PlanFeatureNotAvailableException : Exception

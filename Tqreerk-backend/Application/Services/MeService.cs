@@ -294,6 +294,16 @@ public class MeService : IMeService
 
             if (orgId.HasValue)
             {
+                var awaiting = await _db.Subscriptions.AsNoTracking().AnyAsync(
+                    s => s.OrganizationId == orgId
+                         && SubscriptionLifecycleService.OrganizationAwaitingCheckout(s),
+                    ct);
+                if (awaiting)
+                {
+                    throw new SubscriptionInactiveException(
+                        "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+                }
+
                 throw new SubscriptionInactiveException(
                     "انتهى اشتراك المؤسسة. أكمل الدفع لتجديد الباقة واستعادة المميزات.");
             }
@@ -424,8 +434,10 @@ public class MeService : IMeService
 
         if (sub?.Plan is null) return null;
 
-        var awaiting = sub.Status != SubscriptionStatus.Active
-            && sub.PaymentStatus == PaymentStatus.Pending;
+        var awaiting = SubscriptionLifecycleService.OrganizationAwaitingCheckout(sub)
+            || (sub.UserId.HasValue
+                && sub.Status != SubscriptionStatus.Active
+                && sub.PaymentStatus == PaymentStatus.Pending);
         return (sub, sub.Plan, awaiting);
     }
 
@@ -445,7 +457,9 @@ public class MeService : IMeService
             Status: sub.Status.ToString(),
             PaymentStatus: sub.PaymentStatus.ToString(),
             IsActive: isActive,
-            AwaitingPayment: awaitingPayment || (!isActive && sub.PaymentStatus == PaymentStatus.Pending),
+            AwaitingPayment: awaitingPayment
+                || SubscriptionLifecycleService.OrganizationAwaitingCheckout(sub)
+                || (!isActive && sub.PaymentStatus == PaymentStatus.Pending),
             IsOrganizationSubscription: sub.OrganizationId.HasValue,
             OrganizationId: sub.OrganizationId,
             StartDate: sub.StartDate,
@@ -453,6 +467,7 @@ public class MeService : IMeService
             AutoRenew: addons.AutoRenew,
             HasPaymentToken: !string.IsNullOrWhiteSpace(addons.MoyasarToken),
             RequiresRenewal: SubscriptionLifecycleService.RequiresOrganizationRenewal(
-                sub, plan, isActive));
+                sub, plan, isActive),
+            IsRevoked: false);
     }
 }

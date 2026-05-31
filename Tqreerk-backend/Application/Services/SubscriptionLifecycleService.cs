@@ -166,4 +166,12 @@ public static class SubscriptionLifecycleService
            && (!isActive
                || sub.Status == SubscriptionStatus.Expired
                || sub.EndDate <= DateTime.UtcNow);
+
+    /// <summary>Org must complete checkout before platform access (signup, post-refund, etc.).</summary>
+    public static bool OrganizationAwaitingCheckout(Subscription sub)
+        => sub.OrganizationId.HasValue
+           && sub.Status != SubscriptionStatus.Active
+           && sub.PaymentStatus is PaymentStatus.Pending
+               or PaymentStatus.Refunded
+               or PaymentStatus.PartiallyRefunded;
 }

@@ -318,13 +318,16 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
                 PendingPlanId = null,
             });
 
-        subscription.PaymentStatus = refundedPayStatus;
-
         if (subscription.OrganizationId.HasValue)
         {
+            // Org must re-pay on the same plan before any platform access.
+            // Payment row keeps Refunded/PartiallyRefunded; subscription awaits checkout.
             subscription.Status = SubscriptionStatus.Inactive;
+            subscription.PaymentStatus = PaymentStatus.Pending;
             return;
         }
+
+        subscription.PaymentStatus = refundedPayStatus;
 
         // Individual: cancel paid tier. Renewal payments roll back the extended year.
         if (remote.Metadata is not null

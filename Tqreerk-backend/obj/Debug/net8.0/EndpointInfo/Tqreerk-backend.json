@@ -11350,6 +11350,9 @@
           },
           "requiresRenewal": {
             "type": "boolean"
+          },
+          "isRevoked": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
