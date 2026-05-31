@@ -158,7 +158,8 @@ public sealed class SubscriptionRenewalService
                 plan,
                 wasUpgradeAttempt: false,
                 isRenewalAttempt: true,
-                payerUserId: null,
+                moyasarStatus: "no_response",
+                attemptedAtUtc: now,
                 ct: ct);
             return;
         }
@@ -180,7 +181,14 @@ public sealed class SubscriptionRenewalService
         await _db.SaveChangesAsync(ct);
 
         await _receipts.TrySendFailedAsync(
-            payment, subscription, plan, wasUpgradeAttempt: false, isRenewalAttempt: true, ct: ct);
+            payment,
+            subscription,
+            plan,
+            wasUpgradeAttempt: false,
+            isRenewalAttempt: true,
+            moyasarStatus: remote.Status,
+            attemptedAtUtc: now,
+            ct: ct);
 
         _logger.LogWarning(
             "Renewal charge not paid for subscription {SubscriptionId}: status={Status}.",

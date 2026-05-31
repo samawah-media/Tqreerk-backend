@@ -13,15 +13,18 @@ public class MeService : IMeService
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
     private readonly SubscriptionExpirationService _expiration;
+    private readonly ISubscriptionProvisioningService _provisioning;
 
     public MeService(
         TaqreerkDbContext db,
         IFileStorage files,
-        SubscriptionExpirationService expiration)
+        SubscriptionExpirationService expiration,
+        ISubscriptionProvisioningService provisioning)
     {
         _db = db;
         _files = files;
         _expiration = expiration;
+        _provisioning = provisioning;
     }
 
     public async Task<IReadOnlyList<MySavedReportDto>> ListSavedReportsAsync(
@@ -308,8 +311,14 @@ public class MeService : IMeService
                     "انتهى اشتراك المؤسسة. أكمل الدفع لتجديد الباقة واستعادة المميزات.");
             }
 
-            throw new InvalidOperationException(
-                $"User {userId} has no subscription. Registration should auto-link to a plan.");
+            await _provisioning.EnsureIndividualFreeAsync(userId, ct);
+            await SubscriptionLifecycleService.TryEnsureIndividualFreeAccessAsync(_db, userId, ct);
+            active = await SubscriptionResolver.TryGetActiveForUserAsync(_db, userId, ct);
+            if (active is null)
+            {
+                throw new InvalidOperationException(
+                    $"User {userId} has no subscription. Registration should auto-link to a plan.");
+            }
         }
 
         var (sub, plan) = active.Value;

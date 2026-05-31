@@ -4,6 +4,9 @@ namespace Taqreerk.Domain.Entities;
 
 public class Partner : BaseEntity
 {
+    public Guid CategoryId { get; set; }
+    public PartnerCategory Category { get; set; } = null!;
+
     public string NameAr { get; set; } = string.Empty;
     public string NameEn { get; set; } = string.Empty;
     public string? LogoUrl { get; set; }

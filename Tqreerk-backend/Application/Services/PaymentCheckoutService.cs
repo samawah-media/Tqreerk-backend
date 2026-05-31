@@ -576,6 +576,8 @@ public class PaymentCheckoutService : IPaymentCheckoutService
                 wasUpgradePending,
                 isRenewalAttempt: isRenewal,
                 payerUserId: userId,
+                moyasarStatus: remote.Status,
+                attemptedAtUtc: DateTime.UtcNow,
                 ct);
         }
         else
