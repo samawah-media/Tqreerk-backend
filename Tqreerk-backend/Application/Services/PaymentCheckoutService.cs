@@ -72,7 +72,23 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             && subscription.PaymentStatus == PaymentStatus.Paid;
 
         if (hasActivePaid && subscription.PlanId == planId)
-            throw new InvalidOperationException("أنت مشترك بالفعل في هذه الباقة.");
+        {
+            // Idempotent: payment already fulfilled (callback lag or stale awaiting-payment flag).
+            return new CheckoutSessionDto(
+                PaymentId: Guid.Empty,
+                SubscriptionId: subscription.Id,
+                PlanId: plan.Id,
+                PlanNameAr: plan.NameAr,
+                PlanNameEn: plan.NameEn,
+                AmountHalalas: ToHalalas(plan.AnnualPrice),
+                Currency: "SAR",
+                Description: isOrg
+                    ? $"اشتراك مؤسسي — {plan.NameAr}"
+                    : $"اشتراك سنوي — {plan.NameAr}",
+                PublishableKey: _settings.PublishableKey,
+                CallbackUrl: ResolveCallbackUrl(callbackUrl),
+                AlreadyActive: true);
+        }
 
         if (hasActivePaid)
         {

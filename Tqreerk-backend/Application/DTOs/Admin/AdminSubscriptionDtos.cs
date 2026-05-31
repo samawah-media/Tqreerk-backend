@@ -67,5 +67,6 @@ public record RefundSubscriptionPaymentResultDto(
     string MoyasarPaymentId,
     string MoyasarStatus,
     decimal RefundedAmountSar,
+    bool IsFullRefund,
     string SubscriptionStatus,
     string SubscriptionPaymentStatus);

@@ -10305,6 +10305,9 @@
           "callbackUrl": {
             "type": "string",
             "nullable": true
+          },
+          "alreadyActive": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -12542,6 +12545,9 @@
           "refundedAmountSar": {
             "type": "number",
             "format": "double"
+          },
+          "isFullRefund": {
+            "type": "boolean"
           },
           "subscriptionStatus": {
             "type": "string",

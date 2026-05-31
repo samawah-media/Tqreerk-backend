@@ -227,12 +227,18 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
         var subscription = payment.Subscription
             ?? throw new InvalidOperationException("Subscription not found for this payment.");
 
+        var totalHalalas = ToHalalas(payment.Amount);
+        if (totalHalalas <= 0)
+            throw new InvalidOperationException("Payment amount is invalid for refund.");
+
+        var (refundHalalas, isFullRefund) = ResolveRefundAmount(req.AmountHalalas, totalHalalas);
+
         var beforePayment = SnapshotPayment(payment);
         var beforeSubscription = SnapshotSubscription(subscription);
 
         var remote = await _moyasar.RefundPaymentAsync(
             payment.MiserPaymentReference,
-            req.AmountHalalas,
+            isFullRefund ? null : refundHalalas,
             ct);
 
         if (!string.Equals(remote.Status, "refunded", StringComparison.OrdinalIgnoreCase)
@@ -242,14 +248,17 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
                 $"Moyasar returned unexpected status after refund: {remote.Status}");
         }
 
-        payment.Status = PaymentStatus.Refunded;
-        ApplySubscriptionAfterRefund(subscription, payment, remote);
+        payment.Status = isFullRefund
+            ? PaymentStatus.Refunded
+            : PaymentStatus.PartiallyRefunded;
+        ApplySubscriptionAfterRefund(subscription, payment, remote, isFullRefund);
 
         await _db.SaveChangesAsync(ct);
 
+        var auditAction = isFullRefund ? "payment.refund" : "payment.refund.partial";
         await _audit.LogAsync(
             actingAdminUserId,
-            "payment.refund",
+            auditAction,
             "Payment",
             payment.Id,
             req.Reason,
@@ -259,6 +268,7 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
                 Payment = SnapshotPayment(payment),
                 Subscription = SnapshotSubscription(subscription),
                 Moyasar = new { remote.Id, remote.Status, remote.Amount },
+                Refund = new { refundHalalas, isFullRefund },
             },
             ct);
 
@@ -267,16 +277,38 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
             subscription.Id,
             remote.Id,
             remote.Status,
-            payment.Amount,
+            refundHalalas / 100m,
+            isFullRefund,
             subscription.Status.ToString(),
             subscription.PaymentStatus.ToString());
+    }
+
+    private static int ToHalalas(decimal amountSar)
+        => (int)Math.Round(amountSar * 100m, MidpointRounding.AwayFromZero);
+
+    private static (int RefundHalalas, bool IsFullRefund) ResolveRefundAmount(int? amountHalalas, int totalHalalas)
+    {
+        if (amountHalalas is null or <= 0)
+            return (totalHalalas, true);
+
+        if (amountHalalas > totalHalalas)
+            throw new InvalidOperationException(
+                $"Refund amount cannot exceed the payment total ({totalHalalas} halalas).");
+
+        var isFull = amountHalalas >= totalHalalas;
+        return (isFull ? totalHalalas : amountHalalas.Value, isFull);
     }
 
     private static void ApplySubscriptionAfterRefund(
         Subscription subscription,
         Payment refundedPayment,
-        MoyasarPaymentDto remote)
+        MoyasarPaymentDto remote,
+        bool isFullRefund)
     {
+        var refundedPayStatus = isFullRefund
+            ? PaymentStatus.Refunded
+            : PaymentStatus.PartiallyRefunded;
+
         var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
         subscription.AddonsJson = SubscriptionAddons.Serialize(
             addons with
@@ -286,7 +318,7 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
                 PendingPlanId = null,
             });
 
-        subscription.PaymentStatus = PaymentStatus.Refunded;
+        subscription.PaymentStatus = refundedPayStatus;
 
         if (subscription.OrganizationId.HasValue)
         {
@@ -294,27 +326,20 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
             return;
         }
 
-        // Individual: revert to the free tier. If this payment was a renewal,
-        // roll back the period we extended on fulfillment.
+        // Individual: cancel paid tier. Renewal payments roll back the extended year.
         if (remote.Metadata is not null
             && remote.Metadata.TryGetValue("renewal", out var renewalFlag)
             && string.Equals(renewalFlag, "true", StringComparison.OrdinalIgnoreCase))
         {
             var rolled = subscription.EndDate.AddYears(-1);
             subscription.EndDate = rolled > subscription.StartDate ? rolled : DateTime.UtcNow;
-            subscription.PlanId = PlanIds.IndividualAnnual;
-            subscription.Status = rolled > DateTime.UtcNow
-                ? SubscriptionStatus.Active
-                : SubscriptionStatus.Expired;
-            subscription.PaymentStatus = rolled > DateTime.UtcNow
-                ? PaymentStatus.Paid
-                : PaymentStatus.Refunded;
+            subscription.PlanId = PlanIds.IndividualFree;
+            subscription.Status = SubscriptionStatus.Inactive;
             return;
         }
 
         subscription.PlanId = PlanIds.IndividualFree;
-        subscription.Status = SubscriptionStatus.Active;
-        subscription.PaymentStatus = PaymentStatus.Paid;
+        subscription.Status = SubscriptionStatus.Inactive;
     }
 
     private static object SnapshotPayment(Payment p) => new

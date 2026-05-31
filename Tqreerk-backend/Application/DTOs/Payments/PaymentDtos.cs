@@ -20,7 +20,9 @@ public record CheckoutSessionDto(
     string Currency,
     string Description,
     string PublishableKey,
-    string CallbackUrl);
+    string CallbackUrl,
+    /// <summary>True when the user already has an active paid subscription for this plan.</summary>
+    bool AlreadyActive = false);
 
 public record VerifyPaymentRequestDto(
     string MoyasarPaymentId,
