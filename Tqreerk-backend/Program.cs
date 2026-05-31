@@ -191,4 +191,10 @@ RecurringJob.AddOrUpdate<SubscriptionRenewalJob>(
     job => job.ExecuteAsync(CancellationToken.None),
     Cron.Daily(3));
 
+// Expire/downgrade subscriptions when EndDate passes (hourly, no grace period).
+RecurringJob.AddOrUpdate<SubscriptionExpirationJob>(
+    "subscription-expiration",
+    job => job.ExecuteAsync(CancellationToken.None),
+    Cron.Hourly());
+
 app.Run();

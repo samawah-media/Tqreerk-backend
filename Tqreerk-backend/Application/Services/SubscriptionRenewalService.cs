@@ -47,8 +47,8 @@ public sealed class SubscriptionRenewalService
 
         var now = DateTime.UtcNow;
         var renewBy = now.AddDays(_settings.RenewalLeadDays);
-        var graceAfter = now.AddDays(-_settings.RenewalGraceDaysAfterExpiry);
 
+        // Auto-renew only before EndDate (within lead window). No retries after expiry.
         var candidates = await _db.Subscriptions
             .AsNoTracking()
             .Include(s => s.Plan)
@@ -56,8 +56,8 @@ public sealed class SubscriptionRenewalService
                 s.Status == SubscriptionStatus.Active
                 && s.PaymentStatus == PaymentStatus.Paid
                 && s.Plan.AnnualPrice > 0
-                && s.EndDate <= renewBy
-                && s.EndDate >= graceAfter)
+                && s.EndDate > now
+                && s.EndDate <= renewBy)
             .ToListAsync(ct);
 
         _logger.LogInformation(

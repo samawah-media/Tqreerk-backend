@@ -17,4 +17,6 @@ public sealed record MySubscriptionDto(
     DateTime StartDate,
     DateTime EndDate,
     bool AutoRenew,
-    bool HasPaymentToken);
+    bool HasPaymentToken,
+    /// <summary>Org paid period ended — user must renew via checkout.</summary>
+    bool RequiresRenewal);

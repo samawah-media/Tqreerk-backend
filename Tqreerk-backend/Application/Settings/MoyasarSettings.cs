@@ -22,6 +22,6 @@ public class MoyasarSettings
     /// <summary>Start auto-renewal this many days before EndDate (UTC).</summary>
     public int RenewalLeadDays { get; set; } = 14;
 
-    /// <summary>Retry failed renewals for this many days after EndDate.</summary>
-    public int RenewalGraceDaysAfterExpiry { get; set; } = 30;
+    /// <summary>Unused — subscriptions end exactly at EndDate. Kept for config compatibility.</summary>
+    public int RenewalGraceDaysAfterExpiry { get; set; } = 0;
 }

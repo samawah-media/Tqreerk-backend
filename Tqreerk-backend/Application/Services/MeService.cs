@@ -12,11 +12,16 @@ public class MeService : IMeService
 {
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
+    private readonly SubscriptionExpirationService _expiration;
 
-    public MeService(TaqreerkDbContext db, IFileStorage files)
+    public MeService(
+        TaqreerkDbContext db,
+        IFileStorage files,
+        SubscriptionExpirationService expiration)
     {
         _db = db;
         _files = files;
+        _expiration = expiration;
     }
 
     public async Task<IReadOnlyList<MySavedReportDto>> ListSavedReportsAsync(
@@ -266,6 +271,7 @@ public class MeService : IMeService
     public async Task<MySubscriptionDto?> GetSubscriptionAsync(
         Guid userId, CancellationToken ct = default)
     {
+        await _expiration.ApplyForUserAsync(userId, ct);
         var ctx = await ResolveSubscriptionContextAsync(userId, ct);
         if (ctx is null) return null;
 
@@ -275,14 +281,28 @@ public class MeService : IMeService
 
     public async Task<PlanFeaturesDto> GetPlanFeaturesAsync(Guid userId, CancellationToken ct = default)
     {
-        var ctx = await ResolveSubscriptionContextAsync(userId, ct);
-        if (ctx is null)
+        await _expiration.ApplyForUserAsync(userId, ct);
+
+        var active = await SubscriptionResolver.TryGetActiveForUserAsync(_db, userId, ct);
+        if (active is null)
         {
+            var orgId = await _db.OrganizationMembers
+                .AsNoTracking()
+                .Where(m => m.UserId == userId && m.IsActive)
+                .Select(m => (Guid?)m.OrganizationId)
+                .FirstOrDefaultAsync(ct);
+
+            if (orgId.HasValue)
+            {
+                throw new SubscriptionInactiveException(
+                    "انتهى اشتراك المؤسسة. أكمل الدفع لتجديد الباقة واستعادة المميزات.");
+            }
+
             throw new InvalidOperationException(
                 $"User {userId} has no subscription. Registration should auto-link to a plan.");
         }
 
-        var (sub, plan, _) = ctx.Value;
+        var (sub, plan) = active.Value;
         var isFreePlan = plan.TargetType == PlanTargetType.Individual && plan.AnnualPrice <= 0;
         DateTime? subscriptionEndDate =
             !isFreePlan
@@ -431,6 +451,8 @@ public class MeService : IMeService
             StartDate: sub.StartDate,
             EndDate: sub.EndDate,
             AutoRenew: addons.AutoRenew,
-            HasPaymentToken: !string.IsNullOrWhiteSpace(addons.MoyasarToken));
+            HasPaymentToken: !string.IsNullOrWhiteSpace(addons.MoyasarToken),
+            RequiresRenewal: SubscriptionLifecycleService.RequiresOrganizationRenewal(
+                sub, plan, isActive));
     }
 }

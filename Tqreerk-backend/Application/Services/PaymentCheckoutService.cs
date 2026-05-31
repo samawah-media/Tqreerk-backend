@@ -19,6 +19,7 @@ public class PaymentCheckoutService : IPaymentCheckoutService
     private readonly IMoyasarApiClient _moyasar;
     private readonly ISubscriptionProvisioningService _provisioning;
     private readonly PaymentReceiptNotifier _receipts;
+    private readonly SubscriptionExpirationService _expiration;
     private readonly MoyasarSettings _settings;
     private readonly ILogger<PaymentCheckoutService> _logger;
 
@@ -27,6 +28,7 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         IMoyasarApiClient moyasar,
         ISubscriptionProvisioningService provisioning,
         PaymentReceiptNotifier receipts,
+        SubscriptionExpirationService expiration,
         IOptions<MoyasarSettings> settings,
         ILogger<PaymentCheckoutService> logger)
     {
@@ -34,6 +36,7 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         _moyasar = moyasar;
         _provisioning = provisioning;
         _receipts = receipts;
+        _expiration = expiration;
         _settings = settings.Value;
         _logger = logger;
     }
@@ -44,6 +47,8 @@ public class PaymentCheckoutService : IPaymentCheckoutService
         string? callbackUrl = null,
         CancellationToken ct = default)
     {
+        await _expiration.ApplyForUserAsync(userId, ct);
+
         if (string.IsNullOrWhiteSpace(_settings.PublishableKey)
             || string.IsNullOrWhiteSpace(_settings.SecretKey))
         {

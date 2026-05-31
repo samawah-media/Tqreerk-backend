@@ -3,6 +3,7 @@ using Taqreerk.Application.Interfaces;
 using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
+using static Taqreerk.Application.Services.SubscriptionLifecycleService;
 
 namespace Taqreerk.Application.Services;
 
@@ -54,6 +55,8 @@ public static class SubscriptionResolver
     public static async Task<(Subscription Subscription, Plan Plan)> GetActiveForUserAsync(
         TaqreerkDbContext db, Guid userId, CancellationToken ct = default)
     {
+        await ApplyExpirationTransitionsForUserAsync(db, userId, ct);
+
         var resolved = await TryGetActiveForUserAsync(db, userId, ct);
         if (resolved is not null)
             return resolved.Value;
@@ -77,6 +80,23 @@ public static class SubscriptionResolver
             {
                 throw new SubscriptionInactiveException(
                     "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+            }
+
+            var expiredOrg = await db.Subscriptions
+                .AsNoTracking()
+                .Include(s => s.Plan)
+                .Where(s => s.OrganizationId == orgId)
+                .OrderByDescending(s => s.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            if (expiredOrg?.Plan is not null
+                && RequiresOrganizationRenewal(
+                    expiredOrg,
+                    expiredOrg.Plan,
+                    isActive: false))
+            {
+                throw new SubscriptionInactiveException(
+                    "انتهى اشتراك المؤسسة. أكمل الدفع لتجديد الباقة واستعادة المميزات.");
             }
         }
 

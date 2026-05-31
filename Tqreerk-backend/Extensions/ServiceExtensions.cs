@@ -189,6 +189,7 @@ public static class ServiceExtensions
         services.AddScoped<IAdminPartnersService, AdminPartnersService>();
         services.AddScoped<IAdminFeaturedService, AdminFeaturedService>();
         services.AddScoped<IAdminPlansService, AdminPlansService>();
+        services.AddScoped<IAdminSubscriptionsService, AdminSubscriptionsService>();
         services.AddScoped<IAdminStatsService, AdminStatsService>();
         services.AddScoped<IAdminSettingsService, AdminSettingsService>();
         services.AddScoped<IUserService, UserService>();
@@ -217,6 +218,7 @@ public static class ServiceExtensions
         services.AddScoped<PaymentReceiptNotifier>();
         services.AddScoped<IPaymentCheckoutService, PaymentCheckoutService>();
         services.AddScoped<SubscriptionRenewalService>();
+        services.AddScoped<SubscriptionExpirationService>();
         services.AddHttpClient<IMoyasarApiClient, MoyasarApiClient>();
 
         // Typed HttpClient for the external Python ai-service. Each call is a

@@ -14,6 +14,13 @@ public interface IMoyasarApiClient
         string cardToken,
         IReadOnlyDictionary<string, string> metadata,
         CancellationToken ct = default);
+
+    /// <summary>Refund a captured/paid Moyasar payment. Omit <paramref name="amountHalalas"/>
+    /// for a full refund.</summary>
+    Task<MoyasarPaymentDto> RefundPaymentAsync(
+        string moyasarPaymentId,
+        int? amountHalalas = null,
+        CancellationToken ct = default);
 }
 
 public record MoyasarPaymentDto(

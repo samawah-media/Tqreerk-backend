@@ -88,6 +88,44 @@ public class MoyasarApiClient : IMoyasarApiClient
         return ParsePayment(doc.RootElement);
     }
 
+    public async Task<MoyasarPaymentDto> RefundPaymentAsync(
+        string moyasarPaymentId,
+        int? amountHalalas = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(_settings.SecretKey))
+            throw new InvalidOperationException("Moyasar SecretKey is not configured.");
+
+        if (string.IsNullOrWhiteSpace(moyasarPaymentId))
+            throw new ArgumentException("Moyasar payment id is required.", nameof(moyasarPaymentId));
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"payments/{moyasarPaymentId}/refund");
+        if (amountHalalas is > 0)
+        {
+            req.Content = new StringContent(
+                JsonSerializer.Serialize(new { amount = amountHalalas.Value }),
+                Encoding.UTF8,
+                "application/json");
+        }
+
+        req.Headers.Authorization = new AuthenticationHeaderValue(
+            "Basic",
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_settings.SecretKey}:")));
+
+        using var res = await _http.SendAsync(req, ct);
+        var body = await res.Content.ReadAsStringAsync(ct);
+
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException(
+                $"Moyasar refund failed ({(int)res.StatusCode}): {body}");
+
+        using var doc = JsonDocument.Parse(body);
+        var parsed = ParsePayment(doc.RootElement)
+            ?? throw new InvalidOperationException("Moyasar refund returned an unparseable payload.");
+
+        return parsed;
+    }
+
     internal static MoyasarPaymentDto? ParsePayment(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object)
