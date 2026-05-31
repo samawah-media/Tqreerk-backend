@@ -114,7 +114,7 @@ public sealed class SubscriptionRenewalService
                 plan,
                 wasUpgradeAttempt: false,
                 isRenewalAttempt: true,
-                moyasarStatus: payment.MiserPaymentReference is null ? "failed" : null,
+                moyasarStatus: "failed",
                 attemptedAtUtc: payment.CreatedAt,
                 ct: ct);
         }
@@ -132,6 +132,7 @@ public sealed class SubscriptionRenewalService
         }
 
         var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
+        addons = await EnsureBillingUserOnAddonsAsync(subscription, addons, ct);
         if (!addons.AutoRenew)
         {
             _logger.LogDebug(
@@ -140,15 +141,26 @@ public sealed class SubscriptionRenewalService
             return;
         }
 
+        var now = DateTime.UtcNow;
+        var inRenewalWindow = subscription.EndDate > now
+            && subscription.EndDate <= now.AddDays(_settings.RenewalLeadDays);
+
         if (string.IsNullOrWhiteSpace(addons.MoyasarToken))
         {
             _logger.LogWarning(
                 "Renewal skipped for {SubscriptionId}: no Moyasar card token saved.",
                 subscriptionId);
+            if (inRenewalWindow)
+            {
+                await _receipts.TrySendRenewalPreChargeIssueAsync(
+                    subscriptionId,
+                    "missing_card_token",
+                    ct);
+            }
+
             return;
         }
 
-        var now = DateTime.UtcNow;
         if (addons.LastRenewalAttemptUtc.HasValue
             && addons.LastRenewalAttemptUtc.Value > now.AddHours(-20))
         {
@@ -359,20 +371,69 @@ public sealed class SubscriptionRenewalService
                 p.SubscriptionId == subscriptionId
                 && p.PaymentMethod == RenewalPaymentMethod
                 && p.Status == PaymentStatus.Pending
-                && p.CreatedAt < now.AddHours(-1))
+                && p.CreatedAt < now.AddMinutes(-15))
             .ToListAsync(ct);
 
         if (stale.Count == 0)
             return;
 
+        var subscription = await _db.Subscriptions
+            .Include(s => s.Plan)
+            .FirstOrDefaultAsync(s => s.Id == subscriptionId, ct);
+        if (subscription?.Plan is null)
+            return;
+
         foreach (var p in stale)
+        {
             p.Status = PaymentStatus.Failed;
+            await _receipts.TrySendFailedAsync(
+                p,
+                subscription,
+                subscription.Plan,
+                wasUpgradeAttempt: false,
+                isRenewalAttempt: true,
+                moyasarStatus: "timed_out",
+                attemptedAtUtc: p.CreatedAt,
+                ct: ct);
+        }
 
         await _db.SaveChangesAsync(ct);
         _logger.LogWarning(
             "Marked {Count} stale pending renewal payment(s) as failed for subscription {SubscriptionId}.",
             stale.Count,
             subscriptionId);
+    }
+
+    private async Task<SubscriptionAddons.State> EnsureBillingUserOnAddonsAsync(
+        Subscription subscription,
+        SubscriptionAddons.State addons,
+        CancellationToken ct)
+    {
+        if (addons.BillingUserId.HasValue || !subscription.OrganizationId.HasValue)
+            return addons;
+
+        var founderId = await _db.Organizations.AsNoTracking()
+            .Where(o => o.Id == subscription.OrganizationId)
+            .Select(o => o.CreatedByUserId)
+            .FirstOrDefaultAsync(ct);
+
+        if (!founderId.HasValue)
+        {
+            founderId = await _db.OrganizationMembers.AsNoTracking()
+                .Where(m => m.OrganizationId == subscription.OrganizationId && m.IsActive)
+                .OrderBy(m => m.JoinedAt)
+                .ThenBy(m => m.Id)
+                .Select(m => (Guid?)m.UserId)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        if (!founderId.HasValue)
+            return addons;
+
+        var updated = addons with { BillingUserId = founderId };
+        subscription.AddonsJson = SubscriptionAddons.Serialize(updated);
+        await _db.SaveChangesAsync(ct);
+        return updated;
     }
 
     private static int ToHalalas(decimal amountSar)

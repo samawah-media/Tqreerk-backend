@@ -194,6 +194,102 @@ public sealed class PaymentReceiptNotifier
         }
     }
 
+    /// <summary>
+    /// Auto-renew could not run (e.g. missing saved card). Idempotent per subscription per 24h.
+    /// </summary>
+    public async Task TrySendRenewalPreChargeIssueAsync(
+        Guid subscriptionId,
+        string issueCode,
+        CancellationToken ct = default)
+    {
+        var subscription = await _db.Subscriptions
+            .Include(s => s.Plan)
+            .FirstOrDefaultAsync(s => s.Id == subscriptionId, ct);
+        if (subscription?.Plan is null)
+            return;
+
+        var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
+        if (addons.LastRenewalAttemptUtc.HasValue
+            && addons.LastRenewalAttemptUtc.Value > DateTime.UtcNow.AddHours(-24))
+        {
+            _logger.LogDebug(
+                "Skipping renewal issue email for {SubscriptionId}: notified recently.",
+                subscriptionId);
+            return;
+        }
+
+        var payer = await ResolvePayerAsync(subscription, payerUserId: null, ct);
+        if (payer is null || string.IsNullOrWhiteSpace(payer.Email))
+        {
+            _logger.LogWarning(
+                "Renewal issue {Issue} for subscription {SubscriptionId} — no payer email.",
+                issueCode,
+                subscriptionId);
+            return;
+        }
+
+        try
+        {
+            var (orgNameAr, orgNameEn) = await ResolveOrgNamesAsync(subscription, ct);
+            var subject = "لم يتم تجديد الاشتراك تلقائياً | Taqreerk auto-renewal failed";
+            var reasonAr = issueCode switch
+            {
+                "missing_card_token" => "لا توجد بطاقة محفوظة لدينا لإتمام التجديد التلقائي.",
+                _ => "تعذّر إتمام التجديد التلقائي.",
+            };
+            var reasonEn = issueCode switch
+            {
+                "missing_card_token" => "No saved card is on file to complete auto-renewal.",
+                _ => "Auto-renewal could not be completed.",
+            };
+            var checkoutPath = subscription.OrganizationId.HasValue
+                ? $"/signup/institution/checkout?planId={subscription.Plan.Id}"
+                : $"/plans/checkout?planId={subscription.Plan.Id}";
+            var checkoutUrl = WebUtility.HtmlEncode(
+                $"{_emailSettings.AppBaseUrl.TrimEnd('/')}{checkoutPath}");
+            var end = subscription.EndDate.ToString("yyyy-MM-dd");
+
+            var body = WrapEmail($"""
+                <div dir="rtl">
+                  <p>مرحباً {WebUtility.HtmlEncode(payer.FullName)}،</p>
+                  <p><strong>{reasonAr}</strong></p>
+                  <p><strong>الباقة:</strong> {WebUtility.HtmlEncode(subscription.Plan.NameAr)}</p>
+                  {OrgLineAr(orgNameAr)}
+                  <p><strong>تاريخ انتهاء الاشتراك:</strong> {end}</p>
+                  <p>حدّث وسيلة الدفع من <a href="{checkoutUrl}">صفحة الدفع</a>.</p>
+                </div>
+                <hr style="border:none;border-top:2px solid #e0e0e0;margin:24px 0" />
+                <div dir="ltr">
+                  <p>Hello {WebUtility.HtmlEncode(payer.FullName)},</p>
+                  <p><strong>{reasonEn}</strong></p>
+                  <p><strong>Plan:</strong> {WebUtility.HtmlEncode(subscription.Plan.NameAr)}</p>
+                  {OrgLineEn(orgNameAr, orgNameEn)}
+                  <p><strong>Subscription end date:</strong> {end}</p>
+                  <p>Update your payment method via <a href="{checkoutUrl}">checkout</a>.</p>
+                </div>
+                """);
+
+            await _email.SendEmailAsync(payer.Email, subject, body, ct);
+
+            subscription.AddonsJson = SubscriptionAddons.Serialize(
+                addons with { LastRenewalAttemptUtc = DateTime.UtcNow });
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "Sent renewal pre-charge issue email ({Issue}) for subscription {SubscriptionId} to {Email}.",
+                issueCode,
+                subscriptionId,
+                payer.Email);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to send renewal pre-charge issue email for subscription {SubscriptionId}",
+                subscriptionId);
+        }
+    }
+
     /// <summary>Failure: payment declined / not completed (idempotent per payment).</summary>
     public async Task TrySendFailedAsync(
         Payment payment,
@@ -206,13 +302,34 @@ public sealed class PaymentReceiptNotifier
         DateTime? attemptedAtUtc = null,
         CancellationToken ct = default)
     {
-        var cacheKey = $"payment-failed-email:{payment.Id}";
-        if (_cache.TryGetValue(cacheKey, out _))
+        if (isRenewalAttempt)
         {
-            _logger.LogDebug(
-                "Failure email already sent for payment {PaymentId}.",
-                payment.Id);
-            return;
+            var tracked = await _db.Subscriptions
+                .FirstOrDefaultAsync(s => s.Id == subscription.Id, ct);
+            if (tracked is null)
+                return;
+
+            var renewalAddons = SubscriptionAddons.Parse(tracked.AddonsJson);
+            if (renewalAddons.LastRenewalFailureEmailPaymentId == payment.Id)
+            {
+                _logger.LogDebug(
+                    "Renewal failure email already recorded for payment {PaymentId}.",
+                    payment.Id);
+                return;
+            }
+
+            subscription = tracked;
+        }
+        else
+        {
+            var cacheKey = $"payment-failed-email:{payment.Id}";
+            if (_cache.TryGetValue(cacheKey, out _))
+            {
+                _logger.LogDebug(
+                    "Failure email already sent for payment {PaymentId}.",
+                    payment.Id);
+                return;
+            }
         }
 
         try
@@ -221,10 +338,11 @@ public sealed class PaymentReceiptNotifier
             if (payer is null || string.IsNullOrWhiteSpace(payer.Email))
             {
                 _logger.LogWarning(
-                    "Payment {PaymentId} failed but no payer email — failure notice not sent (userId={UserId}, org={OrgId}).",
+                    "Payment {PaymentId} failed but no payer email — failure notice not sent (userId={UserId}, org={OrgId}, renewal={Renewal}).",
                     payment.Id,
                     payerUserId,
-                    subscription.OrganizationId);
+                    subscription.OrganizationId,
+                    isRenewalAttempt);
                 return;
             }
 
@@ -244,16 +362,28 @@ public sealed class PaymentReceiptNotifier
                 isRenewalAttempt,
                 subscription.EndDate,
                 subscription.OrganizationId.HasValue,
-                moyasarStatus,
+                moyasarStatus ?? "failed",
                 attemptedAtUtc ?? payment.CreatedAt);
 
             await _email.SendEmailAsync(payer.Email, subject, body, ct);
-            _cache.Set(cacheKey, true, FailureEmailCacheTtl);
+
+            if (isRenewalAttempt)
+            {
+                var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
+                subscription.AddonsJson = SubscriptionAddons.Serialize(
+                    addons with { LastRenewalFailureEmailPaymentId = payment.Id });
+                await _db.SaveChangesAsync(ct);
+            }
+            else
+            {
+                _cache.Set($"payment-failed-email:{payment.Id}", true, FailureEmailCacheTtl);
+            }
 
             _logger.LogInformation(
-                "Sent payment failure email for payment {PaymentId} to {Email}.",
+                "Sent payment failure email for payment {PaymentId} to {Email} (renewal={Renewal}).",
                 payment.Id,
-                payer.Email);
+                payer.Email,
+                isRenewalAttempt);
         }
         catch (Exception ex)
         {
@@ -286,6 +416,15 @@ public sealed class PaymentReceiptNotifier
                 .FirstOrDefaultAsync(u => u.Id == payerUserId.Value, ct);
         }
 
+        var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
+        if (addons.BillingUserId.HasValue)
+        {
+            var billingUser = await _db.Users.AsNoTracking()
+                .FirstOrDefaultAsync(u => u.Id == addons.BillingUserId.Value, ct);
+            if (billingUser is not null && !string.IsNullOrWhiteSpace(billingUser.Email))
+                return billingUser;
+        }
+
         if (subscription.UserId.HasValue)
         {
             return await _db.Users.AsNoTracking()
@@ -305,6 +444,7 @@ public sealed class PaymentReceiptNotifier
             founderId = await _db.OrganizationMembers.AsNoTracking()
                 .Where(m => m.OrganizationId == subscription.OrganizationId && m.IsActive)
                 .OrderBy(m => m.JoinedAt)
+                .ThenBy(m => m.Id)
                 .Select(m => (Guid?)m.UserId)
                 .FirstOrDefaultAsync(ct);
         }

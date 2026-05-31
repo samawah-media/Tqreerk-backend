@@ -9,7 +9,9 @@ public static class SubscriptionAddons
         bool AutoRenew = true,
         string? MoyasarToken = null,
         Guid? PendingPlanId = null,
-        DateTime? LastRenewalAttemptUtc = null);
+        DateTime? LastRenewalAttemptUtc = null,
+        Guid? BillingUserId = null,
+        Guid? LastRenewalFailureEmailPaymentId = null);
 
     public static State Parse(string? json)
     {
@@ -40,7 +42,29 @@ public static class SubscriptionAddons
                 lastAttempt = DateTime.SpecifyKind(parsedAt, DateTimeKind.Utc);
             }
 
-            return new State(autoRenew, token, pendingPlanId, lastAttempt);
+            Guid? billingUserId = null;
+            if (root.TryGetProperty("billingUserId", out var bu)
+                && bu.ValueKind == JsonValueKind.String
+                && Guid.TryParse(bu.GetString(), out var parsedBilling))
+            {
+                billingUserId = parsedBilling;
+            }
+
+            Guid? lastFailureEmailPaymentId = null;
+            if (root.TryGetProperty("lastRenewalFailureEmailPaymentId", out var lf)
+                && lf.ValueKind == JsonValueKind.String
+                && Guid.TryParse(lf.GetString(), out var parsedFailure))
+            {
+                lastFailureEmailPaymentId = parsedFailure;
+            }
+
+            return new State(
+                autoRenew,
+                token,
+                pendingPlanId,
+                lastAttempt,
+                billingUserId,
+                lastFailureEmailPaymentId);
         }
         catch
         {
@@ -55,5 +79,7 @@ public static class SubscriptionAddons
             moyasarToken = state.MoyasarToken,
             pendingPlanId = state.PendingPlanId,
             lastRenewalAttemptUtc = state.LastRenewalAttemptUtc,
+            billingUserId = state.BillingUserId,
+            lastRenewalFailureEmailPaymentId = state.LastRenewalFailureEmailPaymentId,
         });
 }
