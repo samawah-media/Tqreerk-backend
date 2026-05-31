@@ -14,6 +14,8 @@ namespace Taqreerk.Application.Services;
 /// </summary>
 public sealed class SubscriptionRenewalService
 {
+    private const string RenewalPaymentMethod = "moyasar-renewal";
+
     private readonly TaqreerkDbContext _db;
     private readonly IMoyasarApiClient _moyasar;
     private readonly IPaymentCheckoutService _checkout;
@@ -61,8 +63,9 @@ public sealed class SubscriptionRenewalService
             .ToListAsync(ct);
 
         _logger.LogInformation(
-            "Subscription renewal scan: {Count} candidate(s) in window.",
-            candidates.Count);
+            "Subscription renewal scan: {Count} candidate(s) with EndDate in (now, now+{LeadDays}d].",
+            candidates.Count,
+            _settings.RenewalLeadDays);
 
         foreach (var snapshot in candidates)
         {
@@ -78,6 +81,43 @@ public sealed class SubscriptionRenewalService
                     snapshot.Id);
             }
         }
+
+        // Catch-up: send failure emails for renewal charges that failed but were never notified.
+        await NotifyUnsentRenewalFailureEmailsAsync(ct);
+    }
+
+    private async Task NotifyUnsentRenewalFailureEmailsAsync(CancellationToken ct)
+    {
+        var since = DateTime.UtcNow.AddDays(-30);
+        var failedPayments = await _db.Payments
+            .AsNoTracking()
+            .Include(p => p.Subscription!)
+            .ThenInclude(s => s!.Plan)
+            .Where(p =>
+                p.PaymentMethod == RenewalPaymentMethod
+                && p.Status == PaymentStatus.Failed
+                && p.CreatedAt >= since)
+            .OrderByDescending(p => p.CreatedAt)
+            .Take(50)
+            .ToListAsync(ct);
+
+        foreach (var payment in failedPayments)
+        {
+            var subscription = payment.Subscription;
+            var plan = subscription?.Plan;
+            if (subscription is null || plan is null)
+                continue;
+
+            await _receipts.TrySendFailedAsync(
+                payment,
+                subscription,
+                plan,
+                wasUpgradeAttempt: false,
+                isRenewalAttempt: true,
+                moyasarStatus: payment.MiserPaymentReference is null ? "failed" : null,
+                attemptedAtUtc: payment.CreatedAt,
+                ct: ct);
+        }
     }
 
     private async Task RenewOneAsync(Guid subscriptionId, CancellationToken ct)
@@ -86,26 +126,66 @@ public sealed class SubscriptionRenewalService
             .Include(s => s.Plan)
             .FirstOrDefaultAsync(s => s.Id == subscriptionId, ct);
         if (subscription?.Plan is null)
+        {
+            _logger.LogWarning("Renewal skipped: subscription {SubscriptionId} not found.", subscriptionId);
             return;
+        }
 
         var addons = SubscriptionAddons.Parse(subscription.AddonsJson);
-        if (!addons.AutoRenew || string.IsNullOrWhiteSpace(addons.MoyasarToken))
+        if (!addons.AutoRenew)
+        {
+            _logger.LogDebug(
+                "Renewal skipped for {SubscriptionId}: auto-renew is off.",
+                subscriptionId);
             return;
+        }
+
+        if (string.IsNullOrWhiteSpace(addons.MoyasarToken))
+        {
+            _logger.LogWarning(
+                "Renewal skipped for {SubscriptionId}: no Moyasar card token saved.",
+                subscriptionId);
+            return;
+        }
 
         var now = DateTime.UtcNow;
         if (addons.LastRenewalAttemptUtc.HasValue
             && addons.LastRenewalAttemptUtc.Value > now.AddHours(-20))
         {
-            return;
+            var lastStatus = await _db.Payments
+                .AsNoTracking()
+                .Where(p => p.SubscriptionId == subscription.Id
+                            && p.PaymentMethod == RenewalPaymentMethod)
+                .OrderByDescending(p => p.CreatedAt)
+                .Select(p => (PaymentStatus?)p.Status)
+                .FirstOrDefaultAsync(ct);
+
+            if (lastStatus is not PaymentStatus.Failed)
+            {
+                _logger.LogDebug(
+                    "Renewal skipped for {SubscriptionId}: last attempt at {At} (cooldown 20h, last status {Status}).",
+                    subscriptionId,
+                    addons.LastRenewalAttemptUtc,
+                    lastStatus);
+                return;
+            }
         }
+
+        await ExpireStalePendingRenewalPaymentsAsync(subscription.Id, now, ct);
 
         var hasOpenPayment = await _db.Payments.AnyAsync(
             p => p.SubscriptionId == subscription.Id
+                 && p.PaymentMethod == RenewalPaymentMethod
                  && p.Status == PaymentStatus.Pending
                  && p.CreatedAt > now.AddDays(-3),
             ct);
         if (hasOpenPayment)
+        {
+            _logger.LogDebug(
+                "Renewal skipped for {SubscriptionId}: pending renewal payment still open.",
+                subscriptionId);
             return;
+        }
 
         var plan = subscription.Plan;
         var payment = new Payment
@@ -114,7 +194,7 @@ public sealed class SubscriptionRenewalService
             Amount = plan.AnnualPrice,
             Currency = "SAR",
             Status = PaymentStatus.Pending,
-            PaymentMethod = "moyasar-renewal",
+            PaymentMethod = RenewalPaymentMethod,
         };
         _db.Payments.Add(payment);
 
@@ -134,51 +214,129 @@ public sealed class SubscriptionRenewalService
             ["renewal"] = "true",
         };
 
-        var remote = await _moyasar.CreateTokenPaymentAsync(
-            payment.Id,
-            ToHalalas(plan.AnnualPrice),
-            "SAR",
-            description,
-            _settings.FrontendCallbackUrl,
-            addons.MoyasarToken!,
-            metadata,
-            ct);
+        MoyasarPaymentDto? remote;
+        try
+        {
+            remote = await _moyasar.CreateTokenPaymentAsync(
+                payment.Id,
+                ToHalalas(plan.AnnualPrice),
+                "SAR",
+                description,
+                _settings.FrontendCallbackUrl,
+                addons.MoyasarToken!,
+                metadata,
+                ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Moyasar token charge threw for subscription {SubscriptionId}, payment {PaymentId}.",
+                subscription.Id,
+                payment.Id);
+            await FinalizeRenewalFailureAsync(
+                payment,
+                subscription,
+                plan,
+                now,
+                moyasarStatus: "gateway_error",
+                moyasarPaymentId: null,
+                ct);
+            return;
+        }
 
         if (remote is null)
         {
             _logger.LogWarning(
-                "Moyasar token charge returned no response for subscription {SubscriptionId}, payment {PaymentId}.",
+                "Moyasar token charge returned no payment for subscription {SubscriptionId}, payment {PaymentId}.",
                 subscription.Id,
                 payment.Id);
-            payment.Status = PaymentStatus.Failed;
-            await _db.SaveChangesAsync(ct);
-            await _receipts.TrySendFailedAsync(
+            await FinalizeRenewalFailureAsync(
                 payment,
                 subscription,
                 plan,
-                wasUpgradeAttempt: false,
-                isRenewalAttempt: true,
+                now,
                 moyasarStatus: "no_response",
-                attemptedAtUtc: now,
-                ct: ct);
+                moyasarPaymentId: null,
+                ct);
             return;
         }
 
         if (string.Equals(remote.Status, "paid", StringComparison.OrdinalIgnoreCase))
         {
-            var fulfilled = await _checkout.FulfillMoyasarPaymentAsync(remote, ct);
-            _logger.LogInformation(
-                "Renewal {PaymentId} for subscription {SubscriptionId}: Moyasar={MoyasarId}, fulfilled={Fulfilled}.",
-                payment.Id,
-                subscription.Id,
-                remote.Id,
-                fulfilled);
+            try
+            {
+                var fulfilled = await _checkout.FulfillMoyasarPaymentAsync(remote, ct);
+                _logger.LogInformation(
+                    "Renewal {PaymentId} for subscription {SubscriptionId}: Moyasar={MoyasarId}, fulfilled={Fulfilled}.",
+                    payment.Id,
+                    subscription.Id,
+                    remote.Id,
+                    fulfilled);
+
+                if (!fulfilled)
+                {
+                    await FinalizeRenewalFailureAsync(
+                        payment,
+                        subscription,
+                        plan,
+                        now,
+                        moyasarStatus: "fulfill_failed",
+                        moyasarPaymentId: remote.Id,
+                        ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Renewal fulfill threw for subscription {SubscriptionId}, payment {PaymentId}.",
+                    subscription.Id,
+                    payment.Id);
+                await FinalizeRenewalFailureAsync(
+                    payment,
+                    subscription,
+                    plan,
+                    now,
+                    moyasarStatus: "fulfill_exception",
+                    moyasarPaymentId: remote.Id,
+                    ct);
+            }
+
             return;
         }
 
-        payment.Status = PaymentStatus.Failed;
-        payment.MiserPaymentReference = remote.Id;
-        await _db.SaveChangesAsync(ct);
+        await FinalizeRenewalFailureAsync(
+            payment,
+            subscription,
+            plan,
+            now,
+            moyasarStatus: remote.Status,
+            moyasarPaymentId: remote.Id,
+            ct);
+
+        _logger.LogWarning(
+            "Renewal charge not paid for subscription {SubscriptionId}: status={Status}.",
+            subscription.Id,
+            remote.Status);
+    }
+
+    private async Task FinalizeRenewalFailureAsync(
+        Payment payment,
+        Subscription subscription,
+        Plan plan,
+        DateTime attemptedAtUtc,
+        string? moyasarStatus,
+        string? moyasarPaymentId,
+        CancellationToken ct)
+    {
+        if (payment.Status != PaymentStatus.Failed)
+        {
+            payment.Status = PaymentStatus.Failed;
+            if (!string.IsNullOrWhiteSpace(moyasarPaymentId))
+                payment.MiserPaymentReference = moyasarPaymentId;
+            await _db.SaveChangesAsync(ct);
+        }
 
         await _receipts.TrySendFailedAsync(
             payment,
@@ -186,14 +344,35 @@ public sealed class SubscriptionRenewalService
             plan,
             wasUpgradeAttempt: false,
             isRenewalAttempt: true,
-            moyasarStatus: remote.Status,
-            attemptedAtUtc: now,
+            moyasarStatus: moyasarStatus,
+            attemptedAtUtc: attemptedAtUtc,
             ct: ct);
+    }
 
+    private async Task ExpireStalePendingRenewalPaymentsAsync(
+        Guid subscriptionId,
+        DateTime now,
+        CancellationToken ct)
+    {
+        var stale = await _db.Payments
+            .Where(p =>
+                p.SubscriptionId == subscriptionId
+                && p.PaymentMethod == RenewalPaymentMethod
+                && p.Status == PaymentStatus.Pending
+                && p.CreatedAt < now.AddHours(-1))
+            .ToListAsync(ct);
+
+        if (stale.Count == 0)
+            return;
+
+        foreach (var p in stale)
+            p.Status = PaymentStatus.Failed;
+
+        await _db.SaveChangesAsync(ct);
         _logger.LogWarning(
-            "Renewal charge not paid for subscription {SubscriptionId}: status={Status}.",
-            subscription.Id,
-            remote.Status);
+            "Marked {Count} stale pending renewal payment(s) as failed for subscription {SubscriptionId}.",
+            stale.Count,
+            subscriptionId);
     }
 
     private static int ToHalalas(decimal amountSar)
