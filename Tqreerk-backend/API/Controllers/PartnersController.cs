@@ -5,7 +5,8 @@ using Taqreerk.Application.Interfaces;
 
 namespace Taqreerk.API.Controllers;
 
-/// Public (anonymous) endpoint that returns active partners for the About page marquee.
+/// Public (anonymous) endpoint that returns active partners grouped by category
+/// for the About page.
 [ApiController]
 [Route("api/partners")]
 [Produces("application/json")]
@@ -24,20 +25,30 @@ public class PartnersController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<IActionResult> List(CancellationToken ct)
     {
-        var partners = await _db.Partners
+        var categories = await _db.PartnerCategories
             .AsNoTracking()
-            .Where(p => p.IsActive)
-            .OrderBy(p => p.SortOrder).ThenBy(p => p.NameAr)
-            .Select(p => new
+            .Where(c => c.IsActive && c.Partners.Any(p => p.IsActive))
+            .OrderBy(c => c.SortOrder).ThenBy(c => c.NameAr)
+            .Select(c => new
             {
-                p.Id,
-                p.NameAr,
-                p.NameEn,
-                LogoUrl = p.LogoUrl != null ? _files.GetPublicUrl(p.LogoUrl) : null,
-                p.WebsiteUrl,
+                c.Id,
+                c.NameAr,
+                c.NameEn,
+                Partners = c.Partners
+                    .Where(p => p.IsActive)
+                    .OrderBy(p => p.SortOrder).ThenBy(p => p.NameAr)
+                    .Select(p => new
+                    {
+                        p.Id,
+                        p.NameAr,
+                        p.NameEn,
+                        LogoUrl = p.LogoUrl != null ? _files.GetPublicUrl(p.LogoUrl) : null,
+                        p.WebsiteUrl,
+                    })
+                    .ToList(),
             })
             .ToListAsync(ct);
 
-        return Ok(partners);
+        return Ok(categories);
     }
 }

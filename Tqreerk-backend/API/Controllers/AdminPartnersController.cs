@@ -21,6 +21,55 @@ public class AdminPartnersController : ControllerBase
         _service = service;
     }
 
+    [HttpGet("categories")]
+    [RequirePermission("partners:view")]
+    [ProducesResponseType(typeof(IReadOnlyList<AdminPartnerCategoryDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> ListCategories(CancellationToken ct)
+        => Ok(await _service.ListCategoriesAsync(ct));
+
+    [HttpPost("categories")]
+    [RequirePermission("partners:create")]
+    [ProducesResponseType(typeof(AdminPartnerCategoryDto), StatusCodes.Status201Created)]
+    public async Task<IActionResult> CreateCategory(
+        [FromBody] CreatePartnerCategoryRequest req, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var actingUserId)) return Unauthorized();
+        var created = await _service.CreateCategoryAsync(actingUserId, req, ct);
+        return CreatedAtAction(nameof(ListCategories), new { id = created.Id }, created);
+    }
+
+    [HttpPatch("categories/{id:guid}")]
+    [RequirePermission("partners:edit")]
+    [ProducesResponseType(typeof(AdminPartnerCategoryDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateCategory(
+        Guid id, [FromBody] UpdatePartnerCategoryRequest req, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var actingUserId)) return Unauthorized();
+        return Ok(await _service.UpdateCategoryAsync(actingUserId, id, req, ct));
+    }
+
+    [HttpDelete("categories/{id:guid}")]
+    [RequirePermission("partners:delete")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DeleteCategory(Guid id, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var actingUserId)) return Unauthorized();
+        await _service.DeleteCategoryAsync(actingUserId, id, ct);
+        return NoContent();
+    }
+
+    [HttpPost("categories/reorder")]
+    [RequirePermission("partners:edit")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> ReorderCategories([FromBody] ReorderRequest req, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var actingUserId)) return Unauthorized();
+        await _service.ReorderCategoriesAsync(actingUserId, req, ct);
+        return NoContent();
+    }
+
     [HttpGet]
     [RequirePermission("partners:view")]
     [ProducesResponseType(typeof(IReadOnlyList<AdminPartnerDto>), StatusCodes.Status200OK)]
@@ -68,7 +117,7 @@ public class AdminPartnersController : ControllerBase
     [HttpPost("reorder")]
     [RequirePermission("partners:edit")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    public async Task<IActionResult> Reorder([FromBody] ReorderRequest req, CancellationToken ct)
+    public async Task<IActionResult> Reorder([FromBody] PartnerReorderRequest req, CancellationToken ct)
     {
         if (!TryGetUserId(out var actingUserId)) return Unauthorized();
         await _service.ReorderAsync(actingUserId, req, ct);

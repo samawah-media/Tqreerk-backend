@@ -80,12 +80,19 @@ public class MoyasarApiClient : IMoyasarApiClient
                 Encoding.UTF8.GetBytes($"{_settings.SecretKey}:")));
 
         using var res = await _http.SendAsync(req, ct);
-        if (!res.IsSuccessStatusCode)
+        var body = await res.Content.ReadAsStringAsync(ct);
+        if (string.IsNullOrWhiteSpace(body))
             return null;
 
-        await using var stream = await res.Content.ReadAsStreamAsync(ct);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        return ParsePayment(doc.RootElement);
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return ParsePayment(doc.RootElement);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     public async Task<MoyasarPaymentDto> RefundPaymentAsync(

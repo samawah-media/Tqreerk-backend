@@ -88,10 +88,48 @@ public static class SubscriptionLifecycleService
         else
         {
             changed = await TryApplyIndividualExpirationAsync(db, userId, ct);
+            changed = await TryEnsureIndividualFreeAccessAsync(db, userId, ct) || changed;
         }
 
         if (changed)
             await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Ensures an individual (non-org) user has an active free-tier row after expiry,
+    /// refund, or legacy Inactive states. Returns true when the row was updated.
+    /// </summary>
+    public static async Task<bool> TryEnsureIndividualFreeAccessAsync(
+        TaqreerkDbContext db,
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        var hasActiveOrg = await db.OrganizationMembers
+            .AnyAsync(m => m.UserId == userId && m.IsActive, ct);
+        if (hasActiveOrg)
+            return false;
+
+        var sub = await db.Subscriptions
+            .Include(s => s.Plan)
+            .Where(s => s.UserId == userId)
+            .OrderByDescending(s => s.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+
+        if (sub is null)
+            return false;
+
+        var now = DateTime.UtcNow;
+        if (sub.Plan is not null
+            && sub.Status == SubscriptionStatus.Active
+            && sub.PaymentStatus == PaymentStatus.Paid
+            && (sub.Plan.AnnualPrice <= 0 || sub.EndDate > now))
+        {
+            return false;
+        }
+
+        ApplyIndividualExpiration(sub);
+        await db.SaveChangesAsync(ct);
+        return true;
     }
 
     private static async Task<bool> TryApplyIndividualExpirationAsync(
@@ -132,7 +170,7 @@ public static class SubscriptionLifecycleService
         return true;
     }
 
-    private static void ApplyIndividualExpiration(Subscription sub)
+    public static void ApplyIndividualExpiration(Subscription sub)
     {
         var addons = SubscriptionAddons.Parse(sub.AddonsJson);
         sub.PlanId = PlanIds.IndividualFree;

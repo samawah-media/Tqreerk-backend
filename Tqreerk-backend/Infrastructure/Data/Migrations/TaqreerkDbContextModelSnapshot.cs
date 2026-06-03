@@ -1429,32 +1429,83 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<Guid>("CategoryId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
 
                     b.Property<string>("LogoUrl")
-                        .HasColumnType("text");
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
 
                     b.Property<string>("NameAr")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.Property<string>("NameEn")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.Property<int>("SortOrder")
-                        .HasColumnType("integer");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
 
                     b.Property<string>("WebsiteUrl")
-                        .HasColumnType("text");
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
 
                     b.HasKey("Id");
 
-                    b.ToTable("Partners");
+                    b.HasIndex("IsActive", "SortOrder");
+
+                    b.HasIndex("CategoryId", "IsActive", "SortOrder");
+
+                    b.ToTable("Partners", (string)null);
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.PartnerCategory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.Property<string>("NameAr")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("NameEn")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("SortOrder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsActive", "SortOrder");
+
+                    b.ToTable("PartnerCategories", (string)null);
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.PasswordResetToken", b =>
@@ -5064,6 +5115,17 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Navigation("Organization");
                 });
 
+            modelBuilder.Entity("Taqreerk.Domain.Entities.Partner", b =>
+                {
+                    b.HasOne("Taqreerk.Domain.Entities.PartnerCategory", "Category")
+                        .WithMany("Partners")
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Category");
+                });
+
             modelBuilder.Entity("Taqreerk.Domain.Entities.PasswordResetToken", b =>
                 {
                     b.HasOne("Taqreerk.Domain.Entities.User", "User")
@@ -5608,6 +5670,11 @@ namespace Taqreerk.Infrastructure.Data.Migrations
             modelBuilder.Entity("Taqreerk.Domain.Entities.Page", b =>
                 {
                     b.Navigation("Permissions");
+                });
+
+            modelBuilder.Entity("Taqreerk.Domain.Entities.PartnerCategory", b =>
+                {
+                    b.Navigation("Partners");
                 });
 
             modelBuilder.Entity("Taqreerk.Domain.Entities.Payment", b =>

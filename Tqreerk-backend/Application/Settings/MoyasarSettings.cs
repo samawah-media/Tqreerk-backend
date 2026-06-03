@@ -20,7 +20,7 @@ public class MoyasarSettings
     public string FrontendCallbackUrl { get; set; } = "http://localhost:5173/plans/payment/callback";
 
     /// <summary>Start auto-renewal this many days before EndDate (UTC).</summary>
-    public int RenewalLeadDays { get; set; } = 14;
+    public int RenewalLeadDays { get; set; } = 5;
 
     /// <summary>Unused — subscriptions end exactly at EndDate. Kept for config compatibility.</summary>
     public int RenewalGraceDaysAfterExpiry { get; set; } = 0;

@@ -16,15 +16,18 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
     private readonly TaqreerkDbContext _db;
     private readonly IMoyasarApiClient _moyasar;
     private readonly IAdminActionLogger _audit;
+    private readonly PaymentReceiptNotifier _receipts;
 
     public AdminSubscriptionsService(
         TaqreerkDbContext db,
         IMoyasarApiClient moyasar,
-        IAdminActionLogger audit)
+        IAdminActionLogger audit,
+        PaymentReceiptNotifier receipts)
     {
         _db = db;
         _moyasar = moyasar;
         _audit = audit;
+        _receipts = receipts;
     }
 
     public async Task<PagedResult<AdminSubscriptionListItemDto>> ListAsync(
@@ -255,6 +258,21 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
 
         await _db.SaveChangesAsync(ct);
 
+        var plan = subscription.Plan
+            ?? await _db.Plans.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == subscription.PlanId, ct)
+            ?? throw new InvalidOperationException("Plan not found for refund notification.");
+
+        await _receipts.TrySendRefundAsync(
+            payment,
+            subscription,
+            plan,
+            refundedAmountSar: refundHalalas / 100m,
+            isFullRefund,
+            req.Reason,
+            remote.Id,
+            ct);
+
         var auditAction = isFullRefund ? "payment.refund" : "payment.refund.partial";
         await _audit.LogAsync(
             actingAdminUserId,
@@ -336,13 +354,9 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
         {
             var rolled = subscription.EndDate.AddYears(-1);
             subscription.EndDate = rolled > subscription.StartDate ? rolled : DateTime.UtcNow;
-            subscription.PlanId = PlanIds.IndividualFree;
-            subscription.Status = SubscriptionStatus.Inactive;
-            return;
         }
 
-        subscription.PlanId = PlanIds.IndividualFree;
-        subscription.Status = SubscriptionStatus.Inactive;
+        SubscriptionLifecycleService.ApplyIndividualExpiration(subscription);
     }
 
     private static object SnapshotPayment(Payment p) => new

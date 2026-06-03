@@ -395,6 +395,7 @@ public class PaymentCheckoutService : IPaymentCheckoutService
                 AutoRenew = true,
                 PendingPlanId = null,
                 MoyasarToken = cardToken,
+                BillingUserId = userId ?? addons.BillingUserId,
             });
 
         await _db.SaveChangesAsync(ct);
@@ -437,6 +438,7 @@ public class PaymentCheckoutService : IPaymentCheckoutService
                 PendingPlanId = null,
                 MoyasarToken = cardToken,
                 LastRenewalAttemptUtc = now,
+                BillingUserId = userId ?? addons.BillingUserId,
             });
 
         await _db.SaveChangesAsync(ct);
@@ -576,6 +578,8 @@ public class PaymentCheckoutService : IPaymentCheckoutService
                 wasUpgradePending,
                 isRenewalAttempt: isRenewal,
                 payerUserId: userId,
+                moyasarStatus: remote.Status,
+                attemptedAtUtc: DateTime.UtcNow,
                 ct);
         }
         else

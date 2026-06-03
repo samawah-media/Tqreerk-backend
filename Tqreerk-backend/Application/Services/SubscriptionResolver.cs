@@ -98,6 +98,15 @@ public static class SubscriptionResolver
                     "انتهى اشتراك المؤسسة. أكمل الدفع لتجديد الباقة واستعادة المميزات.");
             }
         }
+        else
+        {
+            if (await TryEnsureIndividualFreeAccessAsync(db, userId, ct))
+            {
+                var healed = await TryGetActiveForUserAsync(db, userId, ct);
+                if (healed is not null)
+                    return healed.Value;
+            }
+        }
 
         throw new InvalidOperationException(
             $"User {userId} has no active subscription. Registration should " +
