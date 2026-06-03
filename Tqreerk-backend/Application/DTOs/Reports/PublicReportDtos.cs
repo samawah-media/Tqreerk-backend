@@ -97,7 +97,10 @@ public record PublicReportDetailDto(
     /// Total number of users who have recommended this report. Powers
     /// the "Heart" reaction count in the public page header.
     int RecommendationCount,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    /// Publisher / source label for third-party reports (e.g. "World Bank").
+    /// Null for org-owned reports.
+    string? Source
 );
 
 /// Query parameters for the public list. All optional. Filter values use

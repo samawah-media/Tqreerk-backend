@@ -95,6 +95,7 @@ public class PublicReportService : IPublicReportService
                 CountryNameAr = r.Country != null ? r.Country.NameAr : null,
                 CountryNameEn = r.Country != null ? r.Country.NameEn : null,
                 r.CreatedAt,
+                r.Source,
             })
             .FirstOrDefaultAsync(ct)
             ?? throw new KeyNotFoundException("Report not found.");
@@ -173,7 +174,8 @@ public class PublicReportService : IPublicReportService
             ai?.Indicators,
             commentCount,
             recommendationCount,
-            row.CreatedAt
+            row.CreatedAt,
+            row.Source
         );
     }
 
