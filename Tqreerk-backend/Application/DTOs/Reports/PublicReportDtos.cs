@@ -45,7 +45,8 @@ public record PublicReportListItemDto(
     Guid? CountryId,
     string? CountryNameAr,
     string? CountryNameEn,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    string? Source
 );
 
 /// Detail shape for /api/public/reports/{slug}. Same fields as the list item

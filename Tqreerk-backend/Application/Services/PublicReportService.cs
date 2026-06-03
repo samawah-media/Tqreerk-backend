@@ -495,6 +495,7 @@ public class PublicReportService : IPublicReportService
                 CountryNameAr = r.Country != null ? r.Country.NameAr : null,
                 CountryNameEn = r.Country != null ? r.Country.NameEn : null,
                 r.CreatedAt,
+                r.Source,
             })
             .ToListAsync(ct);
 
@@ -528,7 +529,8 @@ public class PublicReportService : IPublicReportService
                 r.CountryId,
                 r.CountryNameAr,
                 r.CountryNameEn,
-                r.CreatedAt
+                r.CreatedAt,
+                r.Source
             ));
         }
         return dtos;
