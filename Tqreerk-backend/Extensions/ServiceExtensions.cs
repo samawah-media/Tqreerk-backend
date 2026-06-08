@@ -104,7 +104,8 @@ public static class ServiceExtensions
                     "language"));
             o.AddPolicy("PublicFeatured", b => b
                 .Expire(TimeSpan.FromMinutes(5))
-                .SetVaryByQuery("take", "section"));
+                .SetVaryByQuery("take", "section")
+                .Tag("featured"));
             o.AddPolicy("PublicTrending", b => b
                 .Expire(TimeSpan.FromMinutes(5))
                 .SetVaryByQuery("take"));
@@ -214,6 +215,7 @@ public static class ServiceExtensions
         services.AddScoped<IUsageService, UsageService>();
         services.AddScoped<IPointsService, PointsService>();
         services.AddScoped<IMeService, MeService>();
+        services.AddScoped<IContactService, ContactService>();
         services.AddScoped<IAnnotationsService, AnnotationsService>();
         services.AddScoped<PaymentReceiptNotifier>();
         services.AddScoped<IPaymentCheckoutService, PaymentCheckoutService>();

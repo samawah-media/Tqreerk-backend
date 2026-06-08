@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 using Taqreerk.Application.DTOs.Admin;
 using Taqreerk.Application.Interfaces;
@@ -11,11 +12,16 @@ public class AdminFeaturedService : IAdminFeaturedService
 {
     private readonly TaqreerkDbContext _db;
     private readonly IAdminActionLogger _audit;
+    private readonly IOutputCacheStore _outputCache;
 
-    public AdminFeaturedService(TaqreerkDbContext db, IAdminActionLogger audit)
+    public AdminFeaturedService(
+        TaqreerkDbContext db,
+        IAdminActionLogger audit,
+        IOutputCacheStore outputCache)
     {
         _db = db;
         _audit = audit;
+        _outputCache = outputCache;
     }
 
     public async Task<IReadOnlyList<FeaturedReportDto>> ListAsync(CancellationToken ct = default)
@@ -49,7 +55,6 @@ public class AdminFeaturedService : IAdminFeaturedService
             throw new InvalidOperationException("Unknown featured section.");
 
         var report = await _db.Reports
-            .AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == req.ReportId, ct)
             ?? throw new KeyNotFoundException("Report not found.");
 
@@ -90,7 +95,10 @@ public class AdminFeaturedService : IAdminFeaturedService
             CreatedByUserId = actingUserId,
         };
         _db.FeaturedReports.Add(entity);
+        var now = DateTime.UtcNow;
+        await FeaturedPublicationHelper.SyncReportIsFeaturedAsync(_db, req.ReportId, now, ct);
         await _db.SaveChangesAsync(ct);
+        await _outputCache.EvictByTagAsync(FeaturedPublicationHelper.OutputCacheTag, ct);
 
         await _audit.LogAsync(
             adminUserId: actingUserId,
@@ -156,7 +164,10 @@ public class AdminFeaturedService : IAdminFeaturedService
 
         if (req.IsActive.HasValue) entity.IsActive = req.IsActive.Value;
 
+        await FeaturedPublicationHelper.SyncReportIsFeaturedAsync(
+            _db, entity.ReportId, DateTime.UtcNow, ct);
         await _db.SaveChangesAsync(ct);
+        await _outputCache.EvictByTagAsync(FeaturedPublicationHelper.OutputCacheTag, ct);
 
         await _audit.LogAsync(
             adminUserId: actingUserId,
@@ -183,8 +194,12 @@ public class AdminFeaturedService : IAdminFeaturedService
         var entity = await _db.FeaturedReports.FirstOrDefaultAsync(f => f.Id == id, ct)
             ?? throw new KeyNotFoundException("Featured row not found.");
 
+        var reportId = entity.ReportId;
         _db.FeaturedReports.Remove(entity);
+        await FeaturedPublicationHelper.SyncReportIsFeaturedAsync(
+            _db, reportId, DateTime.UtcNow, ct);
         await _db.SaveChangesAsync(ct);
+        await _outputCache.EvictByTagAsync(FeaturedPublicationHelper.OutputCacheTag, ct);
 
         await _audit.LogAsync(
             adminUserId: actingUserId,

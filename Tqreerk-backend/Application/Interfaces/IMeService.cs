@@ -17,8 +17,9 @@ public interface IMeService
 
     /// Personalised recommendations: published reports from the sectors
     /// the user marked as interesting (user_interests), excluding ones
-    /// they've already viewed. Sorted by avg_rating desc, then views_count
-    /// desc. Returns an empty list when the user has no interests yet.
+    /// already saved. Sorted by last activity (updated/published/created)
+    /// desc, then publication year, then rating and views. Returns an
+    /// empty list when the user has no interests yet.
     Task<IReadOnlyList<MySavedReportDto>> ListRecommendationsAsync(
         Guid userId, int take = 20, CancellationToken ct = default);
 

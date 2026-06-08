@@ -122,11 +122,13 @@ public class MeService : IMeService
                 r.SectorId != null &&
                 interestSectorIds.Contains(r.SectorId.Value) &&
                 !savedReportIds.Contains(r.Id))
-            // Highest-rated first, then most-popular as the tiebreaker.
-            // Reports with no ratings yet (AvgRating = 0) drop to the
-            // bottom — that's intentional, we'd rather surface vetted
-            // content first.
-            .OrderByDescending(r => r.AvgRating)
+            // Suggested reports must be recent, stay current, and reflect
+            // up-to-date content — rank by the report's last activity
+            // (metadata update → publish → create), then publication year,
+            // then community signal as a tiebreak.
+            .OrderByDescending(r => r.UpdatedAt ?? r.PublishedAt ?? r.CreatedAt)
+            .ThenByDescending(r => r.PublicationYear)
+            .ThenByDescending(r => r.AvgRating)
             .ThenByDescending(r => r.ViewsCount)
             .Take(take)
             .Select(r => new
@@ -144,11 +146,9 @@ public class MeService : IMeService
                 OrganizationNameAr = r.Organization != null ? r.Organization.NameAr : null,
                 OrganizationLogoUrl = r.Organization != null ? r.Organization.LogoUrl : null,
                 // Reuse MySavedReportDto for the response shape — there's
-                // no SavedAt on a never-saved report, so we fall back to
-                // PublishedAt (or CreatedAt) for the timestamp slot. The
-                // dashboard sort isn't by this column so the surrogate is
-                // harmless.
-                Stamp = r.PublishedAt ?? r.CreatedAt,
+                // no SavedAt on a never-saved report, so we surface the
+                // freshest activity timestamp we have.
+                Stamp = r.UpdatedAt ?? r.PublishedAt ?? r.CreatedAt,
             })
             .ToListAsync(ct);
 

@@ -245,6 +245,12 @@ public class PublicReportService : IPublicReportService
 
         var now = DateTime.UtcNow;
 
+        // When the caller omits `section`, we fall through Hero → Carousel.
+        // Cap hero to one slot so carousel picks (incl. org feature approvals)
+        // are not hidden behind a full hero column.
+        const int heroCapWhenCombined = 1;
+        var combinedMode = section is null;
+
         // Pull featured-report IDs in the requested section order, ordered
         // within each section by Position. Distinct() handles the rare case
         // of the same report being pinned to both fall-through sections.
@@ -254,6 +260,12 @@ public class PublicReportService : IPublicReportService
             if (featuredIds.Count >= take) break;
 
             var remaining = take - featuredIds.Count;
+            if (remaining <= 0) break;
+
+            var sectionTake = remaining;
+            if (combinedMode && sec == FeaturedSection.HomepageHero)
+                sectionTake = Math.Min(remaining, heroCapWhenCombined);
+
             var ids = await _db.FeaturedReports
                 .AsNoTracking()
                 .Where(f => f.Section == sec
@@ -264,7 +276,7 @@ public class PublicReportService : IPublicReportService
                          && f.Report.DeletedAt == null)
                 .OrderBy(f => f.Position)
                 .Select(f => f.ReportId)
-                .Take(remaining)
+                .Take(sectionTake)
                 .ToListAsync(ct);
 
             foreach (var id in ids)

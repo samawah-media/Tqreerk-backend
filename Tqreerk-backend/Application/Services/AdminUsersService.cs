@@ -88,15 +88,47 @@ public class AdminUsersService : IAdminUsersService
             })
             .ToListAsync(ct);
 
-        var items = rows.Select(r => new AdminUserListItemDto(
-            r.Id,
-            r.FullName,
-            r.Email,
-            UserType: DeriveUserType(r.IsPlatformStaff, r.HasMembership),
-            r.Status,
-            r.EmailVerified,
-            r.CountryNameAr,
-            r.CreatedAt)).ToList();
+        var userIds = rows.Select(r => r.Id).ToList();
+        var memberships = await _db.OrganizationMembers
+            .AsNoTracking()
+            .Where(m => userIds.Contains(m.UserId) && m.IsActive)
+            .OrderBy(m => m.JoinedAt)
+            .Select(m => new
+            {
+                m.UserId,
+                m.OrganizationId,
+                NameAr = m.Organization.NameAr,
+                m.Organization.Slug,
+                RoleName = m.Role.Name,
+            })
+            .ToListAsync(ct);
+
+        var primaryByUser = memberships
+            .GroupBy(m => m.UserId)
+            .ToDictionary(g => g.Key, g => g.First());
+        var countByUser = memberships
+            .GroupBy(m => m.UserId)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        var items = rows.Select(r =>
+        {
+            primaryByUser.TryGetValue(r.Id, out var primary);
+            countByUser.TryGetValue(r.Id, out var orgCount);
+            return new AdminUserListItemDto(
+                r.Id,
+                r.FullName,
+                r.Email,
+                UserType: DeriveUserType(r.IsPlatformStaff, r.HasMembership),
+                r.Status,
+                r.EmailVerified,
+                r.CountryNameAr,
+                r.CreatedAt,
+                primary?.OrganizationId,
+                primary?.NameAr,
+                primary?.Slug,
+                primary?.RoleName,
+                orgCount);
+        }).ToList();
 
         return new PagedResult<AdminUserListItemDto>(items, total, page, pageSize);
     }
