@@ -65,7 +65,12 @@ public record AdminOrganizationDetailDto(
     /// Reports the org has uploaded — any status, even drafts.
     int ReportCount,
     /// Subset of ReportCount that are visible in the public library.
-    int PublishedReportCount
+    int PublishedReportCount,
+    string? CommercialRegisterNo,
+    string? CommercialRegisterName,
+    DateTime? CommercialRegisterExpiryDate,
+    string? TaxNumber,
+    string? CommercialRegisterFileUrl
 );
 
 /// Body of PATCH /api/admin/organizations/{id}. Every field is optional;

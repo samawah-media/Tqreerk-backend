@@ -32,6 +32,10 @@ public interface IAdminOrganizationsService
     Task<AdminOrganizationDetailDto> ReactivateAsync(
         Guid actingUserId, Guid orgId, CancellationToken ct = default);
 
+    /// Approves a PendingReview organization (document review complete).
+    Task<AdminOrganizationDetailDto> ApproveAsync(
+        Guid actingUserId, Guid orgId, CancellationToken ct = default);
+
     /// Soft-delete (DeletedAt). Refuses if the org has published reports
     /// — those need to be archived first or the public library breaks.
     Task DeleteAsync(Guid actingUserId, Guid orgId, CancellationToken ct = default);

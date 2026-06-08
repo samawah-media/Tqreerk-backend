@@ -623,6 +623,15 @@ public class PaymentCheckoutService : IPaymentCheckoutService
             if (membership is null)
                 throw new InvalidOperationException("الدفع للمؤسسات متاح لأعضاء المؤسسة فقط.");
 
+            var orgStatus = await _db.Organizations
+                .AsNoTracking()
+                .Where(o => o.Id == membership.OrganizationId)
+                .Select(o => o.Status)
+                .FirstAsync(ct);
+            if (orgStatus == OrganizationStatus.PendingReview)
+                throw new InvalidOperationException(
+                    "لا يمكن إتمام الدفع قبل اعتماد الجهة من فريق المنصة.");
+
             var founderId = await ResolveFounderIdAsync(membership.OrganizationId, ct);
             var isFounder = founderId == userId;
             if (!isFounder)

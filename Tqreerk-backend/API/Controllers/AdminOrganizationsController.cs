@@ -92,6 +92,17 @@ public class AdminOrganizationsController : ControllerBase
         return Ok(await _service.ReactivateAsync(actingUserId, id, ct));
     }
 
+    /// <summary>Approve a PendingReview organization after document review.</summary>
+    [HttpPost("{id:guid}/approve")]
+    [RequirePermission("organizations:edit")]
+    [ProducesResponseType(typeof(AdminOrganizationDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Approve(Guid id, CancellationToken ct)
+    {
+        if (!TryGetUserId(out var actingUserId)) return Unauthorized();
+        return Ok(await _service.ApproveAsync(actingUserId, id, ct));
+    }
+
     /// <summary>Soft-delete the organization. Refuses if there are published
     /// reports — those need to be archived first.</summary>
     [HttpDelete("{id:guid}")]

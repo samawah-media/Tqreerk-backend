@@ -18,6 +18,8 @@ public record AdminSubscriptionListItemDto(
     string PlanNameEn,
     string Status,
     string PaymentStatus,
+    /// <summary>True when the plan has no annual price (free tier).</summary>
+    bool IsFreePlan,
     DateTime StartDate,
     DateTime EndDate,
     bool AutoRenew,
@@ -39,6 +41,7 @@ public record AdminSubscriptionDetailDto(
     string PlanNameEn,
     string Status,
     string PaymentStatus,
+    bool IsFreePlan,
     DateTime StartDate,
     DateTime EndDate,
     bool AutoRenew,

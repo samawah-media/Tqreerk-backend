@@ -4,7 +4,7 @@ using Taqreerk.Domain.Enums;
 namespace Taqreerk.Domain.Entities;
 
 /// Subscription plan blueprint. Two ladders + a free tier:
-///   Individual / Free          → 5 reads, no AI, no save
+///   Individual / Free          → 5 reads, 1 AI trial (summary + chat), no save
 ///   Individual / Annual        → unlimited reads + AI counters + save
 ///   Organization / Basic       → 3 seats, basic AI bundle, 2 promo slots
 ///   Organization / Professional → 10 seats, full AI bundle, 5 promo slots
@@ -75,7 +75,7 @@ public class Plan : BaseEntity
     public int FeaturedReportsMonthly { get; set; }
 
     // ── Tier labels — string enums ────────────────────────────────────────
-    /// AI feature bundle: "none" / "individual_pro" / "org_basic" / "org_pro".
+    /// AI feature bundle: "none" / "trial" / "individual_pro" / "org_basic" / "org_pro".
     public string AiAccessLevel { get; set; } = "none";
 
     /// Search precision: "standard" / "high".

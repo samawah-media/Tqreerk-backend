@@ -297,14 +297,29 @@ public class MeService : IMeService
 
             if (orgId.HasValue)
             {
-                var awaiting = await _db.Subscriptions.AsNoTracking().AnyAsync(
-                    s => s.OrganizationId == orgId
-                         && SubscriptionLifecycleService.OrganizationAwaitingCheckout(s),
-                    ct);
-                if (awaiting)
+                var orgStatus = await _db.Organizations
+                    .AsNoTracking()
+                    .Where(o => o.Id == orgId)
+                    .Select(o => (OrganizationStatus?)o.Status)
+                    .FirstOrDefaultAsync(ct);
+
+                if (orgStatus == OrganizationStatus.PendingReview)
                 {
                     throw new SubscriptionInactiveException(
-                        "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+                        "طلب تسجيل جهتك قيد المراجعة من فريق المنصة. سنُعلمك عند الاعتماد.");
+                }
+
+                if (orgStatus == OrganizationStatus.Active)
+                {
+                    var awaiting = await _db.Subscriptions.AsNoTracking().AnyAsync(
+                        s => s.OrganizationId == orgId
+                             && SubscriptionLifecycleService.OrganizationAwaitingCheckout(s),
+                        ct);
+                    if (awaiting)
+                    {
+                        throw new SubscriptionInactiveException(
+                            "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+                    }
                 }
 
                 throw new SubscriptionInactiveException(
@@ -376,7 +391,8 @@ public class MeService : IMeService
                 plan.AiTranslateLimit,
                 plan.AiSimilarSuggestionsLimit,
                 plan.AiCompareLimit,
-                plan.AiCompareMaxReports),
+                plan.AiCompareMaxReports,
+                PlanCapabilities.ResolveAiChatLimit(plan)),
             new PlanFlagsDto(
                 plan.HasNotifications,
                 plan.HasAdvancedSearch,
@@ -422,8 +438,15 @@ public class MeService : IMeService
             .FirstOrDefaultAsync(ct);
 
         Subscription? sub;
+        OrganizationStatus? orgStatus = null;
         if (orgId is not null)
         {
+            orgStatus = await _db.Organizations
+                .AsNoTracking()
+                .Where(o => o.Id == orgId)
+                .Select(o => (OrganizationStatus?)o.Status)
+                .FirstOrDefaultAsync(ct);
+
             sub = await _db.Subscriptions
                 .AsNoTracking()
                 .Include(s => s.Plan)
@@ -443,10 +466,12 @@ public class MeService : IMeService
 
         if (sub?.Plan is null) return null;
 
-        var awaiting = SubscriptionLifecycleService.OrganizationAwaitingCheckout(sub)
-            || (sub.UserId.HasValue
-                && sub.Status != SubscriptionStatus.Active
-                && sub.PaymentStatus == PaymentStatus.Pending);
+        var orgApproved = orgStatus is null or OrganizationStatus.Active;
+        var awaiting = orgApproved
+            && (SubscriptionLifecycleService.OrganizationAwaitingCheckout(sub)
+                || (sub.UserId.HasValue
+                    && sub.Status != SubscriptionStatus.Active
+                    && sub.PaymentStatus == PaymentStatus.Pending));
         return (sub, sub.Plan, awaiting);
     }
 

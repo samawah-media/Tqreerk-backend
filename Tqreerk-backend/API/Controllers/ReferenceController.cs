@@ -116,8 +116,14 @@ public class ReferenceController : ControllerBase
             features.Add("حفظ التقارير المفضلة");
 
         // ── AI chat/summarize ─────────────────────────────────────────────
+        if (p.AiSummarizeLimit > 0)
+            features.Add(p.AiSummarizeLimit == 1
+                ? "تجربة مجانية للملخص الذكي (مرة واحدة)"
+                : "الملخص الذكي للتقارير");
         if (p.AiAccessLevel is "individual_pro" or "org_basic" or "org_pro")
             features.Add("محادثة مع الذكاء الاصطناعي");
+        else if (p.AiAccessLevel == "trial")
+            features.Add("تجربة مجانية للذكاء الاصطناعي (رسالة واحدة)");
 
         // ── Org-specific ──────────────────────────────────────────────────
         if (p.UserLimit > 1)
@@ -164,8 +170,14 @@ public class ReferenceController : ControllerBase
         if (p.IndividualSavedReportsLimit != 0)
             features.Add("Save favorite reports");
 
+        if (p.AiSummarizeLimit > 0)
+            features.Add(p.AiSummarizeLimit == 1
+                ? "One free smart-summary trial"
+                : "Smart report summaries");
         if (p.AiAccessLevel is "individual_pro" or "org_basic" or "org_pro")
             features.Add("Chat with the AI assistant");
+        else if (p.AiAccessLevel == "trial")
+            features.Add("One free AI chat message");
 
         if (p.UserLimit > 1)
             features.Add($"Primary account + {p.UserLimit - 1} seats");

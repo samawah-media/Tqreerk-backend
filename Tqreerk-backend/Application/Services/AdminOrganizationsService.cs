@@ -1,7 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Taqreerk.Application.DTOs.Admin;
 using Taqreerk.Application.DTOs.Reports;
 using Taqreerk.Application.Interfaces;
+using Taqreerk.Application.Settings;
+using Taqreerk.Domain.Entities;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
 
@@ -10,14 +13,26 @@ namespace Taqreerk.Application.Services;
 public class AdminOrganizationsService : IAdminOrganizationsService
 {
     private const int MaxPageSize = 100;
+    private const string CommercialRegisterFileType = "commercial_register";
 
     private readonly TaqreerkDbContext _db;
     private readonly IAdminActionLogger _audit;
+    private readonly IEmailSender _email;
+    private readonly IFileStorage _files;
+    private readonly EmailSettings _emailSettings;
 
-    public AdminOrganizationsService(TaqreerkDbContext db, IAdminActionLogger audit)
+    public AdminOrganizationsService(
+        TaqreerkDbContext db,
+        IAdminActionLogger audit,
+        IEmailSender email,
+        IFileStorage files,
+        IOptions<EmailSettings> emailSettings)
     {
         _db = db;
         _audit = audit;
+        _email = email;
+        _files = files;
+        _emailSettings = emailSettings.Value;
     }
 
     public async Task<PagedResult<AdminOrganizationListItemDto>> ListAsync(
@@ -205,6 +220,36 @@ public class AdminOrganizationsService : IAdminOrganizationsService
         return (await BuildDetailAsync(orgId, ct))!;
     }
 
+    public async Task<AdminOrganizationDetailDto> ApproveAsync(
+        Guid actingUserId, Guid orgId, CancellationToken ct = default)
+    {
+        var org = await _db.Organizations
+            .Include(o => o.Profile)
+            .FirstOrDefaultAsync(o => o.Id == orgId, ct)
+            ?? throw new KeyNotFoundException("Organization not found.");
+
+        if (org.Status != OrganizationStatus.PendingReview)
+            throw new InvalidOperationException("Only organizations pending review can be approved.");
+
+        var prev = org.Status;
+        org.Status = OrganizationStatus.Active;
+        org.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        await _audit.LogAsync(
+            adminUserId: actingUserId,
+            actionType: "organization.approve",
+            targetEntityType: "Organization",
+            targetEntityId: orgId,
+            beforeState: new { Status = prev.ToString() },
+            afterState: new { Status = org.Status.ToString() },
+            ct: ct);
+
+        await NotifyFounderOfApprovalAsync(org, ct);
+
+        return (await BuildDetailAsync(orgId, ct))!;
+    }
+
     public async Task DeleteAsync(Guid actingUserId, Guid orgId, CancellationToken ct = default)
     {
         var org = await _db.Organizations.FirstOrDefaultAsync(o => o.Id == orgId, ct)
@@ -277,6 +322,31 @@ public class AdminOrganizationsService : IAdminOrganizationsService
             .ToListAsync(ct);
     }
 
+    private async Task NotifyFounderOfApprovalAsync(Organization org, CancellationToken ct)
+    {
+        var founder = await _db.OrganizationMembers
+            .AsNoTracking()
+            .Where(m => m.OrganizationId == org.Id && m.IsActive)
+            .OrderBy(m => m.JoinedAt)
+            .Select(m => new { m.User.Email, m.User.FullName })
+            .FirstOrDefaultAsync(ct);
+
+        if (founder is null || string.IsNullOrWhiteSpace(founder.Email)) return;
+
+        var loginUrl = $"{_emailSettings.AppBaseUrl.TrimEnd('/')}/login";
+        var body =
+            $"<p>مرحباً {System.Net.WebUtility.HtmlEncode(founder.FullName)},</p>" +
+            $"<p>تم اعتماد جهة <strong>{System.Net.WebUtility.HtmlEncode(org.NameAr)}</strong> من فريق المنصة.</p>" +
+            "<p>يمكنك الآن تسجيل الدخول وإتمام الدفع لتفعيل الاشتراك.</p>" +
+            $"<p><a href=\"{loginUrl}\">{loginUrl}</a></p>";
+
+        await _email.SendEmailAsync(
+            founder.Email,
+            "تم اعتماد جهتك على تقريرك",
+            body,
+            ct);
+    }
+
     private async Task<AdminOrganizationDetailDto?> BuildDetailAsync(Guid orgId, CancellationToken ct)
     {
         var detail = await _db.Organizations
@@ -291,6 +361,7 @@ public class AdminOrganizationsService : IAdminOrganizationsService
                 o.CountryId,
                 CountryNameAr = o.Country != null ? o.Country.NameAr : null,
                 o.City, o.Phone, o.WebsiteUrl, o.LogoUrl, o.Description, o.CreatedAt,
+                Profile = o.Profile,
             })
             .FirstOrDefaultAsync(ct);
         if (detail is null) return null;
@@ -302,12 +373,29 @@ public class AdminOrganizationsService : IAdminOrganizationsService
         var publishedCount = await _db.Reports
             .CountAsync(r => r.OrganizationId == orgId && r.Status == ReportStatus.Published, ct);
 
+        var crFile = await _db.OrganizationFiles
+            .AsNoTracking()
+            .Where(f => f.OrganizationId == orgId && f.FileType == CommercialRegisterFileType)
+            .OrderByDescending(f => f.CreatedAt)
+            .Select(f => f.FileUrl)
+            .FirstOrDefaultAsync(ct);
+
+        string? crFileUrl = null;
+        if (!string.IsNullOrWhiteSpace(crFile))
+            crFileUrl = await _files.GetReadUrlAsync(crFile, ct: ct);
+
+        var profile = detail.Profile;
         return new AdminOrganizationDetailDto(
             detail.Id, detail.NameAr, detail.NameEn, detail.Slug,
             detail.Type, detail.Status, detail.IsVerified, detail.IsPartner,
             detail.TranslationEnabled,
             detail.SectorScope, detail.CountryId, detail.CountryNameAr,
             detail.City, detail.Phone, detail.WebsiteUrl, detail.LogoUrl, detail.Description,
-            detail.CreatedAt, memberCount, reportCount, publishedCount);
+            detail.CreatedAt, memberCount, reportCount, publishedCount,
+            profile?.CommercialRegisterNo,
+            profile?.CommercialRegisterName,
+            profile?.CommercialRegisterExpiryDate,
+            profile?.TaxNumber,
+            crFileUrl);
     }
 }

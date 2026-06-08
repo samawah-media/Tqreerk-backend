@@ -372,6 +372,34 @@ public class ReportService : IReportService
             ?? throw new InvalidOperationException("Report disappeared after update.");
     }
 
+    public async Task<ReportDetailDto> UpdateCoverAsync(
+        Guid currentUserId,
+        Guid reportId,
+        UploadedFile coverImage,
+        CancellationToken ct = default)
+    {
+        if (!AllowedCoverContentTypes.Contains(coverImage.ContentType, StringComparer.OrdinalIgnoreCase))
+            throw new ArgumentException("Cover image must be PNG, JPEG, or WEBP.");
+        if (coverImage.Content.CanSeek && coverImage.Content.Length > MaxCoverImageBytes)
+            throw new ArgumentException("Cover image exceeds the 5 MB size limit.");
+
+        var orgId = await GetCallerOrgIdAsync(currentUserId, ct);
+
+        var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == reportId, ct)
+            ?? throw new KeyNotFoundException("Report not found.");
+        if (report.OrganizationId != orgId)
+            throw new UnauthorizedAccessException("This report belongs to another organization.");
+
+        var newCover = await GenerateAndUploadCoverVariantsAsync(coverImage, orgId, ct)
+            ?? throw new InvalidOperationException("Cover image upload returned no result.");
+        report.CoverImageBaseKey = newCover.BaseKey;
+        report.CoverImageUrl = newCover.MediumKey;
+        await _db.SaveChangesAsync(ct);
+
+        return await BuildDetailAsync(report.Id, ct)
+            ?? throw new InvalidOperationException("Report disappeared after update.");
+    }
+
     public async Task<ReportDetailDto> ResubmitAsync(
         Guid currentUserId,
         Guid reportId,
