@@ -25,7 +25,7 @@ public static class SystemSettingsSeedData
         // General
         new("site_name",                  "general",     "string", "تقريرك",                            "اسم المنصة الظاهر للمستخدمين."),
         new("default_language",           "general",     "string", "ar",                                "اللغة الافتراضية للواجهة (ar / en)."),
-        new("support_email",              "general",     "string", "support@taqreerk.com",              "بريد دعم المنصة."),
+        new("support_email",              "general",     "string", "taqrerk@samawah1.sa",               "بريد دعم المنصة."),
 
         // Limits
         new("free_plan_reports_limit",    "limits",      "int",    "5",                                 "أقصى عدد تقارير شهريًا للجهات على الباقة المجانية."),
@@ -46,7 +46,7 @@ public static class SystemSettingsSeedData
 
         // Email
         new("email.sender_name",          "email",       "string", "تقريرك",                            "اسم المرسل في الإيميلات."),
-        new("email.support_reply_to",     "email",       "string", "support@taqreerk.com",              "عنوان الرد على الإيميلات."),
+        new("email.support_reply_to",     "email",       "string", "taqrerk@samawah1.sa",               "عنوان الرد على الإيميلات."),
 
         // Maintenance — flag is OFF by default. Turning it on blocks
         // public traffic via MaintenanceMiddleware.

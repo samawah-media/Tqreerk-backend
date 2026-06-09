@@ -6,8 +6,9 @@ public record SubmitContactRequest(
     [Required, MaxLength(120)] string FullName,
     [Required, EmailAddress, MaxLength(255)] string Email,
     [MaxLength(30)] string? Phone,
-    [Required, RegularExpression("^(suggestion|complaint|inquiry)$")] string Type,
-    [Required, MinLength(10), MaxLength(2000)] string Message
+    [Required, RegularExpression("^(suggestion|complaint|inquiry|partner)$")] string Type,
+    [MaxLength(2000)] string? Message,
+    [MaxLength(200)] string? Organization = null
 );
 
 public record SubmitContactResponse(

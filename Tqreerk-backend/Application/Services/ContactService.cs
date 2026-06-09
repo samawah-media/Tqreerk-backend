@@ -9,7 +9,7 @@ namespace Taqreerk.Application.Services;
 public class ContactService : IContactService
 {
     private const string SupportEmailKey = "support_email";
-    private const string DefaultSupportEmail = "support@taqreerk.com";
+    private const string DefaultSupportEmail = "taqrerk@samawah1.sa";
 
     private readonly TaqreerkDbContext _db;
     private readonly IEmailSender _email;
@@ -26,12 +26,22 @@ public class ContactService : IContactService
         var fullName = req.FullName.Trim();
         var email = req.Email.Trim().ToLowerInvariant();
         var phone = string.IsNullOrWhiteSpace(req.Phone) ? null : req.Phone.Trim();
-        var message = req.Message.Trim();
+        var organization = string.IsNullOrWhiteSpace(req.Organization) ? null : req.Organization.Trim();
+        var message = string.IsNullOrWhiteSpace(req.Message) ? null : req.Message.Trim();
 
         if (fullName.Length == 0)
             throw new ArgumentException("الاسم مطلوب.");
-        if (message.Length < 10)
+
+        if (req.Type == "partner")
+        {
+            if (string.IsNullOrWhiteSpace(organization))
+                throw new ArgumentException("اسم المؤسسة مطلوب.");
+            message ??= "طلب انضمام كشريك";
+        }
+        else if (message is null || message.Length < 10)
+        {
             throw new ArgumentException("الرسالة قصيرة جداً — يرجى كتابة 10 أحرف على الأقل.");
+        }
 
         var supportEmail = await _db.SystemSettings
             .AsNoTracking()
@@ -46,19 +56,29 @@ public class ContactService : IContactService
         {
             "suggestion" => "اقتراح",
             "complaint" => "شكوى",
+            "partner" => "طلب شراكة",
             _ => "استفسار",
         };
 
         var encodedName = WebUtility.HtmlEncode(fullName);
         var encodedEmail = WebUtility.HtmlEncode(email);
         var encodedPhone = WebUtility.HtmlEncode(phone ?? "—");
+        var encodedOrganization = WebUtility.HtmlEncode(organization ?? "—");
         var encodedMessage = WebUtility.HtmlEncode(message).Replace("\n", "<br/>", StringComparison.Ordinal);
 
-        var supportSubject = $"[تقريرك] {typeLabel} — {fullName}";
+        var supportSubject = req.Type == "partner"
+            ? $"[تقريرك] طلب شراكة — {organization}"
+            : $"[تقريرك] {typeLabel} — {fullName}";
+
         var supportBody =
             "<div dir=\"rtl\" style=\"font-family:Arial,sans-serif;line-height:1.6\">" +
-            "<h2>طلب تواصل جديد</h2>" +
-            "<p><strong>النوع:</strong> " + typeLabel + "</p>" +
+            "<h2>" + (req.Type == "partner" ? "طلب انضمام كشريك" : "طلب تواصل جديد") + "</h2>" +
+            "<p><strong>النوع:</strong> " + typeLabel + "</p>";
+
+        if (req.Type == "partner")
+            supportBody += "<p><strong>المؤسسة:</strong> " + encodedOrganization + "</p>";
+
+        supportBody +=
             "<p><strong>الاسم:</strong> " + encodedName + "</p>" +
             "<p><strong>البريد:</strong> " + encodedEmail + "</p>" +
             "<p><strong>الهاتف:</strong> " + encodedPhone + "</p>" +
