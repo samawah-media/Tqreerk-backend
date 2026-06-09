@@ -59,7 +59,7 @@ public class BulkUploadItemJob(
         {
             // Already advanced — don't redo work, but ensure the advance job exists.
             case BulkImportItemStage.Ingesting:
-                jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(itemId, CancellationToken.None));
+                jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(itemId, CancellationToken.None, null));
                 return;
             case BulkImportItemStage.Summarizing:
             case BulkImportItemStage.Completed:
@@ -106,7 +106,7 @@ public class BulkUploadItemJob(
                         .SetProperty(i => i.SummarizeJobId, (Guid?)null)
                         .SetProperty(i => i.ErrorMessage, (string?)null)
                         .SetProperty(i => i.StartedAt, DateTime.UtcNow), ct);
-                jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(itemId, CancellationToken.None));
+                jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(itemId, CancellationToken.None, null));
                 return;
             }
 
@@ -129,7 +129,7 @@ public class BulkUploadItemJob(
             logger.LogInformation(
                 "[bulk-upload] item={ItemId} re-ingesting existing report={ReportId} ingestJob={IngestJobId}",
                 itemId, item.ReportId, reIngestJobId);
-            jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(itemId, CancellationToken.None));
+            jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(itemId, CancellationToken.None, null));
             return;
         }
 
@@ -292,7 +292,7 @@ public class BulkUploadItemJob(
         logger.LogInformation(
             "[bulk-upload] item={ItemId} → Ingesting ingestJob={IngestJobId}", itemId, ingestJobId);
 
-        jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(itemId, CancellationToken.None));
+        jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(itemId, CancellationToken.None, null));
     }
 
     // ── Resume existing report ────────────────────────────────────────────────
@@ -339,7 +339,7 @@ public class BulkUploadItemJob(
             item.SummarizeJobId = null;
             item.ErrorMessage = null;
             await db.SaveChangesAsync(ct);
-            jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(item.Id, CancellationToken.None));
+            jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(item.Id, CancellationToken.None, null));
             return;
         }
 
@@ -380,7 +380,7 @@ public class BulkUploadItemJob(
         await db.SaveChangesAsync(ct);
         logger.LogInformation(
             "[bulk-upload] item={ItemId} re-ingesting existing report={ReportId}", item.Id, existingReportId);
-        jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(item.Id, CancellationToken.None));
+        jobClient.Enqueue<BulkAdvanceItemJob>(j => j.ExecuteAsync(item.Id, CancellationToken.None, null));
     }
 
     // ── Cover rendering ───────────────────────────────────────────────────────

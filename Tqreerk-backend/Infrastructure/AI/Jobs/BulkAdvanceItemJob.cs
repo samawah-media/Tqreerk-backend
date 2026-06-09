@@ -1,4 +1,5 @@
 using Hangfire;
+using Hangfire.Server;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -39,7 +40,7 @@ public class BulkAdvanceItemJob(
     IOptions<FileStorageSettings> storageOpts,
     ILogger<BulkAdvanceItemJob> logger)
 {
-    public async Task ExecuteAsync(Guid itemId, CancellationToken ct = default)
+    public async Task ExecuteAsync(Guid itemId, CancellationToken ct = default, PerformContext? performContext = null)
     {
         var item = await db.BulkImportItems
             .FirstOrDefaultAsync(i => i.Id == itemId, ct);
@@ -55,7 +56,7 @@ public class BulkAdvanceItemJob(
             case BulkImportItemStage.Uploading:
                 return; // upload job handles this
             case BulkImportItemStage.Ingesting:
-                await HandleIngestingAsync(item, ct);
+                await HandleIngestingAsync(item, performContext, ct);
                 break;
             case BulkImportItemStage.Summarizing:
                 await HandleSummarizingAsync(item, ct);
@@ -66,12 +67,12 @@ public class BulkAdvanceItemJob(
     // ── Ingesting ─────────────────────────────────────────────────────────────
 
     private async Task HandleIngestingAsync(
-        Domain.Entities.BulkImportItem item, CancellationToken ct)
+        Domain.Entities.BulkImportItem item, PerformContext? performContext, CancellationToken ct)
     {
         // Resume path: no IngestJobId means chunks already exist → skip GPU.
         if (!item.IngestJobId.HasValue)
         {
-            await DispatchSummarizeAsync(item, ct);
+            await DispatchSummarizeAsync(item, performContext, ct);
             return;
         }
 
@@ -84,7 +85,7 @@ public class BulkAdvanceItemJob(
         {
             // Not done — reschedule without burning a retry.
             jobClient.Schedule<BulkAdvanceItemJob>(
-                j => j.ExecuteAsync(item.Id, CancellationToken.None),
+                j => j.ExecuteAsync(item.Id, CancellationToken.None, null),
                 TimeSpan.FromSeconds(10));
             return;
         }
@@ -109,13 +110,13 @@ public class BulkAdvanceItemJob(
                     .ExecuteUpdateAsync(s => s.SetProperty(r => r.PageCount, pages.Value), ct);
         }
 
-        await DispatchSummarizeAsync(item, ct);
+        await DispatchSummarizeAsync(item, performContext, ct);
     }
 
     // ── Dispatch summarize ────────────────────────────────────────────────────
 
     private async Task DispatchSummarizeAsync(
-        Domain.Entities.BulkImportItem item, CancellationToken ct)
+        Domain.Entities.BulkImportItem item, PerformContext? performContext, CancellationToken ct)
     {
         if (item.ReportId is null)
         {
@@ -128,8 +129,16 @@ public class BulkAdvanceItemJob(
             .AnyAsync(c => c.ReportId == item.ReportId.Value, ct);
         if (!hasChunks)
         {
-            // Ingest completed but wrote no chunks — re-dispatch ingest and
-            // poll again rather than failing permanently.
+            // Ingest completed but wrote no chunks. Allow up to 2 re-ingest
+            // attempts (retryCount 0 and 1); fail permanently on the 3rd pass.
+            var retryCount = performContext?.GetJobParameter<int>("RetryCount") ?? 0;
+            if (retryCount >= 2)
+            {
+                MarkFailed(item, "لا توجد مقاطع نصية بعد إعادة الاستخراج مرتين — تحقق من محتوى الملف.");
+                await SaveAndUpdateCountersAsync(item, ct);
+                return;
+            }
+
             var fileUrl = await db.Reports
                 .Where(r => r.Id == item.ReportId.Value)
                 .Select(r => r.FileUrl)
@@ -146,12 +155,11 @@ public class BulkAdvanceItemJob(
             item.SummarizeJobId = null;
             await db.SaveChangesAsync(ct);
             logger.LogInformation(
-                "[bulk-advance] item={ItemId} no chunks after ingest, re-ingesting report={ReportId} ingestJob={IngestJobId}",
-                item.Id, item.ReportId, reIngestJobId);
-            jobClient.Schedule<BulkAdvanceItemJob>(
-                j => j.ExecuteAsync(item.Id, CancellationToken.None),
-                TimeSpan.FromSeconds(10));
-            return;
+                "[bulk-advance] item={ItemId} no chunks after ingest (retry={RetryCount}), re-ingesting report={ReportId} ingestJob={IngestJobId}",
+                item.Id, retryCount, item.ReportId, reIngestJobId);
+            // Throw so Hangfire's retry counter increments. Returning normally
+            // would schedule a fresh job and loop forever.
+            throw new InvalidOperationException("لا توجد مقاطع نصية بعد الاستخراج — جارٍ إعادة المحاولة.");
         }
 
         var summarizeJobs = await ai.BulkSummarizeAsync(
@@ -171,7 +179,7 @@ public class BulkAdvanceItemJob(
 
         // Immediately schedule the summarize poll — summarize is fast (30-60 s).
         jobClient.Schedule<BulkAdvanceItemJob>(
-            j => j.ExecuteAsync(item.Id, CancellationToken.None),
+            j => j.ExecuteAsync(item.Id, CancellationToken.None, null),
             TimeSpan.FromSeconds(10));
     }
 
@@ -194,7 +202,7 @@ public class BulkAdvanceItemJob(
         if (aiJob is null || aiJob.Status == AiJobStatus.Pending || aiJob.Status == AiJobStatus.Processing)
         {
             jobClient.Schedule<BulkAdvanceItemJob>(
-                j => j.ExecuteAsync(item.Id, CancellationToken.None),
+                j => j.ExecuteAsync(item.Id, CancellationToken.None, null),
                 TimeSpan.FromSeconds(10));
             return;
         }
