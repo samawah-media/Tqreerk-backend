@@ -176,7 +176,7 @@ jobs:
             Moyasar__PublishableKey=${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
             Moyasar__SecretKey=${{ secrets.MOYASAR_SECRET_KEY }}
             Moyasar__WebhookSecret=${{ secrets.MOYASAR_WEBHOOK_SECRET }}
-            Moyasar__FrontendCallbackUrl=https://user-app-production-912038409401.me-central1.run.app/plans/payment/callback
+            Moyasar__FrontendCallbackUrl=https://taqrerk.sa/plans/payment/callback
             Moyasar__RenewalLeadDays=5
       - name: Show production URL
         run: echo "Production deployed → ${{ steps.deploy.outputs.url }}"
