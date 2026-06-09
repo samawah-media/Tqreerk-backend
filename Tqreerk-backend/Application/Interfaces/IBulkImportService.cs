@@ -63,4 +63,13 @@ public interface IBulkImportService
     /// was already in a terminal state — still a 200, not an error.
     /// </summary>
     Task<int> CancelJobAsync(Guid jobId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Build an .xlsx file containing only the Failed rows of a job, using
+    /// the same column layout as the upload template plus an extra
+    /// <c>error_message</c> column so the admin can see why each row failed
+    /// and re-upload the corrected sheet. Returns null when the job does not
+    /// exist or has no failed rows.
+    /// </summary>
+    Task<byte[]?> GenerateFailedExportAsync(Guid jobId, CancellationToken ct = default);
 }

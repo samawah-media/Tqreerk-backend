@@ -31,6 +31,7 @@ public class BulkImportItem : BaseEntity
     public int? PublicationYear { get; set; }
     public string? SectorNameAr { get; set; }
     public string? CountryNameAr { get; set; }
+    public string? Keywords { get; set; }
 
     // ── Created by the processor ─────────────────────────────────────────
     /// <summary>Set once the Report row has been inserted (after upload).</summary>

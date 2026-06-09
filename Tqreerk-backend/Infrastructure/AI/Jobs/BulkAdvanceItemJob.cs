@@ -1,8 +1,10 @@
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Npgsql;
 using Taqreerk.Application.Common;
 using Taqreerk.Application.Interfaces;
+using Taqreerk.Application.Settings;
 using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
 
@@ -34,6 +36,7 @@ public class BulkAdvanceItemJob(
     TaqreerkDbContext db,
     IAiServiceClient ai,
     IBackgroundJobClient jobClient,
+    IOptions<FileStorageSettings> storageOpts,
     ILogger<BulkAdvanceItemJob> logger)
 {
     public async Task ExecuteAsync(Guid itemId, CancellationToken ct = default)
@@ -125,8 +128,29 @@ public class BulkAdvanceItemJob(
             .AnyAsync(c => c.ReportId == item.ReportId.Value, ct);
         if (!hasChunks)
         {
-            MarkFailed(item, "لا توجد مقاطع نصية للتقرير — يجب إعادة استخراج المحتوى أولاً.");
-            await SaveAndUpdateCountersAsync(item, ct);
+            // Ingest completed but wrote no chunks — re-dispatch ingest and
+            // poll again rather than failing permanently.
+            var fileUrl = await db.Reports
+                .Where(r => r.Id == item.ReportId.Value)
+                .Select(r => r.FileUrl)
+                .FirstOrDefaultAsync(ct);
+            var gcsUri = BulkPipelineStatics.ToGcsUri(fileUrl, storageOpts.Value);
+            var reIngestResult = await ai.BulkIngestAsync(
+                new List<BulkIngestItem> { new(item.ReportId.Value, gcsUri) }, ct);
+            var reIngestJobId = reIngestResult
+                .FirstOrDefault(j => j.ReportId == item.ReportId.Value)?.JobId;
+            if (reIngestJobId is null)
+                throw new InvalidOperationException("AI service did not accept the re-ingest request.");
+            item.IngestJobId    = reIngestJobId;
+            item.Stage          = BulkImportItemStage.Ingesting;
+            item.SummarizeJobId = null;
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation(
+                "[bulk-advance] item={ItemId} no chunks after ingest, re-ingesting report={ReportId} ingestJob={IngestJobId}",
+                item.Id, item.ReportId, reIngestJobId);
+            jobClient.Schedule<BulkAdvanceItemJob>(
+                j => j.ExecuteAsync(item.Id, CancellationToken.None),
+                TimeSpan.FromSeconds(10));
             return;
         }
 

@@ -268,6 +268,10 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.Property<Guid>("JobId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Keywords")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
                     b.Property<string>("OriginalLanguage")
                         .HasMaxLength(5)
                         .HasColumnType("character varying(5)");
@@ -4447,7 +4451,7 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                             Description = "بريد دعم المنصة.",
                             IsSystem = true,
                             Key = "support_email",
-                            Value = "support@taqreerk.com",
+                            Value = "taqrerk@samawah1.sa",
                             ValueType = "string"
                         },
                         new
@@ -4568,7 +4572,7 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                             Description = "عنوان الرد على الإيميلات.",
                             IsSystem = true,
                             Key = "email.support_reply_to",
-                            Value = "support@taqreerk.com",
+                            Value = "taqrerk@samawah1.sa",
                             ValueType = "string"
                         },
                         new

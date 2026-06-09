@@ -24,6 +24,7 @@ public class BulkImportItemConfiguration : IEntityTypeConfiguration<BulkImportIt
         builder.Property(i => i.OriginalLanguage).HasMaxLength(5);
         builder.Property(i => i.SectorNameAr).HasMaxLength(255);
         builder.Property(i => i.CountryNameAr).HasMaxLength(255);
+        builder.Property(i => i.Keywords).HasMaxLength(2000);
         builder.Property(i => i.ErrorMessage).HasMaxLength(4000);
 
         // The processor query reads "items in this job, ordered by row index"

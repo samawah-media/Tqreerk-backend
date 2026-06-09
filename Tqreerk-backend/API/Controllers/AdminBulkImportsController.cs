@@ -126,6 +126,22 @@ public class AdminBulkImportsController : ControllerBase
         }
     }
 
+    /// <summary>Download an Excel file containing only the Failed rows of a
+    /// job. Each row has the same columns as the upload template plus an
+    /// <c>error_message</c> column so the admin can fix the data and re-upload.
+    /// Returns 404 when the job does not exist or has no failed rows.</summary>
+    [HttpGet("{id:guid}/failed-export")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DownloadFailedExport(Guid id, CancellationToken ct)
+    {
+        var bytes = await _bulk.GenerateFailedExportAsync(id, ct);
+        if (bytes is null) return NotFound();
+        return File(bytes,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            $"failed-rows-{id}.xlsx");
+    }
+
     /// <summary>Stop a running job: all items still in an active stage
     /// (Pending / Uploading / Ingesting / Summarizing) are flipped to Failed
     /// and the job is marked Failed. Items that already Completed are kept

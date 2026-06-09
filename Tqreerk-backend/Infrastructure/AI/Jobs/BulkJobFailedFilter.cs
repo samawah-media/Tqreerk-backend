@@ -31,6 +31,31 @@ public sealed class BulkJobFailedFilter(IServiceProvider services)
 
         if (itemId is null) return;
 
+        // Prefer the actual exception message over the generic fallback so the
+        // admin sees the real failure reason (e.g. "HTTP 404") in the UI.
+        var errorMessage = "فشل المعالجة بعد عدة محاولات — راجع سجل Hangfire.";
+
+        if (context.CandidateState is FailedState failedState)
+        {
+            // Job had 0 retries and failed immediately — exception is on the state.
+            var msg = failedState.Exception?.InnerException?.Message
+                   ?? failedState.Exception?.Message;
+            if (!string.IsNullOrWhiteSpace(msg))
+                errorMessage = msg.Length > 4000 ? msg[..4000] : msg;
+        }
+        else if (context.CandidateState is DeletedState)
+        {
+            // Retries exhausted — try to read the last exception from the stored state data.
+            try
+            {
+                var stateData = context.Connection.GetStateData(context.BackgroundJob.Id);
+                if (stateData?.Data.TryGetValue("ExceptionMessage", out var histMsg) == true
+                    && !string.IsNullOrWhiteSpace(histMsg))
+                    errorMessage = histMsg.Length > 4000 ? histMsg[..4000] : histMsg;
+            }
+            catch { /* state data access is best-effort */ }
+        }
+
         try
         {
             using var scope = services.CreateScope();
@@ -42,7 +67,7 @@ public sealed class BulkJobFailedFilter(IServiceProvider services)
                          && i.Stage != BulkImportItemStage.Failed)
                 .ExecuteUpdate(s => s
                     .SetProperty(i => i.Stage, BulkImportItemStage.Failed)
-                    .SetProperty(i => i.ErrorMessage, "فشل المعالجة بعد عدة محاولات — راجع سجل Hangfire.")
+                    .SetProperty(i => i.ErrorMessage, errorMessage)
                     .SetProperty(i => i.CompletedAt, DateTime.UtcNow));
 
             if (updated > 0)

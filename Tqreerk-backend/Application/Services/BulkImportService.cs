@@ -110,6 +110,7 @@ public class BulkImportService : IBulkImportService
                 PublicationYear = row.PublicationYear,
                 SectorNameAr = NullIfBlank(row.SectorNameAr),
                 CountryNameAr = NullIfBlank(row.CountryNameAr),
+                Keywords = NullIfBlank(row.Keywords),
                 StartedAt = stage == BulkImportItemStage.Failed ? DateTime.UtcNow : null,
                 CompletedAt = stage == BulkImportItemStage.Failed ? DateTime.UtcNow : null,
             });
@@ -298,6 +299,57 @@ public class BulkImportService : IBulkImportService
 
         // RTL feels native for the Arabic-first audience; ClosedXML also
         // honours it at render-time in Excel.
+        sheet.RightToLeft = true;
+
+        using var ms = new MemoryStream();
+        workbook.SaveAs(ms);
+        return ms.ToArray();
+    }
+
+    public async Task<byte[]?> GenerateFailedExportAsync(Guid jobId, CancellationToken ct = default)
+    {
+        var failedItems = await _db.BulkImportItems
+            .AsNoTracking()
+            .Where(i => i.JobId == jobId && i.Stage == BulkImportItemStage.Failed)
+            .OrderBy(i => i.RowIndex)
+            .ToListAsync(ct);
+
+        if (failedItems.Count == 0) return null;
+
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add("Failed Rows");
+
+        var headers = ExpectedHeaders.Append("error_message").ToArray();
+        for (var i = 0; i < headers.Length; i++)
+        {
+            var cell = sheet.Cell(1, i + 1);
+            cell.Value = headers[i];
+            cell.Style.Font.Bold = true;
+            cell.Style.Fill.BackgroundColor = XLColor.FromArgb(255, 220, 220);
+        }
+
+        for (var r = 0; r < failedItems.Count; r++)
+        {
+            var item = failedItems[r];
+            var row = r + 2;
+            sheet.Cell(row, 1).Value = item.Title;
+            sheet.Cell(row, 2).Value = item.TitleEn;
+            sheet.Cell(row, 3).Value = item.FileUrl;
+            sheet.Cell(row, 4).Value = item.SectorNameAr ?? string.Empty;
+            sheet.Cell(row, 5).Value = item.ReportType ?? string.Empty;
+            sheet.Cell(row, 6).Value = item.CountryNameAr ?? string.Empty;
+            if (item.PublicationYear.HasValue)
+                sheet.Cell(row, 7).Value = item.PublicationYear.Value;
+            else
+                sheet.Cell(row, 7).Value = string.Empty;
+            sheet.Cell(row, 8).Value = item.Authors ?? string.Empty;
+            sheet.Cell(row, 9).Value = item.OriginalLanguage ?? string.Empty;
+            sheet.Cell(row, 10).Value = item.Source ?? string.Empty;
+            sheet.Cell(row, 11).Value = item.Keywords ?? string.Empty;
+            sheet.Cell(row, 12).Value = item.ErrorMessage ?? string.Empty;
+        }
+
+        sheet.Columns().AdjustToContents();
         sheet.RightToLeft = true;
 
         using var ms = new MemoryStream();
