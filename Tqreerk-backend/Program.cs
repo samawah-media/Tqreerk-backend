@@ -102,11 +102,8 @@ app.UseMiddleware<ExceptionHandlingMiddleware>();
 // middleware that writes response bodies (auth, controllers).
 app.UseResponseCompression();
 
-if (!app.Environment.IsProduction())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Taqreerk API v1"));
-}
+app.UseSwagger();
+app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Taqreerk API v1"));
 
 // HTTPS redirection is intentionally NOT enabled. Cloud Run terminates TLS
 // at its frontend LB and only exposes :443 externally — there is no http://
