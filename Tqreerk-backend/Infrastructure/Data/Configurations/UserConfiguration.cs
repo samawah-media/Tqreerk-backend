@@ -31,7 +31,9 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         // staff table is tiny vs the user table.
         builder.HasIndex(u => u.IsPlatformStaff)
             .HasFilter("\"IsPlatformStaff\" = TRUE");
-        builder.HasIndex(u => u.Phone).IsUnique().HasFilter("\"Phone\" IS NOT NULL");
+        // Non-unique: the same phone may appear on multiple accounts (e.g. shared
+        // org line) as long as each account has a distinct email.
+        builder.HasIndex(u => u.Phone).HasFilter("\"Phone\" IS NOT NULL");
 
         builder.HasOne(u => u.Country)
             .WithMany(c => c.Users)

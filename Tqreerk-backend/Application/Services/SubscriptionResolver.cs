@@ -69,16 +69,31 @@ public static class SubscriptionResolver
 
         if (orgId is not null)
         {
-            var awaitingPayment = await db.Subscriptions
+            var orgStatus = await db.Organizations
                 .AsNoTracking()
-                .AnyAsync(
-                    s => s.OrganizationId == orgId
-                      && OrganizationAwaitingCheckout(s),
-                    ct);
-            if (awaitingPayment)
+                .Where(o => o.Id == orgId)
+                .Select(o => (OrganizationStatus?)o.Status)
+                .FirstOrDefaultAsync(ct);
+
+            if (orgStatus == OrganizationStatus.PendingReview)
             {
                 throw new SubscriptionInactiveException(
-                    "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+                    "طلب تسجيل جهتك قيد المراجعة من فريق المنصة. سنُعلمك عند الاعتماد.");
+            }
+
+            if (orgStatus == OrganizationStatus.Active)
+            {
+                var awaitingPayment = await db.Subscriptions
+                    .AsNoTracking()
+                    .AnyAsync(
+                        s => s.OrganizationId == orgId
+                          && OrganizationAwaitingCheckout(s),
+                        ct);
+                if (awaitingPayment)
+                {
+                    throw new SubscriptionInactiveException(
+                        "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+                }
             }
 
             var latestOrg = await db.Subscriptions

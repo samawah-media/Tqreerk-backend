@@ -17,6 +17,7 @@ namespace Taqreerk.API.Controllers;
 public class ReportsController : ControllerBase
 {
     private const long MaxUploadBytes = 200L * 1024 * 1024; // 200 MB
+    private const long MaxCoverBytes = 5L * 1024 * 1024; // 5 MB
 
     private readonly IReportService _reports;
     private readonly IReportAiService _ai;
@@ -232,6 +233,43 @@ public class ReportsController : ControllerBase
         return Ok(await _featureRequests.GetForReportAsync(userId, id, ct));
     }
 
+    /// <summary>Replace the cover image on an org-owned report. Does not
+    /// touch the PDF or metadata — lets orgs add a custom thumbnail after
+    /// the initial upload. If no cover was provided at create time the
+    /// backend auto-generates one from the PDF's first page; this endpoint
+    /// overrides that with a user-supplied image.</summary>
+    [HttpPost("{id:guid}/cover")]
+    [RequestSizeLimit(MaxCoverBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaxCoverBytes)]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType(typeof(ReportDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateCover(
+        Guid id,
+        [FromForm] UpdateCoverForm form,
+        CancellationToken ct)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        if (form.CoverImage is null || form.CoverImage.Length == 0)
+            return BadRequest(new { title = "Cover image is required." });
+
+        await using var coverBuffer = await BufferAsync(form.CoverImage, ct);
+        var coverFile = new UploadedFile(coverBuffer, form.CoverImage.FileName, form.CoverImage.ContentType);
+
+        try
+        {
+            return Ok(await _reports.UpdateCoverAsync(userId, id, coverFile, ct));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("GcsPublicBucketName"))
+        {
+            _logger.LogError(ex, "Cover upload failed: public GCS bucket not configured.");
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { title = "خدمة رفع صور الغلاف غير متاحة حالياً — يرجى التواصل مع الدعم." });
+        }
+    }
+
     /// <summary>Re-submit a returned-for-edit report with a new PDF (and
     /// optional cover). Status flips back to PendingReview and the report
     /// re-enters the moderation queue.</summary>
@@ -340,6 +378,12 @@ public class ReportsController : ControllerBase
         public string? PublicationDate { get; set; }
         public Guid? SectorId { get; set; }
         public Guid? CountryId { get; set; }
+    }
+
+    /// Multipart form for replacing a report's cover image after upload.
+    public class UpdateCoverForm
+    {
+        public IFormFile? CoverImage { get; set; }
     }
 
     /// Multipart form for resubmitting a returned-for-edit report. Carries

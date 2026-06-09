@@ -4745,7 +4745,6 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                         .HasFilter("\"IsPlatformStaff\" = TRUE");
 
                     b.HasIndex("Phone")
-                        .IsUnique()
                         .HasFilter("\"Phone\" IS NOT NULL");
 
                     b.ToTable("users", (string)null);

@@ -49,9 +49,6 @@ public class AuthService : IAuthService
         if (await _db.Users.AnyAsync(u => u.Email == normalized, ct))
             throw new InvalidOperationException("Email already registered.");
 
-        if (!string.IsNullOrWhiteSpace(req.Phone) && await _db.Users.AnyAsync(u => u.Phone == req.Phone, ct))
-            throw new InvalidOperationException("Phone number already registered.");
-
         // Remove any previous pending registration for this email so the user can retry.
         var old = await _db.PendingRegistrations.Where(p => p.Email == normalized).ToListAsync(ct);
         _db.PendingRegistrations.RemoveRange(old);
@@ -88,9 +85,6 @@ public class AuthService : IAuthService
 
         if (await _db.Users.AnyAsync(u => u.Email == normalized, ct))
             throw new InvalidOperationException("Email already registered.");
-
-        if (!string.IsNullOrWhiteSpace(req.Phone) && await _db.Users.AnyAsync(u => u.Phone == req.Phone, ct))
-            throw new InvalidOperationException("Phone number already registered.");
 
         var old = await _db.PendingRegistrations.Where(p => p.Email == normalized).ToListAsync(ct);
         _db.PendingRegistrations.RemoveRange(old);
@@ -610,6 +604,8 @@ public class AuthService : IAuthService
                 organizationPlanId.Value,
                 awaitingPayment: true,
                 ct);
+
+            await NotifyPlatformStaffOfPendingOrganizationAsync(organization, user, ct);
         }
         else
         {
@@ -617,6 +613,45 @@ public class AuthService : IAuthService
         }
 
         return await IssueTokensAsync(user, ipAddress, deviceInfo, ct);
+    }
+
+    private async Task NotifyPlatformStaffOfPendingOrganizationAsync(
+        Organization organization, User founder, CancellationToken ct)
+    {
+        var staffEmails = await _db.Users
+            .AsNoTracking()
+            .Where(u => u.IsPlatformStaff && u.Status == UserStatus.Active)
+            .Select(u => u.Email)
+            .Distinct()
+            .ToListAsync(ct);
+
+        if (staffEmails.Count == 0) return;
+
+        var adminBase = _emailSettings.AppBaseUrl.TrimEnd('/');
+        var reviewUrl = $"{adminBase}/organizations/{organization.Id}";
+        var body =
+            "<p>طلب تسجيل جهة جديد يحتاج مراجعة.</p>" +
+            $"<p><strong>{System.Net.WebUtility.HtmlEncode(organization.NameAr)}</strong> " +
+            $"({System.Net.WebUtility.HtmlEncode(organization.NameEn)})</p>" +
+            $"<p>المؤسس: {System.Net.WebUtility.HtmlEncode(founder.FullName)} — " +
+            $"{System.Net.WebUtility.HtmlEncode(founder.Email)}</p>" +
+            $"<p><a href=\"{reviewUrl}\">مراجعة الطلب في لوحة الإدارة</a></p>";
+
+        foreach (var email in staffEmails)
+        {
+            try
+            {
+                await _email.SendEmailAsync(
+                    email,
+                    "طلب تسجيل جهة جديد — بانتظار المراجعة",
+                    body,
+                    ct);
+            }
+            catch
+            {
+                // Best-effort — org is already persisted; admin can still see it in the list.
+            }
+        }
     }
 
     private async Task ValidateOrganizationPlanIdAsync(Guid planId, CancellationToken ct)

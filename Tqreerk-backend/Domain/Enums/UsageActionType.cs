@@ -26,4 +26,7 @@ public enum UsageActionType
     AiTranslate,
     AiSimilarSuggestions,
     AiCompare,
+
+    /// Report-page AI chat (trial tier: 1 message/month; paid tiers: unlimited).
+    AiChat,
 }

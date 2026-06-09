@@ -42,7 +42,8 @@ public sealed record PlanLimitsDto(
     int AiTranslate,
     int AiSimilarSuggestions,
     int AiCompare,
-    int AiCompareMaxReports);
+    int AiCompareMaxReports,
+    int AiChat);
 
 /// Plan capability flags — feature-flag style, no counter behind them.
 /// The Pro-only AI capabilities (TrendAnalysis, KnowledgeGraph, etc.)
@@ -66,7 +67,7 @@ public sealed record PlanFlagsDto(
 /// don't enum-encode them on the wire so adding a new tier value (e.g.
 /// a future Enterprise dashboard tier) doesn't break older clients.
 public sealed record PlanTiersDto(
-    string AiAccessLevel,                // "none" | "individual_pro" | "org_basic" | "org_pro"
+    string AiAccessLevel,                // "none" | "trial" | "individual_pro" | "org_basic" | "org_pro"
     string AdvancedSearchPrecision,      // "standard" | "high"
     string OrgPageTier,                  // "basic" | "professional"
     string SupportTier,                  // "email" | "priority"

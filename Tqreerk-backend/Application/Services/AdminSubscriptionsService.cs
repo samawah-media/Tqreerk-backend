@@ -43,9 +43,20 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
             && Enum.TryParse<SubscriptionStatus>(req.Status, ignoreCase: true, out var status))
             q = q.Where(s => s.Status == status);
 
-        if (!string.IsNullOrWhiteSpace(req.PaymentStatus)
-            && Enum.TryParse<PaymentStatus>(req.PaymentStatus, ignoreCase: true, out var payStatus))
-            q = q.Where(s => s.PaymentStatus == payStatus);
+        if (!string.IsNullOrWhiteSpace(req.PaymentStatus))
+        {
+            if (string.Equals(req.PaymentStatus, "Free", StringComparison.OrdinalIgnoreCase))
+            {
+                q = q.Where(s => s.Plan.AnnualPrice <= 0);
+            }
+            else if (Enum.TryParse<PaymentStatus>(req.PaymentStatus, ignoreCase: true, out var payStatus))
+            {
+                q = q.Where(s => s.PaymentStatus == payStatus);
+                // Free-tier rows store Paid internally but are not real payments.
+                if (payStatus == PaymentStatus.Paid)
+                    q = q.Where(s => s.Plan.AnnualPrice > 0);
+            }
+        }
 
         if (!string.IsNullOrWhiteSpace(req.SubscriberType))
         {
@@ -85,6 +96,7 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
                 s.PlanId,
                 PlanNameAr = s.Plan.NameAr,
                 PlanNameEn = s.Plan.NameEn,
+                PlanAnnualPrice = s.Plan.AnnualPrice,
                 Status = s.Status.ToString(),
                 PaymentStatus = s.PaymentStatus.ToString(),
                 s.StartDate,
@@ -119,6 +131,7 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
                 r.PlanNameEn,
                 r.Status,
                 r.PaymentStatus,
+                r.PlanAnnualPrice <= 0,
                 r.StartDate,
                 r.EndDate,
                 addons.AutoRenew,
@@ -149,6 +162,7 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
                 s.PlanId,
                 PlanNameAr = s.Plan.NameAr,
                 PlanNameEn = s.Plan.NameEn,
+                PlanAnnualPrice = s.Plan.AnnualPrice,
                 Status = s.Status.ToString(),
                 PaymentStatus = s.PaymentStatus.ToString(),
                 s.StartDate,
@@ -201,6 +215,7 @@ public class AdminSubscriptionsService : IAdminSubscriptionsService
             row.PlanNameEn,
             row.Status,
             row.PaymentStatus,
+            row.PlanAnnualPrice <= 0,
             row.StartDate,
             row.EndDate,
             addons.AutoRenew,

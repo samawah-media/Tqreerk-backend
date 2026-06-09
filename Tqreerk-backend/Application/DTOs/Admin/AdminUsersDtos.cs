@@ -16,7 +16,13 @@ public record AdminUserListItemDto(
     string Status,
     bool EmailVerified,
     string? CountryNameAr,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    /// Earliest active org membership — null for individuals / staff.
+    Guid? PrimaryOrganizationId,
+    string? OrganizationNameAr,
+    string? OrganizationSlug,
+    string? OrganizationRoleName,
+    int OrganizationCount
 );
 
 /// Filters for GET /api/admin/users. Mirrors the plan's filter list. Free-

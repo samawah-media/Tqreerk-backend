@@ -122,11 +122,13 @@ public class MeService : IMeService
                 r.SectorId != null &&
                 interestSectorIds.Contains(r.SectorId.Value) &&
                 !savedReportIds.Contains(r.Id))
-            // Highest-rated first, then most-popular as the tiebreaker.
-            // Reports with no ratings yet (AvgRating = 0) drop to the
-            // bottom — that's intentional, we'd rather surface vetted
-            // content first.
-            .OrderByDescending(r => r.AvgRating)
+            // Suggested reports must be recent, stay current, and reflect
+            // up-to-date content — rank by the report's last activity
+            // (metadata update → publish → create), then publication year,
+            // then community signal as a tiebreak.
+            .OrderByDescending(r => r.UpdatedAt ?? r.PublishedAt ?? r.CreatedAt)
+            .ThenByDescending(r => r.PublicationYear)
+            .ThenByDescending(r => r.AvgRating)
             .ThenByDescending(r => r.ViewsCount)
             .Take(take)
             .Select(r => new
@@ -144,11 +146,9 @@ public class MeService : IMeService
                 OrganizationNameAr = r.Organization != null ? r.Organization.NameAr : null,
                 OrganizationLogoUrl = r.Organization != null ? r.Organization.LogoUrl : null,
                 // Reuse MySavedReportDto for the response shape — there's
-                // no SavedAt on a never-saved report, so we fall back to
-                // PublishedAt (or CreatedAt) for the timestamp slot. The
-                // dashboard sort isn't by this column so the surrogate is
-                // harmless.
-                Stamp = r.PublishedAt ?? r.CreatedAt,
+                // no SavedAt on a never-saved report, so we surface the
+                // freshest activity timestamp we have.
+                Stamp = r.UpdatedAt ?? r.PublishedAt ?? r.CreatedAt,
             })
             .ToListAsync(ct);
 
@@ -297,14 +297,29 @@ public class MeService : IMeService
 
             if (orgId.HasValue)
             {
-                var awaiting = await _db.Subscriptions.AsNoTracking().AnyAsync(
-                    s => s.OrganizationId == orgId
-                         && SubscriptionLifecycleService.OrganizationAwaitingCheckout(s),
-                    ct);
-                if (awaiting)
+                var orgStatus = await _db.Organizations
+                    .AsNoTracking()
+                    .Where(o => o.Id == orgId)
+                    .Select(o => (OrganizationStatus?)o.Status)
+                    .FirstOrDefaultAsync(ct);
+
+                if (orgStatus == OrganizationStatus.PendingReview)
                 {
                     throw new SubscriptionInactiveException(
-                        "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+                        "طلب تسجيل جهتك قيد المراجعة من فريق المنصة. سنُعلمك عند الاعتماد.");
+                }
+
+                if (orgStatus == OrganizationStatus.Active)
+                {
+                    var awaiting = await _db.Subscriptions.AsNoTracking().AnyAsync(
+                        s => s.OrganizationId == orgId
+                             && SubscriptionLifecycleService.OrganizationAwaitingCheckout(s),
+                        ct);
+                    if (awaiting)
+                    {
+                        throw new SubscriptionInactiveException(
+                            "اشتراك المؤسسة في انتظار الدفع. أكمل الدفع لتفعيل المميزات.");
+                    }
                 }
 
                 throw new SubscriptionInactiveException(
@@ -376,7 +391,8 @@ public class MeService : IMeService
                 plan.AiTranslateLimit,
                 plan.AiSimilarSuggestionsLimit,
                 plan.AiCompareLimit,
-                plan.AiCompareMaxReports),
+                plan.AiCompareMaxReports,
+                PlanCapabilities.ResolveAiChatLimit(plan)),
             new PlanFlagsDto(
                 plan.HasNotifications,
                 plan.HasAdvancedSearch,
@@ -422,8 +438,15 @@ public class MeService : IMeService
             .FirstOrDefaultAsync(ct);
 
         Subscription? sub;
+        OrganizationStatus? orgStatus = null;
         if (orgId is not null)
         {
+            orgStatus = await _db.Organizations
+                .AsNoTracking()
+                .Where(o => o.Id == orgId)
+                .Select(o => (OrganizationStatus?)o.Status)
+                .FirstOrDefaultAsync(ct);
+
             sub = await _db.Subscriptions
                 .AsNoTracking()
                 .Include(s => s.Plan)
@@ -443,10 +466,12 @@ public class MeService : IMeService
 
         if (sub?.Plan is null) return null;
 
-        var awaiting = SubscriptionLifecycleService.OrganizationAwaitingCheckout(sub)
-            || (sub.UserId.HasValue
-                && sub.Status != SubscriptionStatus.Active
-                && sub.PaymentStatus == PaymentStatus.Pending);
+        var orgApproved = orgStatus is null or OrganizationStatus.Active;
+        var awaiting = orgApproved
+            && (SubscriptionLifecycleService.OrganizationAwaitingCheckout(sub)
+                || (sub.UserId.HasValue
+                    && sub.Status != SubscriptionStatus.Active
+                    && sub.PaymentStatus == PaymentStatus.Pending));
         return (sub, sub.Plan, awaiting);
     }
 

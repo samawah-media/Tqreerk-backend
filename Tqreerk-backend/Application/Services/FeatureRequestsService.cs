@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 using Taqreerk.Application.DTOs.FeatureRequests;
 using Taqreerk.Application.Interfaces;
@@ -18,12 +19,18 @@ public class FeatureRequestsService : IFeatureRequestsService
     private readonly TaqreerkDbContext _db;
     private readonly IFileStorage _files;
     private readonly IUsageService _usage;
+    private readonly IOutputCacheStore _outputCache;
 
-    public FeatureRequestsService(TaqreerkDbContext db, IFileStorage files, IUsageService usage)
+    public FeatureRequestsService(
+        TaqreerkDbContext db,
+        IFileStorage files,
+        IUsageService usage,
+        IOutputCacheStore outputCache)
     {
         _db = db;
         _files = files;
         _usage = usage;
+        _outputCache = outputCache;
     }
 
     // ── Org-side ─────────────────────────────────────────────────────
@@ -145,29 +152,33 @@ public class FeatureRequestsService : IFeatureRequestsService
 
         await _usage.EnsureOrgCanFeatureReportAsync(entity.OrganizationId, ct);
 
-        // Auto-create the editorial pin so the approval ships immediately.
-        // Position is the section's current count + 1 — the admin can
-        // re-order via the existing reorder endpoint. We don't dedupe
-        // against existing FeaturedReport rows for the same report
-        // because a duplicate row is harmless (the public list dedupes
-        // upstream) and saves a round-trip.
-        var section = FeaturedSection.HomepageCarousel;
-        var nextPosition = await _db.FeaturedReports
-            .Where(f => f.Section == section)
-            .CountAsync(ct) + 1;
+        var report = await _db.Reports
+            .FirstOrDefaultAsync(r => r.Id == entity.ReportId, ct)
+            ?? throw new InvalidOperationException("التقرير غير موجود.");
 
-        _db.FeaturedReports.Add(new FeaturedReport
-        {
-            ReportId = entity.ReportId,
-            Section = section,
-            Position = nextPosition,
-            FeaturedFrom = now,
-            FeaturedUntil = now.Add(DefaultFeaturedDuration),
-            IsActive = true,
-            CreatedByUserId = actingAdminUserId,
-        });
+        if (report.Status != ReportStatus.Published)
+            throw new InvalidOperationException(
+                "لا يمكن نشر التمييز إلا لتقرير منشور. انشر التقرير أولاً ثم أعد الموافقة.");
+
+        // Pin to the front of HomepageCarousel so the approval is visible
+        // immediately in the public featured strip (hero picks no longer
+        // crowd it out — see GetFeaturedAsync hero cap).
+        var carouselRows = await _db.FeaturedReports
+            .Where(f => f.Section == FeaturedSection.HomepageCarousel)
+            .ToListAsync(ct);
+
+        FeaturedPublicationHelper.PinToCarouselFront(
+            _db,
+            entity.ReportId,
+            now,
+            DefaultFeaturedDuration,
+            actingAdminUserId,
+            carouselRows);
+
+        report.IsFeatured = true;
 
         await _db.SaveChangesAsync(ct);
+        await _outputCache.EvictByTagAsync(FeaturedPublicationHelper.OutputCacheTag, ct);
 
         return await BuildDtoAsync(entity.Id, ct)
             ?? throw new InvalidOperationException("Feature request disappeared after approve.");

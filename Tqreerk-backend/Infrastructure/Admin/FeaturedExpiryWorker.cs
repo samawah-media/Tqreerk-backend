@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
+using Taqreerk.Application.Services;
 using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.Infrastructure.Admin;
@@ -48,6 +50,7 @@ public class FeaturedExpiryWorker : BackgroundService
     {
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TaqreerkDbContext>();
+        var outputCache = scope.ServiceProvider.GetRequiredService<IOutputCacheStore>();
 
         var now = DateTime.UtcNow;
         var expired = await db.FeaturedReports
@@ -59,7 +62,12 @@ public class FeaturedExpiryWorker : BackgroundService
         if (expired.Count == 0) return;
 
         foreach (var f in expired) f.IsActive = false;
+
+        foreach (var reportId in expired.Select(f => f.ReportId).Distinct())
+            await FeaturedPublicationHelper.SyncReportIsFeaturedAsync(db, reportId, now, ct);
+
         await db.SaveChangesAsync(ct);
+        await outputCache.EvictByTagAsync(FeaturedPublicationHelper.OutputCacheTag, ct);
 
         _logger.LogInformation(
             "FeaturedExpiryWorker deactivated {Count} expired featured row(s)",

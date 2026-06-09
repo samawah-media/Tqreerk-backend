@@ -52,6 +52,15 @@ public interface IReportService
         UpdateReportMetadataRequest req,
         CancellationToken ct = default);
 
+    /// Replace the cover image on an org-owned report without touching the
+    /// PDF or metadata. Useful when the org uploads the report first and
+    /// adds a custom thumbnail later.
+    Task<ReportDetailDto> UpdateCoverAsync(
+        Guid currentUserId,
+        Guid reportId,
+        UploadedFile coverImage,
+        CancellationToken ct = default);
+
     /// Re-submit a report that was returned for edit. Replaces the PDF
     /// (and optionally the cover) with the new upload, flips status back
     /// to PendingReview, and bumps SubmittedForReviewAt so the queue

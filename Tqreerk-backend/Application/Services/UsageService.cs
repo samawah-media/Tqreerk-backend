@@ -381,6 +381,7 @@ public class UsageService : IUsageService
             UsageActionType.AiTranslate => plan.AiTranslateLimit,
             UsageActionType.AiSimilarSuggestions => plan.AiSimilarSuggestionsLimit,
             UsageActionType.AiCompare => plan.AiCompareLimit,
+            UsageActionType.AiChat => PlanCapabilities.ResolveAiChatLimit(plan),
             _ => throw new ArgumentOutOfRangeException(nameof(action), action, null),
         };
     }

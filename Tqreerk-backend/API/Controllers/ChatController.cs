@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using Taqreerk.Application.Interfaces;
 using Taqreerk.Application.Services;
 using Taqreerk.Application.Settings;
+using Taqreerk.Domain.Enums;
 using Taqreerk.Infrastructure.Data;
 
 namespace Taqreerk.API.Controllers;
@@ -36,15 +37,18 @@ public class ChatController : ControllerBase
 {
     private readonly HttpClient _http;
     private readonly TaqreerkDbContext _db;
+    private readonly IUsageService _usage;
     private readonly ILogger<ChatController> _logger;
 
     public ChatController(
         IHttpClientFactory factory,
         IOptions<AiServiceSettings> settings,
         TaqreerkDbContext db,
+        IUsageService usage,
         ILogger<ChatController> logger)
     {
         _db = db;
+        _usage = usage;
         _logger = logger;
 
         // We deliberately use a raw HttpClient (not the typed AiServiceClient)
@@ -167,6 +171,33 @@ public class ChatController : ControllerBase
         }
         await EnsureAiChatAllowedAsync(userId, ct);
 
+        try
+        {
+            await _usage.EnsureWithinLimitAndConsumeAsync(
+                userId,
+                UsageActionType.AiChat,
+                sessionId,
+                token => StreamSendMessageAsync(sessionId, req, token),
+                ct);
+        }
+        catch (UsageLimitExceededException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[chat] send failed for session={SessionId}", sessionId);
+            if (!Response.HasStarted)
+            {
+                Response.StatusCode = StatusCodes.Status502BadGateway;
+                await Response.WriteAsync("{\"error\":\"ai-service unreachable\"}", ct);
+            }
+        }
+    }
+
+    private async Task StreamSendMessageAsync(
+        Guid sessionId, SendMessageRequest? req, CancellationToken ct)
+    {
         // Build the upstream request manually so we can opt into
         // HttpCompletionOption.ResponseHeadersRead — without it HttpClient
         // buffers the whole response, which kills streaming.
@@ -204,7 +235,8 @@ public class ChatController : ControllerBase
                 Response.ContentType = resp.Content.Headers.ContentType?.ToString() ?? "application/json";
                 await Response.WriteAsync(errorBody, ct);
             }
-            return;
+            throw new InvalidOperationException(
+                $"ai-service returned {(int)resp.StatusCode} for session {sessionId}");
         }
 
         // SSE response. Tell the browser + any reverse proxy (nginx,
@@ -213,24 +245,13 @@ public class ChatController : ControllerBase
         Response.ContentType = resp.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
         Response.Headers["Cache-Control"] = "no-cache";
         Response.Headers["X-Accel-Buffering"] = "no";
-        // Force the response compression middleware (registered in Program.cs
-        // via UseResponseCompression) to skip this response. text/event-stream
-        // isn't in its default MimeTypes so it *should* skip on its own, but
-        // setting Content-Encoding explicitly is what the middleware actually
-        // tests in ShouldCompressResponse — once it's non-empty, compression
-        // is bypassed without any chance of the BrotliStream/GzipStream wrapper
-        // batching our per-token flushes.
         Response.Headers["Content-Encoding"] = "identity";
-        // Disable response-body buffering on Kestrel side too.
         var feature = HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>();
         feature?.DisableBuffering();
 
         try
         {
             await using var upstreamStream = await resp.Content.ReadAsStreamAsync(ct);
-            // Small buffer + manual flush after every read so each `data:`
-            // event hits the browser the moment the upstream emits it.
-            // CopyToAsync would batch on its own internal buffer.
             var buffer = new byte[4096];
             while (true)
             {
@@ -241,7 +262,7 @@ public class ChatController : ControllerBase
                 }
                 catch (OperationCanceledException)
                 {
-                    break; // client disconnected
+                    break;
                 }
                 if (read <= 0) break;
                 await Response.Body.WriteAsync(buffer.AsMemory(0, read), ct);
@@ -255,6 +276,7 @@ public class ChatController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[chat] stream pump failed for session={SessionId}", sessionId);
+            throw;
         }
         finally
         {

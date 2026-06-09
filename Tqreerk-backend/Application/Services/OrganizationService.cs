@@ -21,6 +21,7 @@ public class OrganizationService : IOrganizationService
         "image/png",
         "image/jpeg",
         "image/jpg",
+        "image/webp",
     ];
     private const long MaxFileSizeBytes = 5 * 1024 * 1024;
     private const string OrgFileFolder = "organizations";
@@ -156,7 +157,7 @@ public class OrganizationService : IOrganizationService
             throw new ArgumentException("File type is required.");
 
         if (!AllowedContentTypes.Contains(contentType, StringComparer.OrdinalIgnoreCase))
-            throw new ArgumentException("Only PDF, PNG, and JPEG files are accepted.");
+            throw new ArgumentException("Only PDF, PNG, JPEG, and WEBP files are accepted.");
 
         // Length check: stream may report -1 if not seekable; in practice multipart sections are seekable on Kestrel.
         if (content.CanSeek && content.Length > MaxFileSizeBytes)
@@ -242,27 +243,10 @@ public class OrganizationService : IOrganizationService
         return org.Profile;
     }
 
-    /// Activate the org once the wizard's required fields are all present.
-    /// Required-for-completion: country, type, contact name, policies accepted, CR document.
-    private async Task MaybeActivateAsync(Organization org, CancellationToken ct)
-    {
-        if (org.Status == OrganizationStatus.Active) return;
-
-        var profile = org.Profile;
-        var hasCommercialRegisterFile = !string.IsNullOrWhiteSpace(profile?.LicenseDocumentUrl);
-        var requiredOk =
-            org.CountryId is not null
-            && profile is not null
-            && profile.PoliciesAccepted
-            && !string.IsNullOrWhiteSpace(profile.ContactPersonName)
-            && hasCommercialRegisterFile;
-
-        if (requiredOk)
-        {
-            org.Status = OrganizationStatus.Active;
-            await _db.SaveChangesAsync(ct);
-        }
-    }
+    /// Org activation is admin-driven (PendingReview → Active). Profile updates
+    /// no longer flip status automatically once required fields are present.
+    private Task MaybeActivateAsync(Organization org, CancellationToken ct)
+        => Task.CompletedTask;
 
     private async Task<OrganizationDetailDto> ToDtoAsync(Organization org, CancellationToken ct)
     {

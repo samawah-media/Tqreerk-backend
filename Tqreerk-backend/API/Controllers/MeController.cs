@@ -46,9 +46,10 @@ public class MeController : ControllerBase
         return Ok(await _me.ListActivityAsync(userId, take, ct));
     }
 
-    /// <summary>Personalised recommendations: published reports from the
-    /// caller's sector interests, excluding ones already viewed. Empty
-    /// list when the user hasn't picked any interests yet.</summary>
+    /// <summary>Personalised recommendations: recent published reports from
+    /// the caller's sector interests, excluding ones already saved. Sorted
+    /// by last activity so the feed stays current. Empty list when the
+    /// user hasn't picked any interests yet.</summary>
     [HttpGet("recommendations")]
     [ProducesResponseType(typeof(IReadOnlyList<MySavedReportDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> Recommendations(
