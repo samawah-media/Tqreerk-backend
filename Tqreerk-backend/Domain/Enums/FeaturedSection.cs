@@ -5,12 +5,10 @@ namespace Taqreerk.Domain.Enums;
 /// existing rows, so append new sections at the end.
 public enum FeaturedSection
 {
-    /// Single big card at the top of the homepage. Typically holds the
-    /// most-prominent / time-sensitive report. Capacity is small (1–3).
+    /// Cognitive-flow hero on the homepage (التدفق المعرفي). Up to 4 picks.
     HomepageHero = 0,
 
-    /// Carousel strip below the hero on the homepage. Holds 5–10 picks
-    /// the editor wants to surface broadly.
+    /// Most-popular carousel on the homepage (التقارير الأكثر رواجاً). Up to 4 picks.
     HomepageCarousel = 1,
 
     /// Pinned slot inside a sector's landing page. The sector is implied

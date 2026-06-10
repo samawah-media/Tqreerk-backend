@@ -41,8 +41,8 @@ public static class SystemSettingsSeedData
         new("ai.retry_attempts",          "ai",          "int",    "3",                                 "عدد محاولات إعادة استدعاء AI عند الفشل."),
 
         // Featured
-        new("featured.max_homepage_hero", "featured",    "int",    "3",                                 "حد البطل الرئيسي."),
-        new("featured.max_carousel",      "featured",    "int",    "10",                                "حد كاروسيل الصفحة الرئيسية."),
+        new("featured.max_homepage_hero", "featured",    "int",    "4",                                 "حد التدفق المعرفي."),
+        new("featured.max_carousel",      "featured",    "int",    "4",                                 "حد التقارير الأكثر رواجاً."),
 
         // Email
         new("email.sender_name",          "email",       "string", "تقريرك",                            "اسم المرسل في الإيميلات."),
