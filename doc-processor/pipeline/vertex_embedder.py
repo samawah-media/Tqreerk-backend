@@ -91,6 +91,22 @@ def _is_connection_error(exc: Exception) -> bool:
     return any(m in err for m in _CONN_ERROR_MARKERS)
 
 
+_QUOTA_ERROR_MARKERS = (
+    "429", "resource_exhausted", "resource exhausted",
+    "quota exceeded", "rate limit",
+)
+
+# Vertex enforces embed_content_input_tokens_per_minute as a sliding window —
+# a short exponential backoff just retries inside the same exhausted window.
+# 65s comfortably outlives the 60s window.
+_QUOTA_RETRY_SECONDS = 65
+_QUOTA_MAX_ATTEMPTS = 3
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    return any(m in str(exc).lower() for m in _QUOTA_ERROR_MARKERS)
+
+
 def embed_passages(texts: list[str]) -> list[list[float]]:
     """Embed a list of chunk passages using gemini-embedding-001.
 
@@ -122,6 +138,7 @@ def _embed_one_batch(
     """Call Vertex embed_content for one batch with retry."""
     last_exc: Exception | None = None
     started = time.perf_counter()
+    quota_attempts = 0
     for attempt in range(3):
         client = _get_client()
         try:
@@ -143,6 +160,17 @@ def _embed_one_batch(
             return [list(e.values) for e in embeddings]
         except Exception as exc:
             last_exc = exc
+            if _is_quota_error(exc):
+                quota_attempts += 1
+                if quota_attempts >= _QUOTA_MAX_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "[embedder] batch hit quota limit, sleeping %ds before retry "
+                    "(quota attempt %d/%d): %s",
+                    _QUOTA_RETRY_SECONDS, quota_attempts, _QUOTA_MAX_ATTEMPTS, exc,
+                )
+                time.sleep(_QUOTA_RETRY_SECONDS)
+                continue
             if _is_connection_error(exc):
                 logger.warning(
                     "[embedder] batch attempt %d/%d failed (connection): %s",
