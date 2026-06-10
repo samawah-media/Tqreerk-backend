@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Literal
 
 from google.genai import types
@@ -33,7 +34,7 @@ from google.genai import types
 from core.config import settings
 from core.db import conn_ctx
 from services import embedding_cache
-from services.gemini import _call_with_retry, _log_genai_usage
+from services.gemini import _call_with_retry, _is_quota_error, _log_genai_usage
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,13 @@ _TASK_TYPE = {
 # Vertex AI embedding API hard limit: 250 texts per request.
 _BATCH_SIZE = 250
 
+# Vertex enforces embed_content_input_tokens_per_minute as a sliding window —
+# _call_with_retry raises quota errors immediately (no fallback model exists
+# for embeddings), so retry here with a delay long enough to outlive the
+# 60s window.
+_QUOTA_RETRY_SECONDS = 65
+_QUOTA_MAX_ATTEMPTS = 3
+
 
 def _embed(texts: list[str], task_type: str) -> list[list[float]]:
     """Batched call to the embedding API. Splits into ≤250-text sub-batches
@@ -69,14 +77,28 @@ def _embed(texts: list[str], task_type: str) -> list[list[float]]:
     results: list[list[float]] = []
     for batch_start in range(0, len(texts), _BATCH_SIZE):
         batch = texts[batch_start : batch_start + _BATCH_SIZE]
-        response = _call_with_retry(
-            op,
-            lambda client, b=batch: client.models.embed_content(
-                model=settings.gemini_embed_model,
-                contents=b,
-                config=config,
-            ),
-        )
+
+        for quota_attempt in range(_QUOTA_MAX_ATTEMPTS):
+            try:
+                response = _call_with_retry(
+                    op,
+                    lambda client, b=batch: client.models.embed_content(
+                        model=settings.gemini_embed_model,
+                        contents=b,
+                        config=config,
+                    ),
+                )
+                break
+            except Exception as exc:
+                if not _is_quota_error(exc) or quota_attempt == _QUOTA_MAX_ATTEMPTS - 1:
+                    raise
+                logger.warning(
+                    "[embed] %s hit quota limit, sleeping %ds before retry "
+                    "(quota attempt %d/%d): %s",
+                    op, _QUOTA_RETRY_SECONDS, quota_attempt + 1, _QUOTA_MAX_ATTEMPTS, exc,
+                )
+                time.sleep(_QUOTA_RETRY_SECONDS)
+
         _log_genai_usage(
             response,
             name=op,
