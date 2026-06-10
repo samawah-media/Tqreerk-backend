@@ -21,7 +21,9 @@ public class ReportAiContentConfiguration : IEntityTypeConfiguration<ReportAiCon
         builder.Property(c => c.Trends).HasColumnType("jsonb");
         builder.Property(c => c.CreatedAt).HasDefaultValueSql("now()");
 
-        builder.HasIndex(c => new { c.ReportId, c.Language }).IsUnique();
+        // Partial: soft-deleted AI contents keep their (ReportId, Language)
+        // pair, so uniqueness only applies among active rows.
+        builder.HasIndex(c => new { c.ReportId, c.Language }).IsUnique().HasFilter("\"DeletedAt\" IS NULL");
 
         builder.HasOne(c => c.Report)
             .WithMany(r => r.AiContents)

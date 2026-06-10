@@ -18,8 +18,10 @@ public class ReportTranslationConfiguration : IEntityTypeConfiguration<ReportTra
         builder.Property(t => t.TranslationStatus).HasConversion<string>().HasMaxLength(30);
         builder.Property(t => t.CreatedAt).HasDefaultValueSql("now()");
 
-        // Unique: one translation per language per report
-        builder.HasIndex(t => new { t.ReportId, t.Language }).IsUnique();
+        // Unique: one translation per language per report. Partial: soft-deleted
+        // translations keep their (ReportId, Language) pair, so uniqueness only
+        // applies among active rows.
+        builder.HasIndex(t => new { t.ReportId, t.Language }).IsUnique().HasFilter("\"DeletedAt\" IS NULL");
 
         builder.HasOne(t => t.Report)
             .WithMany(r => r.Translations)

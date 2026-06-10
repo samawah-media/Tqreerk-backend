@@ -1027,7 +1027,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("CountryId");
 
                     b.HasIndex("Slug")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"DeletedAt\" IS NULL");
 
                     b.ToTable("organizations", (string)null);
                 });
@@ -2709,7 +2710,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("SectorId");
 
                     b.HasIndex("Slug")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"DeletedAt\" IS NULL");
 
                     b.HasIndex("Status");
 
@@ -2773,7 +2775,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("AiJobId");
 
                     b.HasIndex("ReportId", "Language")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"DeletedAt\" IS NULL");
 
                     b.ToTable("report_ai_contents", (string)null);
                 });
@@ -3247,7 +3250,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("AiJobId");
 
                     b.HasIndex("ReportId", "Language")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"DeletedAt\" IS NULL");
 
                     b.ToTable("report_translations", (string)null);
                 });
@@ -4743,7 +4747,8 @@ namespace Taqreerk.Infrastructure.Data.Migrations
                     b.HasIndex("CountryId");
 
                     b.HasIndex("Email")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"DeletedAt\" IS NULL");
 
                     b.HasIndex("IsPlatformStaff")
                         .HasFilter("\"IsPlatformStaff\" = TRUE");

@@ -33,7 +33,9 @@ public class ReportConfiguration : IEntityTypeConfiguration<Report>
             .HasColumnType("tsvector")
             .ValueGeneratedOnAddOrUpdate();
 
-        builder.HasIndex(r => r.Slug).IsUnique();
+        // Partial: same reasoning as users.email — soft-deleted reports keep
+        // their slug, so uniqueness only applies among active reports.
+        builder.HasIndex(r => r.Slug).IsUnique().HasFilter("\"DeletedAt\" IS NULL");
         builder.HasIndex(r => r.SearchVector).HasMethod("GIN");
         builder.HasIndex(r => r.Status);
         builder.HasIndex(r => r.OrganizationId);

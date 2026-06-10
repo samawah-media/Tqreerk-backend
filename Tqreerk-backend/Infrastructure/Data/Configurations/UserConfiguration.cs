@@ -26,7 +26,10 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(u => u.IsPlatformStaff).HasDefaultValue(false);
         builder.Property(u => u.CreatedAt).HasDefaultValueSql("now()");
 
-        builder.HasIndex(u => u.Email).IsUnique();
+        // Partial: soft-deleted users keep their row (and email) around for
+        // audit/history, so uniqueness only applies among active accounts —
+        // otherwise re-registering a previously-deleted email 500s on insert.
+        builder.HasIndex(u => u.Email).IsUnique().HasFilter("\"DeletedAt\" IS NULL");
         // Quick lookup for /api/admin/* gate. Partial index = nearly free; the
         // staff table is tiny vs the user table.
         builder.HasIndex(u => u.IsPlatformStaff)

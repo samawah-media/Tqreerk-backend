@@ -25,7 +25,9 @@ public class OrganizationConfiguration : IEntityTypeConfiguration<Organization>
         builder.Property(o => o.LogoUrl).HasMaxLength(1000);
         builder.Property(o => o.CreatedAt).HasDefaultValueSql("now()");
 
-        builder.HasIndex(o => o.Slug).IsUnique();
+        // Partial: same reasoning as users.email — soft-deleted orgs keep
+        // their slug, so uniqueness only applies among active orgs.
+        builder.HasIndex(o => o.Slug).IsUnique().HasFilter("\"DeletedAt\" IS NULL");
 
         builder.HasOne(o => o.Country)
             .WithMany(c => c.Organizations)
